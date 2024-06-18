@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tree-sitter = "0.22"
+tree-sitter-ink = { path = "../tree-sitter-ink/", version = '24.6.18'}
+
+[build-dependencies]
+cc="*"
