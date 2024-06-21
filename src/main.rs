@@ -14,6 +14,41 @@ macro_rules! init_rules {
     };
 }
 
+macro_rules! def_rule {
+    (
+        $name:ident($self:ident, $config:ident)
+        if $condition:expr;
+        match $query:literal where $($querylhs:ident = $queryrhs:expr),*;
+        init $($field:ident: $fieldtype:ty = $fieldinit:expr),*;
+        edit($node:ident, $source:ident) => $edit:stmt
+
+    ) => {
+        struct $name {
+            $($field: $fieldtype),*
+        }
+
+        impl Rule for $name {
+            fn new($config: &FormatConfig) -> Option<Self> {
+                $condition.then_some(Self {
+                    $($field: $fieldinit),*
+                })
+            }
+
+            fn rule_name(&$self) -> &'static str {
+                stringify!($name)
+            }
+
+            fn query(&$self) -> String {
+                format!($query, $($querylhs = $queryrhs),*)
+            }
+
+            fn edit(&$self, $node: &Node, $source: &str) -> (Range<usize>, String) {
+                $edit
+            }
+        }
+    };
+}
+
 fn main() {
     let mut parser = Parser::new();
     parser
@@ -31,7 +66,8 @@ fn main() {
         .expect("There should be a tree here.");
 
     let config = FormatConfig::default();
-    let rules: Vec<Box<dyn Rule>> = init_rules! {config => AddEndMark, FixEndMark};
+    let rules: Vec<Box<dyn Rule>> =
+        init_rules! {config => AddEndMark, RemoveEndMark, FixEndMark, FixStartMark};
 
     let query = rules
         .iter()
@@ -71,24 +107,11 @@ fn main() {
     println!("{}", source);
 }
 
-macro_rules! impl_rule_name {
-    ($ty:ty) => {
-        impl RuleName for $ty {
-            fn rule_name(&self) -> &'static str {
-                stringify!($ty)
-            }
-        }
-    };
-}
-
-trait RuleName {
-    fn rule_name(&self) -> &'static str;
-}
-
-trait Rule: RuleName {
+trait Rule {
     fn new(config: &FormatConfig) -> Option<Self>
     where
         Self: Sized;
+    fn rule_name(&self) -> &'static str;
     fn query(&self) -> String;
     fn edit(&self, node: &Node, source: &str) -> (Range<usize>, String);
 }
@@ -107,64 +130,56 @@ impl Default for FormatConfig {
     }
 }
 
-impl_rule_name!(AddEndMark);
-struct AddEndMark {
-    mark: String,
-}
-
-impl Rule for AddEndMark {
-    fn new(config: &FormatConfig) -> Option<Self> {
-        config.closing_mark.then_some(Self {
-            mark: "=".repeat(config.knot_mark_size),
-        })
-    }
-
-    fn query(&self) -> String {
-        format!(r#"(knot !function !end_mark) @{}"#, self.rule_name())
-    }
-
-    fn edit(&self, node: &Node, _source: &str) -> (Range<usize>, String) {
-        edit(&node, Edit::Append, &self.mark)
+impl FormatConfig {
+    fn knot_mark(&self) -> String {
+        "=".repeat(self.knot_mark_size)
     }
 }
 
-impl_rule_name!(FixEndMark);
-struct FixEndMark {
-    mark: String,
+def_rule! { AddEndMark(self, config)
+    if config.closing_mark == true;
+    match "(knot !function !end_mark) @{node}"
+        where node = self.rule_name();
+    init
+        mark: String = config.knot_mark();
+    edit(node, source) => append(&node, &format!(" {}", self.mark))
 }
 
-impl Rule for FixEndMark {
-    fn new(config: &FormatConfig) -> Option<Self> {
-        config.closing_mark.then_some(Self {
-            mark: "=".repeat(config.knot_mark_size),
-        })
-    }
-
-    fn query(&self) -> String {
-        format!(
-            r#"((knot !function end_mark: _ @{}) (#not-eq? @{} "{}"))"#,
-            self.rule_name(),
-            self.rule_name(),
-            self.mark,
-        )
-    }
-
-    fn edit(&self, node: &Node, _source: &str) -> (Range<usize>, String) {
-        edit(&node, Edit::Replace, &self.mark)
-    }
+def_rule! { RemoveEndMark(self, config)
+    if config.closing_mark == false;
+    match "(knot !function end_mark: @{node})"
+        where node = self.rule_name();
+    init;
+    edit(node, source) => replace(&node, "")
 }
 
-enum Edit {
-    Append,
-    Prepend,
-    Replace,
+def_rule! { FixEndMark(self, config)
+    if config.closing_mark == true;
+    match r#"(
+        (knot !function end_mark: _ @{node})
+        (#not-eq? @{node} "{mark}")
+        )"#
+        where node = self.rule_name(), mark = self.mark;
+    init
+        mark: String = config.knot_mark();
+    edit(node, source) => replace(&node, &self.mark)
 }
 
-fn edit(node: &Node, edit: Edit, text: &str) -> (Range<usize>, String) {
-    let input_edit = match edit {
-        Edit::Append => node.end_byte()..node.end_byte(),
-        Edit::Prepend => node.start_byte()..node.start_byte(),
-        Edit::Replace => node.start_byte()..node.end_byte(),
-    };
-    (input_edit, text.to_owned())
+def_rule! { FixStartMark(self, config)
+    if true;
+    match r#"(
+        (knot !function start_mark: _ @{node})
+        (#not-eq? @{node} "{mark}")
+        )"#
+        where node = self.rule_name(), mark = self.mark;
+    init
+        mark: String = config.knot_mark();
+    edit(node, source) => replace(&node, &self.mark)
+}
+
+fn append(node: &Node, text: &str) -> (Range<usize>, String) {
+    (node.end_byte()..node.end_byte(), text.to_owned())
+}
+fn replace(node: &Node, text: &str) -> (Range<usize>, String) {
+    (node.start_byte()..node.end_byte(), text.to_owned())
 }
