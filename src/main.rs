@@ -1,53 +1,31 @@
-use std::{collections::HashMap, io::Read, ops::Range};
+use core::panic;
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    ops::Deref,
+    rc::Rc,
+};
 
-use tree_sitter::{Node, Parser, Query, QueryCursor};
+use tree_sitter::{
+    InputEdit, Node, Parser, Point, Query, QueryCursor, QueryMatch, QueryPredicateArg,
+    QueryProperty, TreeCursor,
+};
 use tree_sitter_ink::language as ink_lang;
+
+static QUERY: &str = include_str!("format.scm");
 
 /// Wrapping a rule in a box is a bit ugly, so we macro it away.
 /// Seems to me that this should be easier,
 macro_rules! init_rules {
-    ($config:ident => $($rule:ident),+) => {
-        vec![$($rule::new(&$config).map(|rule| Box::new(rule) as Box<dyn Rule>)),+]
+    ($query:ident, $config:ident => $($rule:ident),+) => {
+        vec![$($rule::new(&$query, &$config).map(|rule| Box::new(rule) as Box<dyn Rule>)),+]
         .into_iter()
         .filter_map(|maybe_rule| maybe_rule)
         .collect()
     };
 }
 
-macro_rules! def_rule {
-    (
-        $name:ident($self:ident, $config:ident)
-        if $condition:expr;
-        match $query:literal where $($querylhs:ident = $queryrhs:expr),*;
-        init $($field:ident: $fieldtype:ty = $fieldinit:expr),*;
-        edit($node:ident, $source:ident) => $edit:stmt
-
-    ) => {
-        struct $name {
-            $($field: $fieldtype),*
-        }
-
-        impl Rule for $name {
-            fn new($config: &FormatConfig) -> Option<Self> {
-                $condition.then_some(Self {
-                    $($field: $fieldinit),*
-                })
-            }
-
-            fn rule_name(&$self) -> &'static str {
-                stringify!($name)
-            }
-
-            fn query(&$self) -> String {
-                format!($query, $($querylhs = $queryrhs),*)
-            }
-
-            fn edit(&$self, $node: &Node, $source: &str) -> (Range<usize>, String) {
-                $edit
-            }
-        }
-    };
-}
+type CaptureIndex = u32;
 
 fn main() {
     let mut parser = Parser::new();
@@ -61,59 +39,99 @@ fn main() {
         .read_to_string(&mut source)
         .expect("Why can't we read from stdin?");
 
-    let tree = parser
+    let mut tree = parser
         .parse(&source, None)
         .expect("There should be a tree here.");
 
-    let config = FormatConfig::default();
-    let rules: Vec<Box<dyn Rule>> =
-        init_rules! {config => AddEndMark, RemoveEndMark, FixEndMark, FixStartMark};
+    let config = Rc::new(FormatConfig::default());
 
-    let query = rules
-        .iter()
-        .map(|rule| rule.query())
-        .collect::<Vec<String>>()
-        .join("\n");
+    let query = Rc::new(Query::new(&ink_lang(), QUERY).expect("query should be valid"));
     dbg!(&query);
-    let query = Query::new(&ink_lang(), &query).expect("valid query");
 
-    let rules: HashMap<u32, Box<dyn Rule>> = rules
-        .into_iter()
-        .map(|rule| {
-            let index = query
-                .capture_index_for_name(rule.rule_name())
-                .expect("Query is built with type ids");
-            (index, rule)
-        })
-        .collect();
+    let mut rules: Vec<Box<dyn Rule>> =
+        init_rules![query, config => ReplaceThis, ReplaceBetween, IndentFixed, Rewrite];
 
     let mut query_cursor = QueryCursor::new();
-    let edits: Vec<_> = query_cursor
-        .captures(&query, tree.root_node(), source.as_bytes())
-        .flat_map(|(qmatch, _)| qmatch.captures.into_iter())
-        .filter_map(|capture| {
-            rules
-                .get(&capture.index)
-                .map(|rule| rule.edit(&capture.node, &source))
-        })
-        .collect();
 
-    dbg!(&edits);
-
-    for (range, new_text) in edits.into_iter().rev() {
-        source.replace_range(range, &new_text);
+    while let Some((range, new_text)) =
+        next_edit(&mut query_cursor, &query, &tree, &source, &mut rules)
+    {
+        source.replace_range(range.start_byte..range.old_end_byte, &new_text);
+        tree.edit(&range);
+        tree = parser
+            .parse(&source, Some(&tree))
+            .expect("Parsing should work, even if repeated.");
     }
-
     println!("{}", source);
 }
 
+struct LeavesInOrder<'a> {
+    cursor: TreeCursor<'a>,
+    has_more: bool,
+}
+
+impl<'a> LeavesInOrder<'a> {
+    fn new(node: Node<'a>) -> Self {
+        let cursor = node.walk();
+        Self {
+            cursor,
+            has_more: true,
+        }
+    }
+}
+
+impl<'a> LeavesInOrder<'a> {
+    fn goto_next_or_up(&mut self) -> bool {
+        self.cursor.goto_next_sibling() || (self.cursor.goto_parent() && self.goto_next_or_up())
+    }
+}
+
+impl<'a> Iterator for LeavesInOrder<'a> {
+    type Item = Node<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.cursor.node();
+
+        if self.cursor.goto_first_child() {
+            return self.next();
+        } else {
+            let node_not_yet_shown = self.has_more;
+            self.has_more = self.goto_next_or_up();
+            // I'm a leaf!
+            return node_not_yet_shown.then_some(node);
+        }
+    }
+}
+
+fn next_edit(
+    query_cursor: &mut QueryCursor,
+    query: &Query,
+    tree: &tree_sitter::Tree,
+    source: &str,
+    rules: &mut Vec<Box<dyn Rule>>,
+) -> Option<EditResult> {
+    for m in query_cursor.matches(&query, tree.root_node(), source.as_bytes()) {
+        let props = query.property_settings(m.pattern_index);
+        for rule in rules.iter_mut() {
+            if let edit @ Some(_) = rule.visit(&m, &props, source) {
+                return edit;
+            }
+        }
+    }
+    None
+}
+
 trait Rule {
-    fn new(config: &FormatConfig) -> Option<Self>
+    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
     where
         Self: Sized;
-    fn rule_name(&self) -> &'static str;
-    fn query(&self) -> String;
-    fn edit(&self, node: &Node, source: &str) -> (Range<usize>, String);
+    fn captures(&self) -> Vec<&'static str>;
+    fn visit(
+        &mut self,
+        m: &QueryMatch,
+        props: &[QueryProperty],
+        source: &str,
+    ) -> Option<EditResult>;
 }
 
 struct FormatConfig {
@@ -136,50 +154,226 @@ impl FormatConfig {
     }
 }
 
-def_rule! { AddEndMark(self, config)
-    if config.closing_mark == true;
-    match "(knot !function !end_mark) @{node}"
-        where node = self.rule_name();
-    init
-        mark: String = config.knot_mark();
-    edit(node, source) => append(&node, &format!(" {}", self.mark))
+type EditResult = (InputEdit, String);
+
+struct ReplaceThis {
+    capture: CaptureIndex,
 }
 
-def_rule! { RemoveEndMark(self, config)
-    if config.closing_mark == false;
-    match "(knot !function end_mark: @{node})"
-        where node = self.rule_name();
-    init;
-    edit(node, source) => replace(&node, "")
+impl Rule for ReplaceThis {
+    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self> {
+        query
+            .capture_index_for_name("replace.this")
+            .map(|capture| Self { capture })
+    }
+
+    fn captures(&self) -> Vec<&'static str> {
+        vec!["replace.this"]
+    }
+
+    fn visit(
+        &mut self,
+        m: &QueryMatch,
+        props: &[QueryProperty],
+        source: &str,
+    ) -> Option<EditResult> {
+        let replacement = props
+            .iter()
+            .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
+            .flatten()?;
+        let replacement = replacement.deref();
+        m.captures.iter().find_map(|cap| {
+            if cap.index != self.capture {
+                return None;
+            }
+            let existing = &source[cap.node.start_byte()..cap.node.end_byte()];
+            (replacement != existing).then(|| replace(&cap.node, replacement))
+        })
+    }
 }
 
-def_rule! { FixEndMark(self, config)
-    if config.closing_mark == true;
-    match r#"(
-        (knot !function end_mark: _ @{node})
-        (#not-eq? @{node} "{mark}")
-        )"#
-        where node = self.rule_name(), mark = self.mark;
-    init
-        mark: String = config.knot_mark();
-    edit(node, source) => replace(&node, &self.mark)
+struct ReplaceBetween {
+    start: CaptureIndex,
+    end: CaptureIndex,
 }
 
-def_rule! { FixStartMark(self, config)
-    if true;
-    match r#"(
-        (knot !function start_mark: _ @{node})
-        (#not-eq? @{node} "{mark}")
-        )"#
-        where node = self.rule_name(), mark = self.mark;
-    init
-        mark: String = config.knot_mark();
-    edit(node, source) => replace(&node, &self.mark)
+impl Rule for ReplaceBetween {
+    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        Some(Self {
+            start: query.capture_index_for_name("replace.start")?,
+            end: query.capture_index_for_name("replace.end")?,
+        })
+    }
+
+    fn captures(&self) -> Vec<&'static str> {
+        vec!["replace.before"]
+    }
+
+    fn visit(
+        &mut self,
+        m: &QueryMatch,
+        props: &[QueryProperty],
+        source: &str,
+    ) -> Option<EditResult> {
+        let replacement_text = props
+            .iter()
+            .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
+            .flatten()?;
+        let replacement = replacement_text.deref();
+        let start_byte = m
+            .captures
+            .iter()
+            .find_map(|c| (c.index == self.start).then_some(c.node))?
+            .end_byte();
+        let end_byte = m
+            .captures
+            .iter()
+            .find_map(|c| (c.index == self.end).then_some(c.node))?
+            .start_byte();
+        let extent = (start_byte, end_byte);
+        let preceding_text = &source[extent.0..extent.1];
+        (replacement != preceding_text).then(|| replace_range(extent.0, extent.1, replacement))
+    }
 }
 
-fn append(node: &Node, text: &str) -> (Range<usize>, String) {
-    (node.end_byte()..node.end_byte(), text.to_owned())
+#[derive(Default)]
+struct IndentFixed {
+    indent_add: CaptureIndex,
+    indent_apply: CaptureIndex,
 }
-fn replace(node: &Node, text: &str) -> (Range<usize>, String) {
-    (node.start_byte()..node.end_byte(), text.to_owned())
+
+impl Rule for IndentFixed {
+    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        Some(Self {
+            indent_add: query.capture_index_for_name("indent.fixed.count")?,
+            indent_apply: query.capture_index_for_name("indent.fixed")?,
+        })
+    }
+
+    fn captures(&self) -> Vec<&'static str> {
+        vec!["indent.fixed.count", "indent.fixed"]
+    }
+
+    fn visit(
+        &mut self,
+        m: &QueryMatch,
+        _props: &[QueryProperty],
+        _source: &str,
+    ) -> Option<EditResult> {
+        let to_indent = m
+            .captures
+            .iter()
+            .find(|it| it.index == self.indent_apply)?
+            .node;
+        let indent_by = m
+            .captures
+            .iter()
+            .filter(|it| it.index == self.indent_add)
+            .count();
+        eprintln!(
+            "I would indent {:?} to {:?}, if I knew how.",
+            to_indent, indent_by
+        );
+        None
+    }
+}
+
+struct Rewrite {
+    query: Rc<Query>,
+    capture: CaptureIndex,
+}
+
+impl Rule for Rewrite {
+    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        Some(Self {
+            query: query.clone(),
+            capture: query.capture_index_for_name("rewrite")?,
+        })
+    }
+
+    fn captures(&self) -> Vec<&'static str> {
+        vec!["rewrite"]
+    }
+
+    fn visit(
+        &mut self,
+        m: &QueryMatch,
+        _props: &[QueryProperty],
+        source: &str,
+    ) -> Option<EditResult> {
+        let to_replace = m.captures.iter().find(|it| it.index == self.capture)?.node;
+        let new_order = self
+            .query
+            .general_predicates(m.pattern_index)
+            .iter()
+            .find(|pred| pred.operator.deref() == "rewrite-to")
+            .map(|it| it.args.deref())?;
+        let captures: HashSet<CaptureIndex> = new_order
+            .iter()
+            .filter_map(|it| {
+                if let QueryPredicateArg::Capture(n) = *it {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let original_nodes: HashMap<CaptureIndex, &str> = m
+            .captures
+            .iter()
+            .filter(|it| captures.contains(&it.index))
+            .map(|it| (it.index, &source[it.node.start_byte()..it.node.end_byte()]))
+            .collect();
+        let output: Vec<&str> = new_order
+            .iter()
+            .map(|item| match item {
+                QueryPredicateArg::Capture(n) => original_nodes.get(n).unwrap(),
+                QueryPredicateArg::String(s) => s.deref(),
+            })
+            .collect();
+        let output = output.join("");
+        Some(replace_range(
+            to_replace.start_byte(),
+            to_replace.end_byte(),
+            &output,
+        ))
+    }
+}
+
+fn replace(node: &Node, text: &str) -> EditResult {
+    (
+        InputEdit {
+            start_byte: node.start_byte(),
+            old_end_byte: node.end_byte(),
+            new_end_byte: node.start_byte() + text.len(),
+            // Since we're not going the reuse the tree, we won't spend any time getting these right:
+            start_position: node.start_position(),
+            old_end_position: node.start_position(),
+            new_end_position: node.start_position(),
+        },
+        text.to_owned(),
+    )
+}
+fn replace_range(start: usize, end: usize, text: &str) -> EditResult {
+    (
+        InputEdit {
+            start_byte: start,
+            old_end_byte: end,
+            new_end_byte: start + text.len(),
+            // Since we're not going the reuse the tree, we won't spend any time getting these right:
+            start_position: Point::new(0, 0),
+            old_end_position: Point::new(0, 0),
+            new_end_position: Point::new(0, 0),
+        },
+        text.to_owned(),
+    )
 }
