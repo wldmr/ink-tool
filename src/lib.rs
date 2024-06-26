@@ -34,7 +34,6 @@ pub fn format(config: FormatConfig, mut source: String) -> String {
     let config = Rc::new(config);
     let query =
         Rc::new(Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid"));
-    dbg!(&query);
 
     let mut rules = init_rules(config, &query);
 
