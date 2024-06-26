@@ -108,51 +108,12 @@ mod format {
         };
 
         use tree_sitter::{
-            InputEdit, Node, Point, Query, QueryMatch, QueryPredicateArg, QueryProperty, TreeCursor,
+            InputEdit, Node, Point, Query, QueryMatch, QueryPredicateArg, QueryProperty,
         };
 
         use super::FormatConfig;
 
         pub(crate) type CaptureIndex = u32;
-
-        struct LeavesInOrder<'a> {
-            cursor: TreeCursor<'a>,
-            has_more: bool,
-        }
-
-        impl<'a> LeavesInOrder<'a> {
-            fn new(node: Node<'a>) -> Self {
-                let cursor = node.walk();
-                Self {
-                    cursor,
-                    has_more: true,
-                }
-            }
-        }
-
-        impl<'a> LeavesInOrder<'a> {
-            fn goto_next_or_up(&mut self) -> bool {
-                self.cursor.goto_next_sibling()
-                    || (self.cursor.goto_parent() && self.goto_next_or_up())
-            }
-        }
-
-        impl<'a> Iterator for LeavesInOrder<'a> {
-            type Item = Node<'a>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                let node = self.cursor.node();
-
-                if self.cursor.goto_first_child() {
-                    return self.next();
-                } else {
-                    let node_not_yet_shown = self.has_more;
-                    self.has_more = self.goto_next_or_up();
-                    // I'm a leaf!
-                    return node_not_yet_shown.then_some(node);
-                }
-            }
-        }
 
         pub trait Rule {
             fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
