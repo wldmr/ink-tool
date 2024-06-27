@@ -21,11 +21,31 @@
 ((list_value_def "=" @replace.start . [(_) _] @replace.end)
  (#set! "replacement" " "))
 
+;;; Indentation
+
+;; Top level indentation
+(ink [ (knot_block   (knot)   @indent.to.anchor)
+       (stitch_block (stitch) @indent.to.anchor) ]
+) @indent.anchor
+
+;; Stitches inside knots
+(ink (knot_block (stitch_block (stitch) @indent.to.anchor))) @indent.anchor
+
+;; Indentation of flow
+
+; Marked lines themselves
+((_) @indent.anchor . [ (choice) (gather) ] @indent.to.anchor) 
+
+; First item after marked line
 ([
   (choice (choice_marks) . [_ (_)] @indent.anchor)
   (gather (gather_marks) . [_ (_)] @indent.anchor)
+  (content) @indent.anchor
   ]
  .
  [(content) @indent.to.anchor
   (choice_block (choice) @indent.to.anchor)
   (gather_block (gather) @indent.to.anchor)])
+
+((content) @indent.anchor . (content) @indent.to.anchor)
+
