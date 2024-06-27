@@ -1,11 +1,5 @@
-use std::fmt::Pointer;
-
 use derive_builder::Builder;
-use markdown::{
-    mdast::Node,
-    unist::{Point, Position},
-    ParseOptions,
-};
+use markdown::{mdast::Node, unist::Position, ParseOptions};
 
 #[derive(Builder)]
 pub(super) struct TestCase {

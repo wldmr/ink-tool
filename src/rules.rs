@@ -37,7 +37,7 @@ macro_rules! init_rules {
 }
 
 pub(super) fn init_rules(config: Rc<FormatConfig>, query: &Rc<Query>) -> Vec<Box<dyn Rule>> {
-    init_rules![query, config => ReplaceThis, ReplaceBetween, IndentFixed, Rewrite]
+    init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite]
 }
 
 pub(super) struct ReplaceThis {
@@ -124,47 +124,45 @@ impl Rule for ReplaceBetween {
 }
 
 #[derive(Default)]
-pub(super) struct IndentFixed {
-    indent_add: CaptureIndex,
-    indent_apply: CaptureIndex,
+pub(super) struct IndentAnchored {
+    anchor: CaptureIndex,
+    anchored: CaptureIndex,
 }
 
-impl Rule for IndentFixed {
+impl Rule for IndentAnchored {
     fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
         Some(Self {
-            indent_add: query.capture_index_for_name("indent.fixed.count")?,
-            indent_apply: query.capture_index_for_name("indent.fixed")?,
+            anchor: query.capture_index_for_name("indent.anchor")?,
+            anchored: query.capture_index_for_name("indent.to.anchor")?,
         })
     }
 
     fn captures(&self) -> Vec<&'static str> {
-        vec!["indent.fixed.count", "indent.fixed"]
+        vec!["indent.anhor", "indent.to.anchor"]
     }
 
     fn visit(
         &mut self,
         m: &QueryMatch,
         _props: &[QueryProperty],
-        _source: &str,
+        source: &str,
     ) -> Option<EditResult> {
-        let to_indent = m
-            .captures
-            .iter()
-            .find(|it| it.index == self.indent_apply)?
-            .node;
-        let indent_by = m
-            .captures
-            .iter()
-            .filter(|it| it.index == self.indent_add)
-            .count();
-        eprintln!(
-            "I would indent {:?} to {:?}, if I knew how.",
-            to_indent, indent_by
-        );
-        None
+        let anchor = m.captures.iter().find(|it| it.index == self.anchor)?.node;
+        let anchored = m.captures.iter().find(|it| it.index == self.anchored)?.node;
+
+        let target_whitespace_width = anchor.start_position().column;
+        let existing_whitespace_width = anchored.start_position().column;
+
+        let start = anchored.start_byte() - existing_whitespace_width;
+        let end = anchored.start_byte();
+        let existing = &source[start..end];
+
+        let replacement = &" ".repeat(target_whitespace_width);
+
+        (existing != replacement).then(|| replace_range(start, end, replacement))
     }
 }
 
