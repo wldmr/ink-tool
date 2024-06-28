@@ -4,11 +4,16 @@ use std::{
     rc::Rc,
 };
 
-use tree_sitter::{InputEdit, Node, Point, Query, QueryMatch, QueryPredicateArg};
+use tree_sitter::{Query, QueryMatch, QueryPredicateArg};
 
-use super::FormatConfig;
+use crate::{
+    config,
+    edit::{self, Change},
+};
 
-pub(crate) type CaptureIndex = u32;
+use config::FormatConfig;
+
+type CaptureIndex = u32;
 
 pub trait Rule {
     fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
@@ -16,22 +21,20 @@ pub trait Rule {
         Self: Sized;
     fn captures(&self) -> Vec<&'static str>;
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<EditResult>;
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<edit::Change>;
 
     fn edit_if_needed(
         &mut self,
         query: &Query,
         match_: &QueryMatch,
         source: &str,
-    ) -> Option<EditResult> {
+    ) -> Option<Change> {
         self.edit(query, match_, source).filter(|edit| {
-            let existing_text = &source[edit.0.start_byte..edit.0.old_end_byte];
-            existing_text != edit.1
+            let existing_text = &source[edit.range.start_byte..edit.range.old_end_byte];
+            existing_text != edit.text
         })
     }
 }
-
-pub type EditResult = (InputEdit, String);
 
 /// Wrapping a rule in a box is a bit ugly, so we macro it away.
 /// Seems to me that this should be easier,
@@ -44,7 +47,7 @@ macro_rules! init_rules {
     };
 }
 
-pub(super) fn init_rules(config: Rc<FormatConfig>, query: &Query) -> Vec<Box<dyn Rule>> {
+pub(super) fn init_rules(config: Rc<config::FormatConfig>, query: &Query) -> Vec<Box<dyn Rule>> {
     init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite]
 }
 
@@ -53,7 +56,7 @@ pub(super) struct ReplaceThis {
 }
 
 impl Rule for ReplaceThis {
-    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self> {
+    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self> {
         Some(Self {
             capture: query.capture_index_for_name("replace.this")?,
         })
@@ -63,7 +66,7 @@ impl Rule for ReplaceThis {
         vec!["replace.this"]
     }
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<EditResult> {
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
         let replacement = query
             .property_settings(match_.pattern_index)
             .iter()
@@ -74,7 +77,7 @@ impl Rule for ReplaceThis {
             .captures
             .iter()
             .find(|cap| cap.index == self.capture)
-            .map(|cap| replace(&cap.node, replacement))
+            .map(|cap| edit::replace(&cap.node, replacement))
     }
 }
 
@@ -84,7 +87,7 @@ pub(crate) struct ReplaceBetween {
 }
 
 impl Rule for ReplaceBetween {
-    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -98,7 +101,7 @@ impl Rule for ReplaceBetween {
         vec!["replace.before"]
     }
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<EditResult> {
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
         let replacement_text = query
             .property_settings(match_.pattern_index)
             .iter()
@@ -115,7 +118,7 @@ impl Rule for ReplaceBetween {
             .iter()
             .find_map(|c| (c.index == self.end).then_some(c.node))?
             .start_byte();
-        Some(replace_range(start_byte, end_byte, replacement))
+        Some(edit::replace_range(start_byte, end_byte, replacement))
     }
 }
 
@@ -125,7 +128,7 @@ pub(super) struct IndentAnchored {
 }
 
 impl Rule for IndentAnchored {
-    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -139,7 +142,7 @@ impl Rule for IndentAnchored {
         vec!["indent.anhor", "indent.to.anchor"]
     }
 
-    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<EditResult> {
+    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<edit::Change> {
         let anchor = match_
             .captures
             .iter()
@@ -159,7 +162,7 @@ impl Rule for IndentAnchored {
 
         let replacement = &" ".repeat(target_whitespace_width);
 
-        Some(replace_range(start, end, replacement))
+        Some(edit::replace_range(start, end, replacement))
     }
 }
 
@@ -168,7 +171,7 @@ pub(super) struct Rewrite {
 }
 
 impl Rule for Rewrite {
-    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -181,7 +184,7 @@ impl Rule for Rewrite {
         vec!["rewrite"]
     }
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<EditResult> {
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<edit::Change> {
         let to_replace = match_
             .captures
             .iter()
@@ -216,39 +219,10 @@ impl Rule for Rewrite {
             })
             .collect();
         let output = output.join("");
-        Some(replace_range(
+        Some(edit::replace_range(
             to_replace.start_byte(),
             to_replace.end_byte(),
             &output,
         ))
     }
-}
-
-fn replace(node: &Node, text: &str) -> EditResult {
-    (
-        InputEdit {
-            start_byte: node.start_byte(),
-            old_end_byte: node.end_byte(),
-            new_end_byte: node.start_byte() + text.len(),
-            // Since we're not going the reuse the tree, we won't spend any time getting these right:
-            start_position: node.start_position(),
-            old_end_position: node.start_position(),
-            new_end_position: node.start_position(),
-        },
-        text.to_owned(),
-    )
-}
-fn replace_range(start: usize, end: usize, text: &str) -> EditResult {
-    (
-        InputEdit {
-            start_byte: start,
-            old_end_byte: end,
-            new_end_byte: start + text.len(),
-            // Since we're not going the reuse the tree, we won't spend any time getting these right:
-            start_position: Point::new(0, 0),
-            old_end_position: Point::new(0, 0),
-            new_end_position: Point::new(0, 0),
-        },
-        text.to_owned(),
-    )
 }

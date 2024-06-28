@@ -1,26 +1,16 @@
-mod rules;
+pub mod config;
+pub mod edit;
+pub mod rules;
 
 use std::rc::Rc;
 
-use rules::{init_rules, EditResult, Rule};
+use edit::Change;
+use rules::{init_rules, Rule};
 use tree_sitter::{Parser, Query, QueryCursor};
 
 static QUERY: &str = include_str!("format.scm");
-pub struct FormatConfig {
-    knot_mark_size: usize,
-    closing_mark: bool,
-}
 
-impl Default for FormatConfig {
-    fn default() -> Self {
-        Self {
-            knot_mark_size: 3,
-            closing_mark: true,
-        }
-    }
-}
-
-pub fn format(config: FormatConfig, mut source: String) -> String {
+pub fn format(config: config::FormatConfig, mut source: String) -> String {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_ink::language())
@@ -37,10 +27,10 @@ pub fn format(config: FormatConfig, mut source: String) -> String {
 
     let mut query_cursor = QueryCursor::new();
 
-    while let Some((range, new_text)) =
+    while let Some(edit::Change { range, text }) =
         next_edit(&mut query_cursor, &query, &tree, &source, &mut rules)
     {
-        source.replace_range(range.start_byte..range.old_end_byte, &new_text);
+        source.replace_range(range.start_byte..range.old_end_byte, &text);
         tree.edit(&range);
         tree = parser
             .parse(&source, Some(&tree))
@@ -56,7 +46,7 @@ fn next_edit(
     tree: &tree_sitter::Tree,
     source: &str,
     rules: &mut Vec<Box<dyn Rule>>,
-) -> Option<EditResult> {
+) -> Option<Change> {
     for match_ in query_cursor.matches(&query, tree.root_node(), source.as_bytes()) {
         for rule in rules.iter_mut() {
             let edit = rule.edit_if_needed(&query, &match_, source);

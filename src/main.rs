@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use ink_fmt::{format, FormatConfig};
+use ink_fmt::{config::FormatConfig, format};
 
 fn main() {
     let mut source = String::new();
