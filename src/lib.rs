@@ -31,8 +31,7 @@ pub fn format(config: FormatConfig, mut source: String) -> String {
         .expect("There should be a tree here.");
 
     let config = Rc::new(config);
-    let query =
-        Rc::new(Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid"));
+    let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
 
     let mut rules = init_rules(config, &query);
 
@@ -58,10 +57,10 @@ fn next_edit(
     source: &str,
     rules: &mut Vec<Box<dyn Rule>>,
 ) -> Option<EditResult> {
-    for m in query_cursor.matches(&query, tree.root_node(), source.as_bytes()) {
-        let props = query.property_settings(m.pattern_index);
+    for match_ in query_cursor.matches(&query, tree.root_node(), source.as_bytes()) {
         for rule in rules.iter_mut() {
-            if let edit @ Some(_) = rule.visit(&m, &props, source) {
+            let edit = rule.edit_if_needed(&query, &match_, source);
+            if edit.is_some() {
                 return edit;
             }
         }

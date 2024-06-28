@@ -4,23 +4,31 @@ use std::{
     rc::Rc,
 };
 
-use tree_sitter::{InputEdit, Node, Point, Query, QueryMatch, QueryPredicateArg, QueryProperty};
+use tree_sitter::{InputEdit, Node, Point, Query, QueryMatch, QueryPredicateArg};
 
 use super::FormatConfig;
 
 pub(crate) type CaptureIndex = u32;
 
 pub trait Rule {
-    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
     where
         Self: Sized;
     fn captures(&self) -> Vec<&'static str>;
-    fn visit(
+
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<EditResult>;
+
+    fn edit_if_needed(
         &mut self,
-        m: &QueryMatch,
-        props: &[QueryProperty],
+        query: &Query,
+        match_: &QueryMatch,
         source: &str,
-    ) -> Option<EditResult>;
+    ) -> Option<EditResult> {
+        self.edit(query, match_, source).filter(|edit| {
+            let existing_text = &source[edit.0.start_byte..edit.0.old_end_byte];
+            existing_text != edit.1
+        })
+    }
 }
 
 pub type EditResult = (InputEdit, String);
@@ -36,7 +44,7 @@ macro_rules! init_rules {
     };
 }
 
-pub(super) fn init_rules(config: Rc<FormatConfig>, query: &Rc<Query>) -> Vec<Box<dyn Rule>> {
+pub(super) fn init_rules(config: Rc<FormatConfig>, query: &Query) -> Vec<Box<dyn Rule>> {
     init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite]
 }
 
@@ -45,34 +53,28 @@ pub(super) struct ReplaceThis {
 }
 
 impl Rule for ReplaceThis {
-    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self> {
-        query
-            .capture_index_for_name("replace.this")
-            .map(|capture| Self { capture })
+    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self> {
+        Some(Self {
+            capture: query.capture_index_for_name("replace.this")?,
+        })
     }
 
     fn captures(&self) -> Vec<&'static str> {
         vec!["replace.this"]
     }
 
-    fn visit(
-        &mut self,
-        m: &QueryMatch,
-        props: &[QueryProperty],
-        source: &str,
-    ) -> Option<EditResult> {
-        let replacement = props
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<EditResult> {
+        let replacement = query
+            .property_settings(match_.pattern_index)
             .iter()
             .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
             .flatten()?;
         let replacement = replacement.deref();
-        m.captures.iter().find_map(|cap| {
-            if cap.index != self.capture {
-                return None;
-            }
-            let existing = &source[cap.node.start_byte()..cap.node.end_byte()];
-            (replacement != existing).then(|| replace(&cap.node, replacement))
-        })
+        match_
+            .captures
+            .iter()
+            .find(|cap| cap.index == self.capture)
+            .map(|cap| replace(&cap.node, replacement))
     }
 }
 
@@ -82,7 +84,7 @@ pub(crate) struct ReplaceBetween {
 }
 
 impl Rule for ReplaceBetween {
-    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -96,41 +98,34 @@ impl Rule for ReplaceBetween {
         vec!["replace.before"]
     }
 
-    fn visit(
-        &mut self,
-        m: &QueryMatch,
-        props: &[QueryProperty],
-        source: &str,
-    ) -> Option<EditResult> {
-        let replacement_text = props
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<EditResult> {
+        let replacement_text = query
+            .property_settings(match_.pattern_index)
             .iter()
             .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
             .flatten()?;
         let replacement = replacement_text.deref();
-        let start_byte = m
+        let start_byte = match_
             .captures
             .iter()
             .find_map(|c| (c.index == self.start).then_some(c.node))?
             .end_byte();
-        let end_byte = m
+        let end_byte = match_
             .captures
             .iter()
             .find_map(|c| (c.index == self.end).then_some(c.node))?
             .start_byte();
-        let extent = (start_byte, end_byte);
-        let preceding_text = &source[extent.0..extent.1];
-        (replacement != preceding_text).then(|| replace_range(extent.0, extent.1, replacement))
+        Some(replace_range(start_byte, end_byte, replacement))
     }
 }
 
-#[derive(Default)]
 pub(super) struct IndentAnchored {
     anchor: CaptureIndex,
     anchored: CaptureIndex,
 }
 
 impl Rule for IndentAnchored {
-    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -144,40 +139,40 @@ impl Rule for IndentAnchored {
         vec!["indent.anhor", "indent.to.anchor"]
     }
 
-    fn visit(
-        &mut self,
-        m: &QueryMatch,
-        _props: &[QueryProperty],
-        source: &str,
-    ) -> Option<EditResult> {
-        let anchor = m.captures.iter().find(|it| it.index == self.anchor)?.node;
-        let anchored = m.captures.iter().find(|it| it.index == self.anchored)?.node;
+    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<EditResult> {
+        let anchor = match_
+            .captures
+            .iter()
+            .find(|it| it.index == self.anchor)?
+            .node;
+        let anchored = match_
+            .captures
+            .iter()
+            .find(|it| it.index == self.anchored)?
+            .node;
 
         let target_whitespace_width = anchor.start_position().column;
         let existing_whitespace_width = anchored.start_position().column;
 
         let start = anchored.start_byte() - existing_whitespace_width;
         let end = anchored.start_byte();
-        let existing = &source[start..end];
 
         let replacement = &" ".repeat(target_whitespace_width);
 
-        (existing != replacement).then(|| replace_range(start, end, replacement))
+        Some(replace_range(start, end, replacement))
     }
 }
 
 pub(super) struct Rewrite {
-    query: Rc<Query>,
     capture: CaptureIndex,
 }
 
 impl Rule for Rewrite {
-    fn new(query: &Rc<Query>, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
     where
         Self: Sized,
     {
         Some(Self {
-            query: query.clone(),
             capture: query.capture_index_for_name("rewrite")?,
         })
     }
@@ -186,16 +181,14 @@ impl Rule for Rewrite {
         vec!["rewrite"]
     }
 
-    fn visit(
-        &mut self,
-        m: &QueryMatch,
-        _props: &[QueryProperty],
-        source: &str,
-    ) -> Option<EditResult> {
-        let to_replace = m.captures.iter().find(|it| it.index == self.capture)?.node;
-        let new_order = self
-            .query
-            .general_predicates(m.pattern_index)
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<EditResult> {
+        let to_replace = match_
+            .captures
+            .iter()
+            .find(|it| it.index == self.capture)?
+            .node;
+        let new_order = query
+            .general_predicates(match_.pattern_index)
             .iter()
             .find(|pred| pred.operator.deref() == "rewrite-to")
             .map(|it| it.args.deref())?;
@@ -209,7 +202,7 @@ impl Rule for Rewrite {
                 }
             })
             .collect();
-        let original_nodes: HashMap<CaptureIndex, &str> = m
+        let original_nodes: HashMap<CaptureIndex, &str> = match_
             .captures
             .iter()
             .filter(|it| captures.contains(&it.index))
