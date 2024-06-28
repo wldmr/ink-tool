@@ -2,8 +2,6 @@ pub mod config;
 pub mod edit;
 pub mod rules;
 
-use std::rc::Rc;
-
 use edit::Change;
 use rules::{init_rules, Rule};
 use tree_sitter::{Parser, Query, QueryCursor};
@@ -20,7 +18,6 @@ pub fn format(config: config::FormatConfig, mut source: String) -> String {
         .parse(&source, None)
         .expect("There should be a tree here.");
 
-    let config = Rc::new(config);
     let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
 
     let mut rules = init_rules(config, &query);

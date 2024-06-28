@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
-    rc::Rc,
 };
 
 use tree_sitter::{Query, QueryMatch, QueryPredicateArg};
@@ -16,7 +15,7 @@ use config::FormatConfig;
 type CaptureIndex = u32;
 
 pub trait Rule {
-    fn new(query: &Query, _config: &Rc<FormatConfig>) -> Option<Self>
+    fn new(query: &Query, config: &FormatConfig) -> Option<Self>
     where
         Self: Sized;
     fn captures(&self) -> Vec<&'static str>;
@@ -47,7 +46,7 @@ macro_rules! init_rules {
     };
 }
 
-pub(super) fn init_rules(config: Rc<config::FormatConfig>, query: &Query) -> Vec<Box<dyn Rule>> {
+pub(super) fn init_rules(config: config::FormatConfig, query: &Query) -> Vec<Box<dyn Rule>> {
     init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite]
 }
 
@@ -56,7 +55,7 @@ pub(super) struct ReplaceThis {
 }
 
 impl Rule for ReplaceThis {
-    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self> {
+    fn new(query: &Query, _config: &FormatConfig) -> Option<Self> {
         Some(Self {
             capture: query.capture_index_for_name("replace.this")?,
         })
@@ -87,7 +86,7 @@ pub(crate) struct ReplaceBetween {
 }
 
 impl Rule for ReplaceBetween {
-    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &FormatConfig) -> Option<Self>
     where
         Self: Sized,
     {
@@ -128,7 +127,7 @@ pub(super) struct IndentAnchored {
 }
 
 impl Rule for IndentAnchored {
-    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &FormatConfig) -> Option<Self>
     where
         Self: Sized,
     {
@@ -171,7 +170,7 @@ pub(super) struct Rewrite {
 }
 
 impl Rule for Rewrite {
-    fn new(query: &Query, _config: &Rc<config::FormatConfig>) -> Option<Self>
+    fn new(query: &Query, _config: &config::FormatConfig) -> Option<Self>
     where
         Self: Sized,
     {
