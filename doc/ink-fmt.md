@@ -1,5 +1,6 @@
 # `ink-fmt` – Usage
 
+
 ## Formatting Flow Content (Choices, Gathers, Paragraphs)
 
 ### Indentation
@@ -40,30 +41,28 @@ becomes
       par 2.2
 ```
 
-Two more things:
-* Flows of the same depth are aligned to each other
-* Initial indentation is kept; flow items are only indented relative to each other.
+A few more things:
+* Flows of the same depth are aligned to each other (as you would expect, but it bears saying)
+* Initial indentation is removed
 
 So this means that
 
 ```ink input
-//  v Note the leading indentation
     * a
                 * * a.1
-* b
-      * * b.1
-- Finally …
+  * b
+         * * b.1
+     - c
 ```
 
 becomes
 
 ```ink output
-//  v Note the leading indentation
-    * a
-      * * a.1
-    * b
-      * * b.1
-    - Finally …
+* a
+  * * a.1
+* b
+  * * b.1
+- c
 ```
 
 
@@ -92,12 +91,14 @@ both become:
 Knots and stitches are flush left
 
 ```ink input
+          = stitch_outside_knot
     === knot
-       = stitch
+       = stitch_inside_knot
          === another_knot
 ```
 ```ink output
+= stitch_outside_knot
 === knot
-= stitch
+= stitch_inside_knot
 === another_knot
 ```
