@@ -20,7 +20,7 @@ pub trait Rule {
         Self: Sized;
     fn captures(&self) -> Vec<&'static str>;
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<edit::Change>;
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<Change>;
 
     fn edit_if_needed(
         &mut self,
@@ -141,7 +141,7 @@ impl Rule for IndentAnchored {
         vec!["indent.anhor", "indent.to.anchor"]
     }
 
-    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<edit::Change> {
+    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
         let anchor = match_
             .captures
             .iter()
@@ -183,7 +183,7 @@ impl Rule for Rewrite {
         vec!["rewrite"]
     }
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<edit::Change> {
+    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<Change> {
         let to_replace = match_
             .captures
             .iter()

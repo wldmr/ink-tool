@@ -102,3 +102,57 @@ Knots and stitches are flush left
 = stitch_inside_knot
 === another_knot
 ```
+
+
+## List Definitions
+
+### List Spacing
+
+By default, a list such as
+
+```ink input
+LIST list=a,b,c
+```
+
+becomes
+
+```ink output
+LIST list = a, b, c
+```
+
+Likewise, for equals signs in initialized list elements.
+
+```ink input
+LIST list = (a=4), (b=8)
+```
+
+becomes
+
+```ink output
+LIST list = (a = 4), (b = 8)
+```
+
+Parentheses are flush against their contents
+
+```ink input
+LIST list = ( a = 2 ), ( b )
+```
+
+becomes
+
+```ink output
+LIST list = (a = 2), (b)
+```
+
+### List Initializer Parentheses Order
+
+List item elements are canonicized to the "parens outside" form.
+
+```ink input
+LIST list = (a)=4, (b)=8
+```
+
+```ink output
+LIST list = (a = 4), (b = 8)
+```
+

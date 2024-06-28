@@ -1,5 +1,6 @@
 use tree_sitter::{InputEdit, Node, Point};
 
+#[derive(Debug)]
 pub struct Change {
     pub range: InputEdit,
     pub text: String,

@@ -24,7 +24,7 @@ pub fn format(config: config::FormatConfig, mut source: String) -> String {
 
     let mut query_cursor = QueryCursor::new();
 
-    while let Some(edit::Change { range, text }) =
+    while let Some(Change { range, text }) =
         next_edit(&mut query_cursor, &query, &tree, &source, &mut rules)
     {
         source.replace_range(range.start_byte..range.old_end_byte, &text);
