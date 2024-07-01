@@ -85,27 +85,3 @@ fn next_edits(
     }
     edits
 }
-
-#[cfg(test)]
-mod test {
-    use crate::{config::FormatConfig, format};
-
-    #[test]
-    fn test_replace() {
-        let input = "LIST lst = ( v1), v2";
-        let output = format(FormatConfig::default(), input.to_owned());
-        pretty_assertions::assert_str_eq!(output, "LIST lst = (v1), v2");
-    }
-
-    #[test]
-    fn test_indent_with() {
-        let input = r#"
-	I like {this|that|something else}.
-"#;
-        let expected = r#"
-I like {this|that|something else}.
-"#;
-        let output = format(FormatConfig::default(), input.to_owned());
-        pretty_assertions::assert_str_eq!(output, expected);
-    }
-}

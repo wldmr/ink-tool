@@ -41,7 +41,7 @@
 ;;; Indentation
 
 ;; Top level and structure indentation: flush left
-(ink [(content_block [(content)              @indent.to.anchor
+(ink [(content_block [(paragraph)            @indent.to.anchor
                       (choice_block (choice) @indent.to.anchor)
                       (choice_block (choice) @indent.to.anchor)])
       (stitch_block (stitch)                 @indent.to.anchor)
@@ -49,28 +49,25 @@
       (knot_block   (stitch_block (stitch)   @indent.to.anchor))]
 ) @indent.anchor
 
-;; Stitches are aligned to their knot
+([_] (content_block (_) @indent.to.anchor)) @indent.anchor
 
 ;; Indentation of flow
 
 ; Items on the same level are aligned to each other
-([(content) @indent.anchor
-  (choice_block (choice) @indent.anchor)
-  (gather_block (gather) @indent.anchor)]
+([(paragraph)              @indent.anchor
+  (choice_block (choice)   @indent.anchor)
+  (gather_block (gather)   @indent.anchor)]
  .
- [(content) @indent.anchor
-  (choice_block (choice) @indent.to.anchor)
-  (gather_block (gather) @indent.to.anchor)])
+ [(paragraph)              @indent.to.anchor
+  (choice_block (choice)   @indent.to.anchor)
+  (gather_block (gather)   @indent.to.anchor)])
 
 ; Second line is aligned to the start of the content of the first
-([(content) @indent.anchor
+([(paragraph)                  @indent.anchor
   (choice (choice_marks) . [_] @indent.anchor)
   (gather (gather_marks) . [_] @indent.anchor) ]
  .
- [(content) @indent.to.anchor
-  (choice_block (choice) @indent.to.anchor)
-  (gather_block (gather) @indent.to.anchor)])
-
-; Content following content: Same indentation
-((content) @indent.anchor . (content) @indent.to.anchor)
+ [(paragraph)              @indent.to.anchor
+  (choice_block (choice)   @indent.to.anchor)
+  (gather_block (gather)   @indent.to.anchor)])
 
