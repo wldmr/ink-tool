@@ -1,87 +1,96 @@
+use tree_sitter::Parser;
+
 pub mod config;
 pub mod edit;
 pub mod rules;
 
-use std::{fs::File, process::Command};
-
-use edit::Change;
-use rules::{init_rules, Rule};
-use tree_sitter::{Parser, Query, QueryCursor};
-
-static QUERY: &str = include_str!("format.scm");
-
-pub fn format(config: config::FormatConfig, mut source: String) -> String {
+pub fn format(config: config::FormatConfig, source: String) -> Result<String, String> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_ink::language())
         .expect("We should be ablet to load an Ink grammar.");
 
-    let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
-
-    let mut rules = init_rules(config, &query);
-
-    let mut query_cursor = QueryCursor::new();
-
-    let mut tree = parser
+    let tree = parser
         .parse(&source, None)
         .expect("There should be a tree here.");
 
-    let mut edits = next_edits(&mut query_cursor, &query, &tree, &source, &mut rules);
-    let mut round = 0;
-    let mut edit_count = 0;
-    while !edits.is_empty() {
-        round += 1;
-        if tree.root_node().has_error() {
-            let graph = File::create("log.dot").expect("I should be able to create that file");
-            tree.print_dot_graph(&graph);
-            Command::new("dot")
-                .args(["-Tsvg", "-O", "log.dot"])
-                .output()
-                .expect("I should be able to call dot");
+    let ink: cst::Ink = tree
+        .root_node()
+        .try_into()
+        .expect("If the syntax don't fit, you must, ah …, quit.");
 
-            std::fs::write("error.fmt", &source).expect("I should be able to write that file");
-            panic!("Source can't be parsed. See log.dot.svg.\n{source}");
-        }
-        for Change { range, text } in edits.iter_mut().rev() {
-            edit_count += 1;
-            source.replace_range(range.start_byte..range.old_end_byte, &text);
-            tree.edit(range);
-        }
+    let mut fmt = Formatter {
+        source: &source,
+        config: &config,
+        cursor: ink.walk(),
+        result: String::with_capacity(source.len() * 1.2 as usize),
+        line_prefixes: Vec::new(),
+    };
 
-        // eprintln!("After round {round}:\n{source}");
-
-        tree = parser
-            .parse(&source, Some(&tree))
-            .expect("There should be a tree here.");
-        edits = next_edits(&mut query_cursor, &query, &tree, &source, &mut rules);
-    }
-
-    eprintln!("Made {edit_count} edits in {round} rounds.");
-    source
+    fmt.ink(&ink)?;
+    Ok(fmt.result)
+}
+pub mod cst {
+    include!(concat!(env!("OUT_DIR"), "/type_sitter_ink.rs"));
 }
 
-fn next_edits(
-    query_cursor: &mut QueryCursor,
-    query: &Query,
-    tree: &tree_sitter::Tree,
-    source: &str,
-    rules: &mut Vec<Box<dyn Rule>>,
-) -> Vec<Change> {
-    let mut edits = Vec::new();
-    for match_ in query_cursor.matches(&query, tree.root_node(), source.as_bytes()) {
-        for rule in rules.iter_mut() {
-            let edit = rule.edit_if_needed(&query, &match_, source);
-            if let Some(edit) = edit {
-                let prev = edits.last();
-                if prev.is_none()
-                    || prev.is_some_and(|prev: &Change| {
-                        edit.range.start_byte >= prev.range.old_end_byte
-                    })
-                {
-                    edits.push(edit);
-                }
+use cst as t;
+use t::anon_unions::ContentBlock_KnotBlock_StitchBlock;
+use tree_sitter::TreeCursor;
+use type_sitter_lib::{ExtraOr, TypedNode};
+
+use crate::config::FormatConfig;
+
+struct Formatter<'a, 'tree> {
+    source: &'a str,
+    config: &'a FormatConfig,
+    cursor: TreeCursor<'tree>,
+    result: String,
+    line_prefixes: Vec<String>,
+}
+
+impl<'a, 'tree> Formatter<'a, 'tree>
+where
+    'a: 'tree,
+{
+    fn ink(&mut self, ink: &cst::Ink<'tree>) -> Result<(), String> {
+        let children: Vec<_> = ink.children(&mut self.cursor).collect();
+        for child in children {
+            let ele = child.map_err(|e| format!("expected extra or blocks, found {}", e.kind))?;
+            dbg!(ele);
+            match ele {
+                ExtraOr::Extra(extra) => self.take_verbatim(extra)?,
+                ExtraOr::Regular(regular) => match regular {
+                    ContentBlock_KnotBlock_StitchBlock::ContentBlock(block) => {
+                        self.take_verbatim(block.into_node())?
+                    }
+                    ContentBlock_KnotBlock_StitchBlock::KnotBlock(block) => {
+                        self.take_verbatim(block.into_node())?
+                    }
+                    ContentBlock_KnotBlock_StitchBlock::StitchBlock(block) => {
+                        self.take_verbatim(block.into_node())?
+                    }
+                },
             }
         }
+        Ok(())
     }
-    edits
+
+    fn knot_block(&'a mut self, k: cst::KnotBlock<'_>) {
+        todo!()
+    }
+
+    fn stitch_block(&mut self, s: cst::StitchBlock<'_>) {
+        todo!()
+    }
+
+    fn content_block(&mut self, c: cst::ContentBlock<'_>) {
+        todo!()
+    }
+
+    fn take_verbatim(&mut self, node: tree_sitter::Node<'_>) -> Result<(), String> {
+        Ok(self
+            .result
+            .push_str(&self.source[node.start_byte()..node.end_byte()]))
+    }
 }

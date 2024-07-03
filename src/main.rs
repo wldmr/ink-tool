@@ -2,7 +2,7 @@ use std::io::Read;
 
 use ink_fmt::{config::FormatConfig, format};
 
-fn main() {
+fn main() -> Result<(), String> {
     let mut source = String::new();
     let args = &mut std::env::args();
     let _ = args.next(); // that's us, we know who we are.
@@ -19,7 +19,5 @@ fn main() {
     }
 
     assert!(!source.is_empty());
-    let source = format(FormatConfig::default(), source);
-
-    println!("{}", source);
+    format(FormatConfig::default(), source).map(|result| println!("{}", result))
 }
