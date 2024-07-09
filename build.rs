@@ -76,7 +76,7 @@ mod userdoc_tests {
                     r###"
                 #[test]
                 fn test_{idx:0>2}_{function_name}() {{
-                    let output = ink_fmt::format(ink_fmt::config::FormatConfig::default(), r#"{input}"#.to_string());
+                    let output = ink_fmt::format(ink_fmt::config::FormatConfig::default(), r#"{input}"#.to_string()).unwrap();
                     pretty_assertions::assert_str_eq!(
                         output,
                         r#"{expected}"#,
