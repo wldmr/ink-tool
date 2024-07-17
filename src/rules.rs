@@ -1,14 +1,9 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Deref,
-};
+use std::{collections::HashMap, usize};
 
-use tree_sitter::{Query, QueryMatch, QueryPredicateArg};
+use tree_sitter::{Node, Query};
+use tree_sitter_ink::NODE_TYPES;
 
-use crate::{
-    config,
-    edit::{self, Change},
-};
+use crate::{config, FormatToken};
 
 use config::FormatConfig;
 
@@ -18,210 +13,115 @@ pub trait Rule {
     fn new(query: &Query, config: &FormatConfig) -> Option<Self>
     where
         Self: Sized;
-    fn captures(&self) -> Vec<&'static str>;
+    fn captures(&self) -> Vec<CaptureIndex>;
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<Change>;
+    fn apply<'s, 'src: 'tok, 'cap, 'tok>(
+        &'s mut self,
+        capture: &'cap CaptureIndex,
+        node: &'cap Node,
+        source: &'src str,
+    ) -> Vec<FormatToken<&'tok str>>;
+}
 
-    fn edit_if_needed(
-        &mut self,
-        query: &Query,
-        match_: &QueryMatch,
-        source: &str,
-    ) -> Option<Change> {
-        self.edit(query, match_, source).filter(|edit| {
-            let existing_text = &source[edit.range.start_byte..edit.range.old_end_byte];
-            existing_text != edit.text
-        })
+pub struct Rules(HashMap<CaptureIndex, usize>, Vec<Box<dyn Rule>>);
+impl Rules {
+    pub fn apply<'s, 'src: 't, 'n, 't>(
+        &'s mut self,
+        capture: &CaptureIndex,
+        node: &'n Node,
+        source: &'src str,
+    ) -> Vec<FormatToken<&'t str>> {
+        if let Some(rule_idx) = self.0.get(capture) {
+            let rule = self
+                .1
+                .get_mut(*rule_idx)
+                .expect("should only contain valid rule indices");
+            rule.apply(capture, node, source)
+        } else {
+            Vec::new()
+        }
     }
 }
 
 /// Wrapping a rule in a box is a bit ugly, so we macro it away.
 /// Seems to me that this should be easier,
-macro_rules! init_rules {
+macro_rules! rules_to_vec {
     ($query:ident, $config:ident => $($rule:ident),+) => {
         vec![$($rule::new(&$query, &$config).map(|rule| Box::new(rule) as Box<dyn crate::rules::Rule>)),+]
         .into_iter()
         .filter_map(|maybe_rule| maybe_rule)
-        .collect()
+        .collect::<Vec<_>>()
     };
 }
 
-pub(super) fn init_rules(config: config::FormatConfig, query: &Query) -> Vec<Box<dyn Rule>> {
-    init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite]
-}
-
-pub(super) struct ReplaceThis {
-    capture: CaptureIndex,
-}
-
-impl Rule for ReplaceThis {
-    fn new(query: &Query, _config: &FormatConfig) -> Option<Self> {
-        Some(Self {
-            capture: query.capture_index_for_name("replace.this")?,
-        })
+pub(super) fn init_rules(config: config::FormatConfig, query: &Query) -> Rules {
+    let rules = rules_to_vec![query, config => AsIs];
+    let mut rulemap: HashMap<CaptureIndex, usize> = HashMap::new();
+    for (rule_idx, rule) in rules.iter().enumerate() {
+        for capture_idx in rule.captures() {
+            if let Some(_duplicate) = rulemap.insert(capture_idx, rule_idx) {
+                panic!("Bug! Duplicate rule for capture name '{capture_idx}'");
+            }
+        }
     }
-
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["replace.this"]
-    }
-
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
-        let replacement = query
-            .property_settings(match_.pattern_index)
-            .iter()
-            .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
-            .flatten()?;
-        let replacement = replacement.deref();
-        match_
-            .captures
-            .iter()
-            .find(|cap| cap.index == self.capture)
-            .map(|cap| edit::replace(&cap.node, replacement))
-    }
+    Rules(rulemap, rules)
 }
 
-pub(crate) struct ReplaceBetween {
-    start: CaptureIndex,
-    end: CaptureIndex,
+pub(super) struct AsIs {
+    as_is: CaptureIndex,
 }
-
-impl Rule for ReplaceBetween {
+impl Rule for AsIs {
     fn new(query: &Query, _config: &FormatConfig) -> Option<Self>
     where
         Self: Sized,
     {
         Some(Self {
-            start: query.capture_index_for_name("replace.start")?,
-            end: query.capture_index_for_name("replace.end")?,
+            as_is: query.capture_index_for_name("as-is")?,
         })
     }
 
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["replace.before"]
+    fn captures(&self) -> Vec<CaptureIndex> {
+        vec![self.as_is]
     }
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
-        let replacement_text = query
-            .property_settings(match_.pattern_index)
-            .iter()
-            .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
-            .flatten()?;
-        let replacement = replacement_text.deref();
-        let start_byte = match_
-            .captures
-            .iter()
-            .find_map(|c| (c.index == self.start).then_some(c.node))?
-            .end_byte();
-        let end_byte = match_
-            .captures
-            .iter()
-            .find_map(|c| (c.index == self.end).then_some(c.node))?
-            .start_byte();
-        Some(edit::replace_range(start_byte, end_byte, replacement))
+    fn apply<'s, 'src: 'tok, 'cap, 'tok>(
+        &'s mut self,
+        _capture: &'cap CaptureIndex,
+        node: &'cap Node,
+        source: &'src str,
+    ) -> Vec<FormatToken<&'tok str>> {
+        vec![FormatToken::Node(
+            &source[node.start_byte()..node.end_byte()],
+        )]
     }
 }
 
-pub(super) struct IndentAnchored {
-    anchor: CaptureIndex,
-    anchored: CaptureIndex,
+#[derive(Default)]
+pub(super) struct Newline {
+    before: CaptureIndex,
+    after: CaptureIndex,
 }
-
-impl Rule for IndentAnchored {
+impl Rule for Newline {
     fn new(query: &Query, _config: &FormatConfig) -> Option<Self>
     where
         Self: Sized,
     {
         Some(Self {
-            anchor: query.capture_index_for_name("indent.anchor")?,
-            anchored: query.capture_index_for_name("indent.to.anchor")?,
+            before: query.capture_index_for_name("newline.before")?,
+            after: query.capture_index_for_name("newline.after")?,
         })
     }
 
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["indent.anhor", "indent.to.anchor"]
+    fn captures(&self) -> Vec<CaptureIndex> {
+        vec![self.before, self.after]
     }
 
-    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
-        let anchor = match_
-            .captures
-            .iter()
-            .find(|it| it.index == self.anchor)?
-            .node;
-        let anchored = match_
-            .captures
-            .iter()
-            .find(|it| it.index == self.anchored)?
-            .node;
-
-        let target_whitespace_width = anchor.start_position().column;
-        let existing_whitespace_width = anchored.start_position().column;
-
-        let start = anchored.start_byte() - existing_whitespace_width;
-        let end = anchored.start_byte();
-
-        let replacement = &" ".repeat(target_whitespace_width);
-
-        Some(edit::replace_range(start, end, replacement))
-    }
-}
-
-pub(super) struct Rewrite {
-    capture: CaptureIndex,
-}
-
-impl Rule for Rewrite {
-    fn new(query: &Query, _config: &config::FormatConfig) -> Option<Self>
-    where
-        Self: Sized,
-    {
-        Some(Self {
-            capture: query.capture_index_for_name("rewrite")?,
-        })
-    }
-
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["rewrite"]
-    }
-
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<Change> {
-        let to_replace = match_
-            .captures
-            .iter()
-            .find(|it| it.index == self.capture)?
-            .node;
-        let new_order = query
-            .general_predicates(match_.pattern_index)
-            .iter()
-            .find(|pred| pred.operator.deref() == "rewrite-to")
-            .map(|it| it.args.deref())?;
-        let captures: HashSet<CaptureIndex> = new_order
-            .iter()
-            .filter_map(|it| {
-                if let QueryPredicateArg::Capture(n) = *it {
-                    Some(n)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let original_nodes: HashMap<CaptureIndex, &str> = match_
-            .captures
-            .iter()
-            .filter(|it| captures.contains(&it.index))
-            .map(|it| (it.index, &source[it.node.start_byte()..it.node.end_byte()]))
-            .collect();
-        let output: Vec<&str> = new_order
-            .iter()
-            .map(|item| match item {
-                QueryPredicateArg::Capture(n) => original_nodes.get(n).unwrap(),
-                QueryPredicateArg::String(s) => s.deref(),
-            })
-            .collect();
-        let output = output.join("");
-        Some(edit::replace_range(
-            to_replace.start_byte(),
-            to_replace.end_byte(),
-            &output,
-        ))
+    fn apply<'s, 'src: 'tok, 'cap, 'tok>(
+        &'s mut self,
+        capture: &'cap CaptureIndex,
+        node: &'cap Node,
+        source: &'src str,
+    ) -> Vec<FormatToken<&'tok str>> {
+        vec![]
     }
 }
