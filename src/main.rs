@@ -19,7 +19,8 @@ fn main() {
     }
 
     assert!(!source.is_empty());
-    let source = format(FormatConfig::default(), source);
-
-    println!("{}", source);
+    match format(FormatConfig::default(), source) {
+        Ok(formatted) => println!("{}", formatted),
+        Err(msg) => eprintln!("{}", msg),
+    }
 }

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tree-sitter = "0.22"
-tree-sitter-ink = { path = "../tree-sitter-ink/", version = '24.6.18'}
+tree-sitter-ink = { path = "../tree-sitter-ink/", version = '24.6.18', features = ["type-sitter"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
