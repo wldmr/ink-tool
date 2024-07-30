@@ -1,12 +1,14 @@
-use std::{fmt::Display, ops::Range};
+use std::{
+    borrow::BorrowMut,
+    fmt::{Debug, Display},
+    ops::Range,
+};
 
 use tree_sitter::TreeCursor;
-use tree_sitter_ink::{
-    node_types::lib::ExtraOr,
-    node_types::{
-        self as ty,
-        lib::{OptionNodeResultExt, TypedNode},
-    },
+use tree_sitter_ink::node_types::{
+    self as ty, anon_unions,
+    lib::{ExtraOr, IncorrectKind, OptionNodeResultExt, TypedNode},
+    Identifier, ListValueDef, ListValues,
 };
 
 use crate::config::FormatConfig;
@@ -16,36 +18,89 @@ pub trait ByteRange {
 }
 
 pub trait InkFmt<'a>: TypedNode<'a> {
-    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
-        formatter.copy(*self);
-        Ok(())
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(*self)
     }
 }
 
 impl<'a> InkFmt<'a> for ty::Ink<'a> {
-    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         if let Some(block) = self.content() {
-            block?.inkfmt(formatter)?
+            block?.inkfmt(f)?
         }
-        let stitches: Vec<_> = self.stitchs(&mut formatter.cursor).collect();
-        for block in stitches {
-            block?.inkfmt(formatter);
+        let mut cursor = f.new_cursor();
+        for block in self.stitchs(&mut cursor) {
+            f.fmt_ok(block)?
         }
-        let stitches: Vec<_> = self.knots(&mut formatter.cursor).collect();
-        for block in stitches {
-            block?.inkfmt(formatter);
+        for block in self.knots(&mut cursor) {
+            f.fmt_ok(block)?
         }
         Ok(())
     }
 }
 
-impl<'a> InkFmt<'a> for ty::Binary<'a> {
+impl<'a> InkFmt<'a> for ty::ContentBlock<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        for child in self.children(&mut f.cursor.clone()) {
+            f.fmt_ok(child)?;
+        }
+        f.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::StitchBlock<'a> {
     fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
-        self.left()?.inkfmt(formatter)?;
-        formatter.str(" ")?;
-        formatter.copy(self.op()?);
-        formatter.str(" ")?;
-        self.left()?.inkfmt(formatter)
+        formatter.newline()?;
+        self.header()?.inkfmt(formatter)?;
+        formatter.newline()?;
+        if let Some(content) = self.content() {
+            content?.inkfmt(formatter)?
+        }
+        formatter.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::KnotBlock<'a> {
+    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
+        formatter.newline()?;
+        self.header()?.inkfmt(formatter)?;
+        formatter.newline()?;
+        if let Some(content) = self.content() {
+            content?.inkfmt(formatter)?
+        }
+        formatter.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::Knot<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.str("=== ")?;
+        f.fmt_ok(self.name())?;
+        if self.function().is_some() {
+            f.str("function ")?;
+        }
+        f.fmt_some(self.params())?;
+        f.str(" ===")?;
+        f.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::Stitch<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.str("= ")?;
+        f.fmt_ok(self.name())?;
+        f.fmt_some(self.params())?;
+        f.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::Binary<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.fmt_ok(self.left())?;
+        f.space()?;
+        f.copy(self.op()?)?;
+        f.space()?;
+        f.fmt_ok(self.right())
     }
 }
 
@@ -69,36 +124,186 @@ impl<'a> InkFmt<'a> for ty::Expr<'a> {
 }
 
 impl<'a> InkFmt<'a> for ty::Call<'a> {
-    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         match &mut self.name()? {
-            ty::anon_unions::Identifier_QualifiedName::Identifier(it) => it.inkfmt(formatter),
-            ty::anon_unions::Identifier_QualifiedName::QualifiedName(it) => it.inkfmt(formatter),
+            ty::anon_unions::Identifier_QualifiedName::Identifier(it) => it.inkfmt(f),
+            ty::anon_unions::Identifier_QualifiedName::QualifiedName(it) => it.inkfmt(f),
         }?;
 
-        formatter.chr('(')?;
-        self.args()
-            .expect2("There must be Args here")
-            .inkfmt(formatter)?;
-        formatter.chr(')')
+        f.chr('(')?;
+        f.fmt_some(self.args())?;
+        f.chr(')')
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::List<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.str("LIST ")?;
+        f.fmt_ok(self.name())?;
+        f.str(" = ")?;
+        f.fmt_ok(self.values())?;
+        f.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::ListValues<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        let mut cursor = f.new_cursor();
+        let mut children = self
+            .node()
+            .children(&mut cursor)
+            .filter(|it| {
+                eprintln!("{}", it.kind());
+                it.kind() != ","
+            })
+            .map(|it| <ExtraOr<'a, Identifier>>::try_from(it))
+            .peekable();
+        while let Some(child) = children.next() {
+            match child? {
+                ExtraOr::Extra(extra) => handle_extra(&extra, f)?,
+                ExtraOr::Regular(regular) => f.fmt(regular)?,
+            }
+            if let Some(Ok(ExtraOr::Regular(_))) = children.peek() {
+                f.str(", ")?
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::ListValueDefs<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        let mut cursor = f.new_cursor();
+        let mut values = self
+            .node()
+            .children(&mut cursor)
+            .filter(|it| {
+                eprintln!("{}", it.kind());
+                it.kind() != ","
+            })
+            .map(|it| <ExtraOr<'a, ListValueDef>>::try_from(it))
+            .peekable();
+        while let Some(value) = values.next() {
+            match value? {
+                ExtraOr::Extra(extra) => handle_extra(&extra, f)?,
+                ExtraOr::Regular(regular) => f.fmt(regular)?,
+            }
+            if let Some(Ok(ExtraOr::Regular(_))) = values.peek() {
+                f.str(", ")?
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::ListValueDef<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        let mut cursor = f.new_cursor();
+        let has_parens = self.parens(&mut cursor).next().is_some();
+
+        if has_parens {
+            f.chr('(')?;
+        }
+
+        f.fmt_ok(self.name())?;
+
+        if let Some(value) = self.value() {
+            f.str(" = ")?;
+            f.fmt_ok(value)?;
+        }
+
+        if has_parens {
+            f.chr(')')?;
+        }
+
+        Ok(())
     }
 }
 
 impl<'a> InkFmt<'a> for ty::Args<'a> {}
+impl<'a> InkFmt<'a> for ty::Paragraph<'a> {}
+impl<'a> InkFmt<'a> for ty::TodoComment<'a> {}
 impl<'a> InkFmt<'a> for ty::Identifier<'a> {}
 impl<'a> InkFmt<'a> for ty::QualifiedName<'a> {}
 impl<'a> InkFmt<'a> for ty::Divert<'a> {}
 impl<'a> InkFmt<'a> for ty::Boolean<'a> {}
-impl<'a> InkFmt<'a> for ty::ListValues<'a> {}
-impl<'a> InkFmt<'a> for ty::Number<'a> {}
+impl<'a> InkFmt<'a> for ty::Number<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.trim(*self) // No idea why this node includes whitespace. The regex doesn't include it.
+    }
+}
 impl<'a> InkFmt<'a> for ty::Postfix<'a> {}
 impl<'a> InkFmt<'a> for ty::String<'a> {}
 impl<'a> InkFmt<'a> for ty::Unary<'a> {}
 impl<'a> InkFmt<'a> for ty::Paren<'a> {}
-impl<'a> InkFmt<'a> for ty::ContentBlock<'a> {}
-impl<'a> InkFmt<'a> for ty::KnotBlock<'a> {}
-impl<'a> InkFmt<'a> for ty::StitchBlock<'a> {}
+impl<'a> InkFmt<'a> for ty::Params<'a> {}
+impl<'a> InkFmt<'a> for ty::Param<'a> {}
+impl<'a> InkFmt<'a> for ty::ParamValue<'a> {}
+impl<'a> InkFmt<'a> for ty::Code<'a> {}
+impl<'a> InkFmt<'a> for ty::ChoiceBlock<'a> {}
+impl<'a> InkFmt<'a> for ty::GatherBlock<'a> {}
+impl<'a> InkFmt<'a> for ty::External<'a> {}
+impl<'a> InkFmt<'a> for ty::Choice<'a> {}
+impl<'a> InkFmt<'a> for ty::Global<'a> {}
+impl<'a> InkFmt<'a> for ty::Include<'a> {}
 
-impl<'a, T: TypedNode<'a>> InkFmt<'a> for ExtraOr<'a, T> {}
+impl<'a> InkFmt<'a> for ty::Assignment<'a> {
+    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
+        self.name()?.inkfmt(formatter)?;
+
+        formatter.copy(self.op()?)?;
+        self.value()?.inkfmt(formatter)
+    }
+}
+
+impl<'a, T: InkFmt<'a>> InkFmt<'a> for ExtraOr<'a, T> {
+    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
+        match self {
+            ExtraOr::Extra(node) => handle_extra(node, formatter),
+            ExtraOr::Regular(regular) => regular.inkfmt(formatter),
+        }
+    }
+}
+
+fn handle_extra<'t>(node: &tree_sitter::Node<'t>, f: &mut InkFormatter<'t>) -> InkFmtResult {
+    if let Ok(comment) = ty::Comment::try_from(*node) {
+        let start = &f.input[comment.start_byte()..comment.start_byte() + 2];
+        f.copy(comment)?;
+        if start == "//" {
+            f.newline()?;
+        }
+    }
+    Ok(())
+}
+
+impl<'a> InkFmt<'a>
+    for anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment<
+        'a,
+    >
+{
+    fn inkfmt(&self, formatter: &mut super::InkFormatter<'a>) -> InkFmtResult {
+        match self {
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::ChoiceBlock(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::Code(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::External(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::GatherBlock(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::Global(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::Include(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::List(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::Paragraph(it) => it.inkfmt(formatter),
+            anon_unions::ChoiceBlock_Code_External_GatherBlock_Global_Include_List_Paragraph_TodoComment::TodoComment(it) => it.inkfmt(formatter),
+        }
+    }
+}
+
+impl<'a> InkFmt<'a> for anon_unions::Identifier_QualifiedName<'a> {
+    fn inkfmt(&self, formatter: &mut super::InkFormatter<'a>) -> InkFmtResult {
+        match self {
+            anon_unions::Identifier_QualifiedName::Identifier(it) => it.inkfmt(formatter),
+            anon_unions::Identifier_QualifiedName::QualifiedName(it) => it.inkfmt(formatter),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct InkFmtError(String);
@@ -112,7 +317,9 @@ impl Display for InkFmtError {
 impl From<ty::lib::IncorrectKind<'_>> for InkFmtError {
     fn from(value: ty::lib::IncorrectKind) -> Self {
         InkFmtError(format!(
-            "Expected: {}, Found: {}",
+            "{}:{}: Expected {}, Found {}",
+            value.node.start_position().row + 1,
+            value.node.start_position().column + 1,
             value.kind,
             value.actual_kind()
         ))
@@ -134,7 +341,7 @@ impl<'t> InkFormatter<'t> {
             input,
             config,
             cursor,
-            output: String::new(),
+            output: String::with_capacity(input.len()),
         }
     }
 
@@ -144,12 +351,40 @@ impl<'t> InkFormatter<'t> {
 }
 
 impl<'t> InkFormatter<'t> {
-    fn copy<'n, N: ty::lib::TypedNode<'n>>(&mut self, node: N) {
+    fn copy<'n, N: ty::lib::TypedNode<'n>>(&mut self, node: N) -> InkFmtResult {
         self.output.push_str(&self.input[node.byte_range()]);
+        Ok(())
+    }
+
+    /// Some nodes seem to come with whitespace, even though the grammar doesn't allow it. Not sure why. :-/
+    fn trim<'n, N: ty::lib::TypedNode<'n>>(&mut self, node: N) -> InkFmtResult {
+        self.output.push_str(&self.input[node.byte_range()].trim());
+        Ok(())
+    }
+
+    fn fmt<T: InkFmt<'t>>(&mut self, node: T) -> InkFmtResult {
+        node.inkfmt(self)
+    }
+
+    fn fmt_ok<T: InkFmt<'t>>(&mut self, node: Result<T, IncorrectKind>) -> InkFmtResult {
+        node?.inkfmt(self)
+    }
+
+    fn fmt_some<T: InkFmt<'t>>(&mut self, node: Option<Result<T, IncorrectKind>>) -> InkFmtResult {
+        if let Some(node) = node {
+            node?.inkfmt(self)
+        } else {
+            Ok(())
+        }
     }
 
     fn newline(&mut self) -> InkFmtResult {
-        self.chr('\n');
+        self.chr('\n')?;
+        Ok(())
+    }
+
+    fn space(&mut self) -> InkFmtResult {
+        self.chr(' ')?;
         Ok(())
     }
 
@@ -161,5 +396,9 @@ impl<'t> InkFormatter<'t> {
     fn chr(&mut self, chr: char) -> InkFmtResult {
         self.output.push(chr);
         Ok(())
+    }
+
+    fn new_cursor(&self) -> TreeCursor<'t> {
+        self.cursor.clone()
     }
 }
