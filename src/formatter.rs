@@ -9,10 +9,8 @@ use tree_sitter_ink::node_types::{
 
 use crate::config::FormatConfig;
 
-pub trait InkFmt<'a>: TypedNode<'a> {
-    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.copy(*self)
-    }
+pub trait InkFmt<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult;
 }
 
 impl<'a> InkFmt<'a> for ty::Ink<'a> {
@@ -90,7 +88,7 @@ impl<'a> InkFmt<'a> for ty::Binary<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         f.fmt_ok(self.left())?;
         f.space()?;
-        f.copy(self.op()?)?;
+        f.copy(&self.op()?)?;
         f.space()?;
         f.fmt_ok(self.right())
     }
@@ -159,8 +157,8 @@ impl<'a> InkFmt<'a> for ty::List<'a> {
         f.fmt_ok(self.name())?;
         f.str(" = ")?;
         if is_multiline(self) {
-            let name_len = f.input[self.name()?.byte_range()].len();
-            f.indent_by_spaces(8 + name_len);
+            let range = &self.name()?.byte_range().len();
+            f.indent_by_spaces(8 + range);
             f.fmt_ok(self.values())?;
             f.unindent();
         } else {
@@ -222,38 +220,122 @@ impl<'a> InkFmt<'a> for ty::ListValueDef<'a> {
     }
 }
 
-impl<'a> InkFmt<'a> for ty::Args<'a> {}
-impl<'a> InkFmt<'a> for ty::Paragraph<'a> {}
-impl<'a> InkFmt<'a> for ty::TodoComment<'a> {}
-impl<'a> InkFmt<'a> for ty::Identifier<'a> {}
-impl<'a> InkFmt<'a> for ty::QualifiedName<'a> {}
-impl<'a> InkFmt<'a> for ty::Divert<'a> {}
-impl<'a> InkFmt<'a> for ty::Boolean<'a> {}
+impl<'a> InkFmt<'a> for ty::Args<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Paragraph<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::TodoComment<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Identifier<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::QualifiedName<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Divert<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Boolean<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
 impl<'a> InkFmt<'a> for ty::Number<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         f.trim(*self) // No idea why this node includes whitespace. The regex doesn't include it.
     }
 }
-impl<'a> InkFmt<'a> for ty::Postfix<'a> {}
-impl<'a> InkFmt<'a> for ty::String<'a> {}
-impl<'a> InkFmt<'a> for ty::Unary<'a> {}
-impl<'a> InkFmt<'a> for ty::Paren<'a> {}
-impl<'a> InkFmt<'a> for ty::Params<'a> {}
-impl<'a> InkFmt<'a> for ty::Param<'a> {}
-impl<'a> InkFmt<'a> for ty::ParamValue<'a> {}
-impl<'a> InkFmt<'a> for ty::Code<'a> {}
-impl<'a> InkFmt<'a> for ty::ChoiceBlock<'a> {}
-impl<'a> InkFmt<'a> for ty::GatherBlock<'a> {}
-impl<'a> InkFmt<'a> for ty::External<'a> {}
-impl<'a> InkFmt<'a> for ty::Choice<'a> {}
-impl<'a> InkFmt<'a> for ty::Global<'a> {}
-impl<'a> InkFmt<'a> for ty::Include<'a> {}
+impl<'a> InkFmt<'a> for ty::Postfix<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::String<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Unary<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Paren<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Params<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Param<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::ParamValue<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Code<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::ChoiceBlock<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::GatherBlock<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::External<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Choice<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Global<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
+impl<'a> InkFmt<'a> for ty::Include<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
+    }
+}
 
 impl<'a> InkFmt<'a> for ty::Assignment<'a> {
     fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
         self.name()?.inkfmt(formatter)?;
 
-        formatter.copy(self.op()?)?;
+        formatter.copy(&self.op()?)?;
         self.value()?.inkfmt(formatter)
     }
 }
@@ -270,7 +352,7 @@ impl<'a, T: InkFmt<'a>> InkFmt<'a> for ExtraOr<'a, T> {
 fn handle_extra<'t>(node: &tree_sitter::Node<'t>, f: &mut InkFormatter<'t>) -> InkFmtResult {
     if let Ok(comment) = ty::Comment::try_from(*node) {
         let start = &f.input[comment.start_byte()..comment.start_byte() + 2];
-        f.copy(comment)?;
+        f.copy(&comment)?;
         if start == "//" {
             f.newline()?;
         }
@@ -357,7 +439,7 @@ impl<'t> InkFormatter<'t> {
 }
 
 impl<'t> InkFormatter<'t> {
-    fn copy<'n, N: ty::lib::TypedNode<'n>>(&mut self, node: N) -> InkFmtResult {
+    fn copy<'n, N: TypedNode<'t>>(&mut self, node: &N) -> InkFmtResult {
         self.output.push_str(&self.input[node.byte_range()]);
         Ok(())
     }
@@ -419,18 +501,6 @@ impl<'t> InkFormatter<'t> {
     fn unindent(&mut self) {
         self.indents.pop();
         self.current_indent = self.indents.join("");
-    }
-
-    fn handle_extras_until<N: InkFmt<'t>>(&mut self, target: &N) -> InkFmtResult {
-        while self.cursor.goto_next_sibling() {
-            let tnode = <ExtraOr<'t, N>>::try_from(self.cursor.node())?;
-            match tnode {
-                ExtraOr::Extra(extr) => handle_extra(&extr, self)?,
-                ExtraOr::Regular(n) if n.node().id() == target.node().id() => return Ok(()),
-                _ => continue,
-            }
-        }
-        Err(InkFmtError(format!("Target node {:?} not found", target)))
     }
 }
 
