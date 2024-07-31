@@ -16,14 +16,14 @@ pub trait InkFmt<'a> {
 impl<'a> InkFmt<'a> for ty::Ink<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         if let Some(block) = self.content() {
-            block?.inkfmt(f)?
+            f.add(block)?
         }
         let mut cursor = f.new_cursor();
         for block in self.stitchs(&mut cursor) {
-            f.fmt_ok(block)?
+            f.add(block)?
         }
         for block in self.knots(&mut cursor) {
-            f.fmt_ok(block)?
+            f.add(block)?
         }
         Ok(())
     }
@@ -32,65 +32,65 @@ impl<'a> InkFmt<'a> for ty::Ink<'a> {
 impl<'a> InkFmt<'a> for ty::ContentBlock<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         for child in self.children(&mut f.cursor.clone()) {
-            f.fmt_ok(child)?;
+            f.add(child)?;
         }
         f.newline()
     }
 }
 
 impl<'a> InkFmt<'a> for ty::StitchBlock<'a> {
-    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
-        formatter.newline()?;
-        self.header()?.inkfmt(formatter)?;
-        formatter.newline()?;
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.newline()?;
+        f.add(self.header())?;
+        f.newline()?;
         if let Some(content) = self.content() {
-            content?.inkfmt(formatter)?
+            f.add(content)?
         }
-        formatter.newline()
+        f.newline()
     }
 }
 
 impl<'a> InkFmt<'a> for ty::KnotBlock<'a> {
-    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
-        formatter.newline()?;
-        self.header()?.inkfmt(formatter)?;
-        formatter.newline()?;
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.newline()?;
+        f.add(self.header())?;
+        f.newline()?;
         if let Some(content) = self.content() {
-            content?.inkfmt(formatter)?
+            f.add(content)?;
         }
-        formatter.newline()
+        f.newline()
     }
 }
 
 impl<'a> InkFmt<'a> for ty::Knot<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.str("=== ")?;
-        f.fmt_ok(self.name())?;
+        f.add("=== ")?;
+        f.add(self.name())?;
         if self.function().is_some() {
-            f.str("function ")?;
+            f.add("function ")?;
         }
-        f.fmt_some(self.params())?;
-        f.str(" ===")?;
+        f.add(self.params())?;
+        f.add(" ===")?;
         f.newline()
     }
 }
 
 impl<'a> InkFmt<'a> for ty::Stitch<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.str("= ")?;
-        f.fmt_ok(self.name())?;
-        f.fmt_some(self.params())?;
+        f.add("= ")?;
+        f.add(self.name())?;
+        f.add(self.params())?;
         f.newline()
     }
 }
 
 impl<'a> InkFmt<'a> for ty::Binary<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.fmt_ok(self.left())?;
+        f.add(self.left())?;
         f.space()?;
         f.copy(&self.op()?)?;
         f.space()?;
-        f.fmt_ok(self.right())
+        f.add(self.right())
     }
 }
 
@@ -120,9 +120,9 @@ impl<'a> InkFmt<'a> for ty::Call<'a> {
             ty::anon_unions::Identifier_QualifiedName::QualifiedName(it) => it.inkfmt(f),
         }?;
 
-        f.chr('(')?;
-        f.fmt_some(self.args())?;
-        f.chr(')')
+        f.add('(')?;
+        f.add(self.args())?;
+        f.add(')')
     }
 }
 
@@ -141,10 +141,10 @@ impl<'a> InkFmt<'a> for ty::ListValues<'a> {
         while let Some(child) = children.next() {
             match child? {
                 ExtraOr::Extra(extra) => handle_extra(&extra, f)?,
-                ExtraOr::Regular(regular) => f.fmt(regular)?,
+                ExtraOr::Regular(regular) => f.add(regular)?,
             }
             if let Some(Ok(ExtraOr::Regular(_))) = children.peek() {
-                f.str(", ")?
+                f.add(", ")?
             }
         }
         Ok(())
@@ -153,16 +153,16 @@ impl<'a> InkFmt<'a> for ty::ListValues<'a> {
 
 impl<'a> InkFmt<'a> for ty::List<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.str("LIST ")?;
-        f.fmt_ok(self.name())?;
-        f.str(" = ")?;
+        f.add("LIST ")?;
+        f.add(self.name())?;
+        f.add(" = ")?;
         if is_multiline(self) {
             let range = &self.name()?.byte_range().len();
             f.indent_by_spaces(8 + range);
-            f.fmt_ok(self.values())?;
+            f.add(self.values())?;
             f.unindent();
         } else {
-            f.fmt_ok(self.values())?;
+            f.add(self.values())?;
         }
         f.newline()
     }
@@ -181,14 +181,14 @@ impl<'a> InkFmt<'a> for ty::ListValueDefs<'a> {
         while let Some(value) = values.next() {
             match value? {
                 ExtraOr::Extra(extra) => handle_extra(&extra, f)?,
-                ExtraOr::Regular(regular) => f.fmt(regular)?,
+                ExtraOr::Regular(regular) => f.add(regular)?,
             }
             if let Some(Ok(ExtraOr::Regular(_))) = values.peek() {
                 if is_multiline {
-                    f.str(",")?;
+                    f.add(",")?;
                     f.newline()?
                 } else {
-                    f.str(", ")?
+                    f.add(", ")?
                 }
             }
         }
@@ -202,18 +202,18 @@ impl<'a> InkFmt<'a> for ty::ListValueDef<'a> {
         let has_parens = self.parens(&mut cursor).next().is_some();
 
         if has_parens {
-            f.chr('(')?;
+            f.add('(')?;
         }
 
-        f.fmt_ok(self.name())?;
+        f.add(self.name())?;
 
         if let Some(value) = self.value() {
-            f.str(" = ")?;
-            f.fmt_ok(value)?;
+            f.add(" = ")?;
+            f.add(value)?;
         }
 
         if has_parens {
-            f.chr(')')?;
+            f.add(')')?;
         }
 
         Ok(())
@@ -332,11 +332,10 @@ impl<'a> InkFmt<'a> for ty::Include<'a> {
 }
 
 impl<'a> InkFmt<'a> for ty::Assignment<'a> {
-    fn inkfmt(&self, formatter: &mut InkFormatter<'a>) -> InkFmtResult {
-        self.name()?.inkfmt(formatter)?;
-
-        formatter.copy(&self.op()?)?;
-        self.value()?.inkfmt(formatter)
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.add(self.name())?;
+        f.copy(&self.op()?)?;
+        self.value()?.inkfmt(f)
     }
 }
 
@@ -398,6 +397,18 @@ impl Display for InkFmtError {
     }
 }
 
+impl From<&ty::lib::IncorrectKind<'_>> for InkFmtError {
+    fn from(value: &ty::lib::IncorrectKind) -> Self {
+        InkFmtError(format!(
+            "{}:{}: Expected {}, Found {}",
+            value.node.start_position().row + 1,
+            value.node.start_position().column + 1,
+            value.kind,
+            value.actual_kind()
+        ))
+    }
+}
+
 impl From<ty::lib::IncorrectKind<'_>> for InkFmtError {
     fn from(value: ty::lib::IncorrectKind) -> Self {
         InkFmtError(format!(
@@ -438,10 +449,46 @@ impl<'t> InkFormatter<'t> {
     }
 }
 
+impl<'t, T: InkFmt<'t>> InkFmt<'t> for Result<T, IncorrectKind<'t>> {
+    fn inkfmt(&self, f: &mut InkFormatter<'t>) -> InkFmtResult {
+        match self {
+            Ok(ok) => ok.inkfmt(f),
+            Err(err) => Err(err.into()),
+        }
+    }
+}
+
+impl<'t, T: InkFmt<'t>> InkFmt<'t> for Option<Result<T, IncorrectKind<'t>>> {
+    fn inkfmt(&self, f: &mut InkFormatter<'t>) -> InkFmtResult {
+        match self {
+            Some(Ok(ok)) => ok.inkfmt(f),
+            Some(Err(err)) => Err(err.into()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'t> InkFmt<'t> for char {
+    fn inkfmt(&self, f: &mut InkFormatter<'t>) -> InkFmtResult {
+        f.chr(*self)
+    }
+}
+
+impl<'s, 't> InkFmt<'t> for &'s str {
+    fn inkfmt(&self, f: &mut InkFormatter<'t>) -> InkFmtResult {
+        f.str(self)
+    }
+}
+
+impl<'t> InkFmt<'t> for String {
+    fn inkfmt(&self, f: &mut InkFormatter<'t>) -> InkFmtResult {
+        f.str(self)
+    }
+}
+
 impl<'t> InkFormatter<'t> {
     fn copy<'n, N: TypedNode<'t>>(&mut self, node: &N) -> InkFmtResult {
-        self.output.push_str(&self.input[node.byte_range()]);
-        Ok(())
+        self.str(&self.input[node.byte_range()])
     }
 
     /// Some nodes seem to come with whitespace, even though the grammar doesn't allow it. Not sure why. :-/
@@ -450,25 +497,13 @@ impl<'t> InkFormatter<'t> {
         Ok(())
     }
 
-    fn fmt<T: InkFmt<'t>>(&mut self, node: T) -> InkFmtResult {
+    fn add<T: InkFmt<'t>>(&mut self, node: T) -> InkFmtResult {
         node.inkfmt(self)
-    }
-
-    fn fmt_ok<T: InkFmt<'t>>(&mut self, node: Result<T, IncorrectKind>) -> InkFmtResult {
-        node?.inkfmt(self)
-    }
-
-    fn fmt_some<T: InkFmt<'t>>(&mut self, node: Option<Result<T, IncorrectKind>>) -> InkFmtResult {
-        if let Some(node) = node {
-            node?.inkfmt(self)
-        } else {
-            Ok(())
-        }
     }
 
     fn newline(&mut self) -> InkFmtResult {
         self.chr('\n')?;
-        self.str(&self.current_indent.clone())
+        self.str(&self.current_indent.to_owned())
     }
 
     fn space(&mut self) -> InkFmtResult {
