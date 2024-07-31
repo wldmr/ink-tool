@@ -1,21 +1,13 @@
-use std::{
-    borrow::BorrowMut,
-    fmt::{Debug, Display},
-    ops::Range,
-};
+use std::fmt::{Debug, Display};
 
 use tree_sitter::TreeCursor;
 use tree_sitter_ink::node_types::{
     self as ty, anon_unions,
-    lib::{ExtraOr, IncorrectKind, OptionNodeResultExt, TypedNode},
-    Identifier, ListValueDef, ListValues,
+    lib::{ExtraOr, IncorrectKind, TypedNode},
+    Identifier, ListValueDef,
 };
 
 use crate::config::FormatConfig;
-
-pub trait ByteRange {
-    fn byte_range(&self) -> Range<usize>;
-}
 
 pub trait InkFmt<'a>: TypedNode<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
@@ -136,16 +128,6 @@ impl<'a> InkFmt<'a> for ty::Call<'a> {
     }
 }
 
-impl<'a> InkFmt<'a> for ty::List<'a> {
-    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.str("LIST ")?;
-        f.fmt_ok(self.name())?;
-        f.str(" = ")?;
-        f.fmt_ok(self.values())?;
-        f.newline()
-    }
-}
-
 impl<'a> InkFmt<'a> for ty::ListValues<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         let mut cursor = f.new_cursor();
@@ -171,16 +153,31 @@ impl<'a> InkFmt<'a> for ty::ListValues<'a> {
     }
 }
 
+impl<'a> InkFmt<'a> for ty::List<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.str("LIST ")?;
+        f.fmt_ok(self.name())?;
+        f.str(" = ")?;
+        if is_multiline(self) {
+            let name_len = f.input[self.name()?.byte_range()].len();
+            f.indent_by_spaces(8 + name_len);
+            f.fmt_ok(self.values())?;
+            f.unindent();
+        } else {
+            f.fmt_ok(self.values())?;
+        }
+        f.newline()
+    }
+}
+
 impl<'a> InkFmt<'a> for ty::ListValueDefs<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         let mut cursor = f.new_cursor();
+        let is_multiline = self.start_position().row != self.end_position().row;
         let mut values = self
             .node()
             .children(&mut cursor)
-            .filter(|it| {
-                eprintln!("{}", it.kind());
-                it.kind() != ","
-            })
+            .filter(|it| it.kind() != ",")
             .map(|it| <ExtraOr<'a, ListValueDef>>::try_from(it))
             .peekable();
         while let Some(value) = values.next() {
@@ -189,7 +186,12 @@ impl<'a> InkFmt<'a> for ty::ListValueDefs<'a> {
                 ExtraOr::Regular(regular) => f.fmt(regular)?,
             }
             if let Some(Ok(ExtraOr::Regular(_))) = values.peek() {
-                f.str(", ")?
+                if is_multiline {
+                    f.str(",")?;
+                    f.newline()?
+                } else {
+                    f.str(", ")?
+                }
             }
         }
         Ok(())
@@ -331,15 +333,19 @@ type InkFmtResult = Result<(), InkFmtError>;
 pub struct InkFormatter<'t> {
     input: &'t str,
     output: String,
+    indents: Vec<String>,
+    current_indent: String,
     cursor: TreeCursor<'t>,
-    config: FormatConfig,
+    _config: FormatConfig,
 }
 
 impl<'t> InkFormatter<'t> {
     pub fn new(input: &'t str, cursor: TreeCursor<'t>, config: FormatConfig) -> Self {
         Self {
             input,
-            config,
+            _config: config,
+            indents: Vec::new(),
+            current_indent: String::new(),
             cursor,
             output: String::with_capacity(input.len()),
         }
@@ -380,12 +386,11 @@ impl<'t> InkFormatter<'t> {
 
     fn newline(&mut self) -> InkFmtResult {
         self.chr('\n')?;
-        Ok(())
+        self.str(&self.current_indent.clone())
     }
 
     fn space(&mut self) -> InkFmtResult {
-        self.chr(' ')?;
-        Ok(())
+        self.chr(' ')
     }
 
     fn str(&mut self, str: &'_ str) -> InkFmtResult {
@@ -401,4 +406,37 @@ impl<'t> InkFormatter<'t> {
     fn new_cursor(&self) -> TreeCursor<'t> {
         self.cursor.clone()
     }
+
+    fn indent_by(&mut self, s: String) {
+        self.indents.push(s);
+        self.current_indent = self.indents.join("");
+    }
+
+    fn indent_by_spaces(&mut self, count: usize) {
+        self.indent_by(" ".repeat(count));
+    }
+
+    fn unindent(&mut self) {
+        self.indents.pop();
+        self.current_indent = self.indents.join("");
+    }
+
+    fn handle_extras_until<N: InkFmt<'t>>(&mut self, target: &N) -> InkFmtResult {
+        while self.cursor.goto_next_sibling() {
+            let tnode = <ExtraOr<'t, N>>::try_from(self.cursor.node())?;
+            match tnode {
+                ExtraOr::Extra(extr) => handle_extra(&extr, self)?,
+                ExtraOr::Regular(n) if n.node().id() == target.node().id() => return Ok(()),
+                _ => continue,
+            }
+        }
+        Err(InkFmtError(format!("Target node {:?} not found", target)))
+    }
+}
+
+fn is_multiline<'t, T>(node: &T) -> bool
+where
+    T: TypedNode<'t>,
+{
+    node.start_position().row != node.end_position().row
 }
