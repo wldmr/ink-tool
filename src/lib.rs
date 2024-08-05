@@ -3,6 +3,7 @@ pub mod edit;
 pub mod formatter;
 
 use std::{
+    fmt::Debug,
     fs::File,
     ops::{Deref, DerefMut},
     process::Command,
@@ -67,14 +68,8 @@ pub fn format(config: config::FormatConfig, source: String) -> Result<String, In
         panic!("Source can't be parsed. See log.dot.svg.\n{source}");
     }
 
-    let typed_root: tree_sitter_ink::node_types::Ink = tree
-        .root_node()
-        .try_into()
-        .expect("We should have checked for errors.");
-
-    let mut formatter = InkFormatter::new(&source, tree.walk(), config);
-    match typed_root.inkfmt(&mut formatter) {
-        Ok(_) => Ok(formatter.into_string()),
-        Err(msg) => Err(msg),
-    }
+    let mut fmt = InkFormatter::new(&source, tree.walk(), config);
+    let typed = tree_sitter_ink::node_types::Ink::try_from(tree.root_node())?;
+    typed.inkfmt(&mut fmt)?;
+    Ok(fmt.into_string())
 }

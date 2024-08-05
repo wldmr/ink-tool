@@ -15,9 +15,7 @@ pub trait InkFmt<'a> {
 
 impl<'a> InkFmt<'a> for ty::Ink<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        if let Some(block) = self.content() {
-            f.add(block)?
-        }
+        f.add(self.content())?;
         let mut cursor = f.new_cursor();
         for block in self.stitchs(&mut cursor) {
             f.add(block)?
@@ -64,13 +62,15 @@ impl<'a> InkFmt<'a> for ty::KnotBlock<'a> {
 
 impl<'a> InkFmt<'a> for ty::Knot<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.add("=== ")?;
+        f.add("===")?;
+        f.space()?;
         f.add(self.name())?;
         if self.function().is_some() {
             f.add("function ")?;
         }
         f.add(self.params())?;
-        f.add(" ===")?;
+        f.space()?;
+        f.add("===")?;
         f.newline()
     }
 }
@@ -153,25 +153,34 @@ impl<'a> InkFmt<'a> for ty::ListValues<'a> {
 
 impl<'a> InkFmt<'a> for ty::List<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.add("LIST ")?;
+        f.add(self.keyword())?;
+        f.space()?;
         f.add(self.name())?;
-        f.add(" = ")?;
-        if is_multiline(self) {
-            let range = &self.name()?.byte_range().len();
-            f.indent_by_spaces(8 + range);
-            f.add(self.values())?;
-            f.unindent();
-        } else {
-            f.add(self.values())?;
-        }
+        f.space()?;
+        f.add(self.op())?;
+        f.space()?;
+        f.indent_by_spaces(8 + self.name()?.byte_range().len());
+        f.add(self.values())?;
+        f.unindent();
         f.newline()
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::unnamed::List<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self) // can't use copy here, because for "reasons" the keyword is "LIST " (trailing space)
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::symbols::Eq_<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.copy(self)
     }
 }
 
 impl<'a> InkFmt<'a> for ty::ListValueDefs<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
         let mut cursor = f.new_cursor();
-        let is_multiline = self.start_position().row != self.end_position().row;
         let mut values = self
             .node()
             .children(&mut cursor)
@@ -179,16 +188,21 @@ impl<'a> InkFmt<'a> for ty::ListValueDefs<'a> {
             .map(|it| <ExtraOr<'a, ListValueDef>>::try_from(it))
             .peekable();
         while let Some(value) = values.next() {
-            match value? {
+            let value = value?;
+            match value {
                 ExtraOr::Extra(extra) => handle_extra(&extra, f)?,
                 ExtraOr::Regular(regular) => f.add(regular)?,
             }
-            if let Some(Ok(ExtraOr::Regular(_))) = values.peek() {
-                if is_multiline {
+            if let Some(Ok(next)) = values.peek() {
+                if value.regular().is_some() {
                     f.add(",")?;
-                    f.newline()?
+                }
+                let this_row = value.node().start_position().row;
+                let next_row = next.node().start_position().row;
+                if this_row == next_row {
+                    f.space()?;
                 } else {
-                    f.add(", ")?
+                    f.newline()?
                 }
             }
         }
@@ -257,7 +271,7 @@ impl<'a> InkFmt<'a> for ty::Boolean<'a> {
 }
 impl<'a> InkFmt<'a> for ty::Number<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.trim(*self) // No idea why this node includes whitespace. The regex doesn't include it.
+        f.trim(self) // No idea why this node includes whitespace. The regex doesn't include it.
     }
 }
 impl<'a> InkFmt<'a> for ty::Postfix<'a> {
@@ -317,7 +331,29 @@ impl<'a> InkFmt<'a> for ty::External<'a> {
 }
 impl<'a> InkFmt<'a> for ty::Choice<'a> {
     fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
-        f.copy(self)
+        f.add(self.marks())
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::ChoiceMarks<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        let children: Result<Vec<_>, IncorrectKind> = self.children(&mut f.cursor).collect();
+        for child in children? {
+            match child {
+                ExtraOr::Extra(extra) => handle_extra(&extra, f)?,
+                ExtraOr::Regular(regular) => {
+                    f.add(regular)?;
+                    f.space()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> InkFmt<'a> for ty::ChoiceMark<'a> {
+    fn inkfmt(&self, f: &mut InkFormatter<'a>) -> InkFmtResult {
+        f.trim(self)
     }
 }
 impl<'a> InkFmt<'a> for ty::Global<'a> {
@@ -349,12 +385,11 @@ impl<'a, T: InkFmt<'a>> InkFmt<'a> for ExtraOr<'a, T> {
 }
 
 fn handle_extra<'t>(node: &tree_sitter::Node<'t>, f: &mut InkFormatter<'t>) -> InkFmtResult {
-    if let Ok(comment) = ty::Comment::try_from(*node) {
-        let start = &f.input[comment.start_byte()..comment.start_byte() + 2];
+    if let Ok(comment) = ty::LineComment::try_from(*node) {
         f.copy(&comment)?;
-        if start == "//" {
-            f.newline()?;
-        }
+        f.newline()?;
+    } else if let Ok(comment) = ty::BlockComment::try_from(*node) {
+        f.copy(&comment)?;
     }
     Ok(())
 }
@@ -399,13 +434,7 @@ impl Display for InkFmtError {
 
 impl From<&ty::lib::IncorrectKind<'_>> for InkFmtError {
     fn from(value: &ty::lib::IncorrectKind) -> Self {
-        InkFmtError(format!(
-            "{}:{}: Expected {}, Found {}",
-            value.node.start_position().row + 1,
-            value.node.start_position().column + 1,
-            value.kind,
-            value.actual_kind()
-        ))
+        value.into()
     }
 }
 
@@ -487,13 +516,31 @@ impl<'t> InkFmt<'t> for String {
 }
 
 impl<'t> InkFormatter<'t> {
-    fn copy<'n, N: TypedNode<'t>>(&mut self, node: &N) -> InkFmtResult {
+    fn copy<N: TypedNode<'t>>(&mut self, node: &N) -> InkFmtResult {
+        self.str(&self.input[node.byte_range()])
+    }
+
+    pub fn copy_node(&mut self, node: tree_sitter::Node<'t>) -> InkFmtResult {
         self.str(&self.input[node.byte_range()])
     }
 
     /// Some nodes seem to come with whitespace, even though the grammar doesn't allow it. Not sure why. :-/
-    fn trim<'n, N: ty::lib::TypedNode<'n>>(&mut self, node: N) -> InkFmtResult {
+    fn trim<N: ty::lib::TypedNode<'t>>(&mut self, node: &N) -> InkFmtResult {
         self.output.push_str(&self.input[node.byte_range()].trim());
+        Ok(())
+    }
+
+    fn handle_extra(&mut self) -> InkFmtResult {
+        eprintln!("Looking for after {:?}", self.cursor.node());
+        while self.cursor.goto_next_sibling() {
+            let node = self.cursor.node();
+            eprintln!("Extra node {:?}", node);
+            if node.is_extra() {
+                handle_extra(&node, self)?;
+            } else {
+                return Ok(());
+            }
+        }
         Ok(())
     }
 
@@ -507,7 +554,10 @@ impl<'t> InkFormatter<'t> {
     }
 
     fn space(&mut self) -> InkFmtResult {
-        self.chr(' ')
+        match self.output.chars().last() {
+            Some(' ') | Some('\n') | None => Ok(()),
+            _ => self.chr(' '),
+        }
     }
 
     fn str(&mut self, str: &'_ str) -> InkFmtResult {
@@ -537,11 +587,4 @@ impl<'t> InkFormatter<'t> {
         self.indents.pop();
         self.current_indent = self.indents.join("");
     }
-}
-
-fn is_multiline<'t, T>(node: &T) -> bool
-where
-    T: TypedNode<'t>,
-{
-    node.start_position().row != node.end_position().row
 }
