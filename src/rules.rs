@@ -3,7 +3,7 @@ use std::{
     ops::Deref,
 };
 
-use tree_sitter::{Query, QueryMatch, QueryPredicateArg};
+use tree_sitter::{Query, QueryCursor, QueryMatch, QueryPredicateArg};
 
 use crate::{
     config,
@@ -13,6 +13,60 @@ use crate::{
 use config::FormatConfig;
 
 type CaptureIndex = u32;
+
+static QUERY: &str = include_str!("format.scm");
+
+/// Wrapping a rule in a box is a bit ugly, so we macro it away.
+/// Seems to me that this should be easier,
+macro_rules! init_rules {
+    ($query:ident, $config:ident => $($rule:ident),+) => {
+        vec![$($rule::new(&$query, &$config).map(|rule| Box::new(rule) as Box<dyn crate::rules::Rule>)),+]
+        .into_iter()
+        .filter_map(|maybe_rule| maybe_rule)
+        .collect()
+    };
+}
+
+pub struct Rules {
+    query: Query,
+    cursor: QueryCursor,
+    rules: Vec<Box<dyn Rule>>,
+}
+
+impl Rules {
+    pub fn new(config: config::FormatConfig) -> Self {
+        let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
+        let rules =
+            init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite];
+        Self {
+            query,
+            cursor: QueryCursor::new(),
+            rules,
+        }
+    }
+    pub fn next_edits(&mut self, tree: &tree_sitter::Tree, source: &str) -> Vec<Change> {
+        let mut edits = Vec::new();
+        for match_ in self
+            .cursor
+            .matches(&self.query, tree.root_node(), source.as_bytes())
+        {
+            for rule in self.rules.iter_mut() {
+                let edit = rule.edit_if_needed(&self.query, &match_, source);
+                if let Some(edit) = edit {
+                    let prev = edits.last();
+                    if prev.is_none()
+                        || prev.is_some_and(|prev: &Change| {
+                            edit.range.start_byte >= prev.range.old_end_byte
+                        })
+                    {
+                        edits.push(edit);
+                    }
+                }
+            }
+        }
+        edits
+    }
+}
 
 pub trait Rule {
     fn new(query: &Query, config: &FormatConfig) -> Option<Self>
@@ -33,21 +87,6 @@ pub trait Rule {
             existing_text != edit.text
         })
     }
-}
-
-/// Wrapping a rule in a box is a bit ugly, so we macro it away.
-/// Seems to me that this should be easier,
-macro_rules! init_rules {
-    ($query:ident, $config:ident => $($rule:ident),+) => {
-        vec![$($rule::new(&$query, &$config).map(|rule| Box::new(rule) as Box<dyn crate::rules::Rule>)),+]
-        .into_iter()
-        .filter_map(|maybe_rule| maybe_rule)
-        .collect()
-    };
-}
-
-pub(super) fn init_rules(config: config::FormatConfig, query: &Query) -> Vec<Box<dyn Rule>> {
-    init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite]
 }
 
 pub(super) struct ReplaceThis {

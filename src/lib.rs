@@ -5,10 +5,9 @@ pub mod rules;
 use std::{fs::File, process::Command};
 
 use edit::Change;
-use rules::{init_rules, Rule};
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::Parser;
 
-static QUERY: &str = include_str!("format.scm");
+use crate::rules::Rules;
 
 pub fn format(config: config::FormatConfig, mut source: String) -> String {
     let mut parser = Parser::new();
@@ -16,17 +15,13 @@ pub fn format(config: config::FormatConfig, mut source: String) -> String {
         .set_language(&tree_sitter_ink::language())
         .expect("We should be ablet to load an Ink grammar.");
 
-    let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
-
-    let mut rules = init_rules(config, &query);
-
-    let mut query_cursor = QueryCursor::new();
+    let mut rules = Rules::new(config);
 
     let mut tree = parser
         .parse(&source, None)
         .expect("There should be a tree here.");
 
-    let mut edits = next_edits(&mut query_cursor, &query, &tree, &source, &mut rules);
+    let mut edits = rules.next_edits(&tree, &source);
     let mut round = 0;
     let mut edit_count = 0;
     while !edits.is_empty() {
@@ -53,35 +48,9 @@ pub fn format(config: config::FormatConfig, mut source: String) -> String {
         tree = parser
             .parse(&source, Some(&tree))
             .expect("There should be a tree here.");
-        edits = next_edits(&mut query_cursor, &query, &tree, &source, &mut rules);
+        edits = rules.next_edits(&tree, &source);
     }
 
     eprintln!("Made {edit_count} edits in {round} rounds.");
     source
-}
-
-fn next_edits(
-    query_cursor: &mut QueryCursor,
-    query: &Query,
-    tree: &tree_sitter::Tree,
-    source: &str,
-    rules: &mut Vec<Box<dyn Rule>>,
-) -> Vec<Change> {
-    let mut edits = Vec::new();
-    for match_ in query_cursor.matches(&query, tree.root_node(), source.as_bytes()) {
-        for rule in rules.iter_mut() {
-            let edit = rule.edit_if_needed(&query, &match_, source);
-            if let Some(edit) = edit {
-                let prev = edits.last();
-                if prev.is_none()
-                    || prev.is_some_and(|prev: &Change| {
-                        edit.range.start_byte >= prev.range.old_end_byte
-                    })
-                {
-                    edits.push(edit);
-                }
-            }
-        }
-    }
-    edits
 }
