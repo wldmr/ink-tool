@@ -1,8 +1,8 @@
 diff := "difft"
 cargo_profile := "dev"
 
-test:
-    time cargo test
+test filter="":
+    cargo test {{ if filter != "" {filter} else {""} }}
 
 diff target="examples/the_intercept.ink":
     #!/usr/bin/env sh
