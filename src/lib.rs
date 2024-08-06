@@ -37,7 +37,7 @@ pub fn format(config: config::FormatConfig, mut source: String) -> String {
             std::fs::write("error.fmt", &source).expect("I should be able to write that file");
             panic!("Source can't be parsed. See log.dot.svg.\n{source}");
         }
-        for Change { range, text } in edits.iter_mut().rev() {
+        for Change { range, text } in edits.iter().rev() {
             edit_count += 1;
             source.replace_range(range.start_byte..range.old_end_byte, &text);
             tree.edit(range);

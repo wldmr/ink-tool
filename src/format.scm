@@ -1,73 +1,57 @@
-((knot !function start_mark: _ @replace.this)
- (#set! "replacement" "==="))
+(ink
+ [(content_block) (knot_block) (stitch_block)] @align
+) @align
 
-; After last mark
-((choice (choice_marks) @replace.start . [_ (_)] @replace.end)
- (#set! "replacement" " "))
+(choice_block
+ (choice (choice_marks) . (_) @align)
+ (_)+ @align)
 
-; Between marks
-((choice_marks (choice_mark) @replace.start . (choice_mark) @replace.end)
- (#set! "replacement" " "))
+(gather_block
+ (gather !eol) . (_) @align
+ (_)+ @align)
 
-((divert "->" @replace.start . _ @replace.end)
- (#set! "replacement" " "))
+;;; Normalize Knot/Stitch marks
+((knot start_mark: _ @it)
+ (#replace @it "===")
+ (#after @it " "))
 
-;;; List Definitions
+((knot end_mark: _ @it)
+ (#before @it " ")
+ (#replace @it "==="))
 
-;; Canonized placement of parens
-;; XXX: Order matters here; if this comes after the spacing rules, then it eats the last paren.
-((list_value_def . "(" . (identifier) @name . ")" . "=" . (number) @value) @rewrite
- (#rewrite-to "(" @name "=" @value ")"))
+((knot !end_mark (_) @it .)
+ (#after @it " ==="))
 
-;; Spaces between name and values
-((list name: (identifier) @replace.start . "=" . [_] @replace.end)
- (#set! "replacement" " = "))
+;;; Normalize Choices and gathers
+; space afer each mark
+((choice_mark) @it
+ (#after @it " "))
+; offset content after the last mark, for better visibility
+((choice_marks) @it
+ (#after @it "   "))
 
-;; Spaces between elements
-((list_value_def) @replace.start . (list_value_def) @replace.end
- (#set! "replacement" ", "))
+((gather_mark) @it
+ (#after @it " "))
+((gather_marks) @it
+ (#after @it "   "))
 
-;; Spaces inside parens
-;; IDEA: Have this rule accept multiple start/end pairs
-((list_value_def ["("] @replace.start . [_] @replace.end)
- (#set! "replacement" ""))
-((list_value_def [_] @replace.start . [")"] @replace.end)
- (#set! "replacement" ""))
+((list "=" @it)
+ (#before @it " ")
+ (#after @it " "))
 
-;; Spaces around name and numeric value
-((list_value_def name: (identifier) @replace.start . "=" . value: (number) @replace.end)
- (#set! "replacement" " = "))
+; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
+((list_value_def name: (_) . ")" @paren value: (_) @value)
+ (#replace @paren "")
+ (#after @value ")"))
 
-;;; Indentation
+((list_value_def "(" @open ")" @close)
+ (#after @open "")
+ (#before @close ""))
 
-;; Top level and structure indentation: flush left
-(ink [(content_block [(paragraph)            @indent.to.anchor
-                      (choice_block (choice) @indent.to.anchor)
-                      (choice_block (choice) @indent.to.anchor)])
-      (stitch_block (stitch)                 @indent.to.anchor)
-      (knot_block   (knot)                   @indent.to.anchor)
-      (knot_block   (stitch_block (stitch)   @indent.to.anchor))]
-) @indent.anchor
+((list_value_def "=" @it)
+ (#before @it " ")
+ (#after @it " "))
 
-([_] (content_block (_) @indent.to.anchor)) @indent.anchor
-
-;; Indentation of flow
-
-; Items on the same level are aligned to each other
-([(paragraph)              @indent.anchor
-  (choice_block (choice)   @indent.anchor)
-  (gather_block (gather)   @indent.anchor)]
- .
- [(paragraph)              @indent.to.anchor
-  (choice_block (choice)   @indent.to.anchor)
-  (gather_block (gather)   @indent.to.anchor)])
-
-; Second line is aligned to the start of the content of the first
-([(paragraph)                  @indent.anchor
-  (choice (choice_marks) . [_] @indent.anchor)
-  (gather (gather_marks) . [_] @indent.anchor) ]
- .
- [(paragraph)              @indent.to.anchor
-  (choice_block (choice)   @indent.to.anchor)
-  (gather_block (gather)   @indent.to.anchor)])
-
+((list_value_defs "," @it)
+ (#before @it "")
+ (#after @it " "))

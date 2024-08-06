@@ -1,266 +1,164 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Deref,
-};
+use std::{collections::HashMap, fmt::Debug};
 
-use tree_sitter::{Query, QueryCursor, QueryMatch, QueryPredicateArg};
+use tree_sitter::{Node, Query, QueryCursor, QueryPredicateArg};
 
-use crate::{
-    config,
-    edit::{self, Change},
-};
-
-use config::FormatConfig;
+use crate::{config, edit::Change};
 
 type CaptureIndex = u32;
+type PatternIndex = usize;
+type NodeId = usize;
 
 static QUERY: &str = include_str!("format.scm");
-
-/// Wrapping a rule in a box is a bit ugly, so we macro it away.
-/// Seems to me that this should be easier,
-macro_rules! init_rules {
-    ($query:ident, $config:ident => $($rule:ident),+) => {
-        vec![$($rule::new(&$query, &$config).map(|rule| Box::new(rule) as Box<dyn crate::rules::Rule>)),+]
-        .into_iter()
-        .filter_map(|maybe_rule| maybe_rule)
-        .collect()
-    };
-}
 
 pub struct Rules {
     query: Query,
     cursor: QueryCursor,
-    rules: Vec<Box<dyn Rule>>,
+    captures: CapIndex,
+}
+
+#[derive(Default, Debug)]
+struct Rule {
+    /// All Nodes with the same index get aliged to the same column
+    align: Option<PatternIndex>,
+    before: Option<Box<str>>,
+    after: Option<Box<str>>,
+    replace: Option<Box<str>>,
+}
+
+impl Rule {
+    fn apply<'t, 's>(&self, node: &Node<'t>, source: &'s str) -> Vec<Change> {
+        Vec::new()
+    }
+
+    fn merge(&mut self, other: Rule) -> Result<(), String> {
+        update(&mut self.align, other.align)?;
+        update(&mut self.before, other.before)?;
+        update(&mut self.after, other.after)?;
+        Ok(())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.align.is_none()
+            && self.before.is_none()
+            && self.after.is_none()
+            && self.replace.is_none()
+    }
+}
+
+fn update<T: Debug + PartialEq>(old: &mut Option<T>, new: Option<T>) -> Result<(), String> {
+    if new.is_none() {
+        return Ok(());
+    } else if old.as_ref().is_none() {
+        *old = new;
+    } else if old
+        .as_ref()
+        .is_some_and(|this| new.is_none() || new.as_ref().is_some_and(|that| this != that))
+    {
+        return Err(format!("Disagreement: Old {:?}, New {:?}", old, new).to_owned());
+    }
+    Ok(())
+}
+
+struct CapIndex {
+    align: Option<CaptureIndex>,
+}
+
+fn eq(idx: CaptureIndex, other: Option<CaptureIndex>) -> bool {
+    other.is_some_and(|it| it == idx)
 }
 
 impl Rules {
-    pub fn new(config: config::FormatConfig) -> Self {
+    pub fn new(_config: config::FormatConfig) -> Self {
         let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
-        let rules =
-            init_rules![query, config => ReplaceThis, ReplaceBetween, IndentAnchored, Rewrite];
+        let captures = CapIndex {
+            align: query.capture_index_for_name("align"),
+        };
         Self {
             query,
             cursor: QueryCursor::new(),
-            rules,
+            captures,
         }
     }
+
     pub fn next_edits(&mut self, tree: &tree_sitter::Tree, source: &str) -> Vec<Change> {
+        let rules = self.rules(tree, source);
+        dbg!(&rules);
         let mut edits = Vec::new();
-        for match_ in self
-            .cursor
-            .matches(&self.query, tree.root_node(), source.as_bytes())
-        {
-            for rule in self.rules.iter_mut() {
-                let edit = rule.edit_if_needed(&self.query, &match_, source);
-                if let Some(edit) = edit {
-                    let prev = edits.last();
-                    if prev.is_none()
-                        || prev.is_some_and(|prev: &Change| {
-                            edit.range.start_byte >= prev.range.old_end_byte
-                        })
+        edits
+    }
+
+    fn rules<'cur, 'tree>(
+        &mut self,
+        tree: &tree_sitter::Tree,
+        source: &'tree str,
+    ) -> HashMap<NodeId, Rule> {
+        let mut rules: HashMap<NodeId, Rule> = HashMap::new();
+
+        let mut node_actions: HashMap<(PatternIndex, CaptureIndex, &str), Box<str>> =
+            HashMap::new();
+
+        // This could happen on init, speeds things up when these rules get re-used.
+        for pattern_index in 1..self.query.pattern_count() {
+            for prop in self.query.general_predicates(pattern_index) {
+                let op = &*prop.operator;
+                let args = &*prop.args;
+                match (op, args) {
+                    (op, [QueryPredicateArg::Capture(index), QueryPredicateArg::String(value)])
+                        if op == "before" || op == "after" || op == "replace" =>
                     {
-                        edits.push(edit);
+                        let key = (pattern_index, *index, op);
+                        if let Some(other) = node_actions.insert(key, value.clone()) {
+                            panic!(
+                            "Pattern {pattern_index}: Duplicate node action for @{op}: Previous '{other}', replaced by '{value}'",
+                        )
+                        }
+                    }
+                    (op, args) => {
+                        panic!(
+                            "Pattern {pattern_index}: Unknown query predicate @{op}({:?})",
+                            args
+                        )
                     }
                 }
             }
         }
-        edits
-    }
-}
 
-pub trait Rule {
-    fn new(query: &Query, config: &FormatConfig) -> Option<Self>
-    where
-        Self: Sized;
-    fn captures(&self) -> Vec<&'static str>;
+        dbg!(&node_actions);
 
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<Change>;
-
-    fn edit_if_needed(
-        &mut self,
-        query: &Query,
-        match_: &QueryMatch,
-        source: &str,
-    ) -> Option<Change> {
-        self.edit(query, match_, source).filter(|edit| {
-            let existing_text = &source[edit.range.start_byte..edit.range.old_end_byte];
-            existing_text != edit.text
-        })
-    }
-}
-
-pub(super) struct ReplaceThis {
-    capture: CaptureIndex,
-}
-
-impl Rule for ReplaceThis {
-    fn new(query: &Query, _config: &FormatConfig) -> Option<Self> {
-        Some(Self {
-            capture: query.capture_index_for_name("replace.this")?,
-        })
-    }
-
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["replace.this"]
-    }
-
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
-        let replacement = query
-            .property_settings(match_.pattern_index)
-            .iter()
-            .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
-            .flatten()?;
-        let replacement = replacement.deref();
-        match_
-            .captures
-            .iter()
-            .find(|cap| cap.index == self.capture)
-            .map(|cap| edit::replace(&cap.node, replacement))
-    }
-}
-
-pub(crate) struct ReplaceBetween {
-    start: CaptureIndex,
-    end: CaptureIndex,
-}
-
-impl Rule for ReplaceBetween {
-    fn new(query: &Query, _config: &FormatConfig) -> Option<Self>
-    where
-        Self: Sized,
-    {
-        Some(Self {
-            start: query.capture_index_for_name("replace.start")?,
-            end: query.capture_index_for_name("replace.end")?,
-        })
-    }
-
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["replace.before"]
-    }
-
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
-        let replacement_text = query
-            .property_settings(match_.pattern_index)
-            .iter()
-            .find_map(|p| (p.key.deref() == "replacement").then(|| p.value.clone()))
-            .flatten()?;
-        let replacement = replacement_text.deref();
-        let start_byte = match_
-            .captures
-            .iter()
-            .find_map(|c| (c.index == self.start).then_some(c.node))?
-            .end_byte();
-        let end_byte = match_
-            .captures
-            .iter()
-            .find_map(|c| (c.index == self.end).then_some(c.node))?
-            .start_byte();
-        Some(edit::replace_range(start_byte, end_byte, replacement))
-    }
-}
-
-pub(super) struct IndentAnchored {
-    anchor: CaptureIndex,
-    anchored: CaptureIndex,
-}
-
-impl Rule for IndentAnchored {
-    fn new(query: &Query, _config: &FormatConfig) -> Option<Self>
-    where
-        Self: Sized,
-    {
-        Some(Self {
-            anchor: query.capture_index_for_name("indent.anchor")?,
-            anchored: query.capture_index_for_name("indent.to.anchor")?,
-        })
-    }
-
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["indent.anhor", "indent.to.anchor"]
-    }
-
-    fn edit(&mut self, _query: &Query, match_: &QueryMatch, _source: &str) -> Option<Change> {
-        let anchor = match_
-            .captures
-            .iter()
-            .find(|it| it.index == self.anchor)?
-            .node;
-        let anchored = match_
-            .captures
-            .iter()
-            .find(|it| it.index == self.anchored)?
-            .node;
-
-        let target_whitespace_width = anchor.start_position().column;
-        let existing_whitespace_width = anchored.start_position().column;
-
-        let start = anchored.start_byte() - existing_whitespace_width;
-        let end = anchored.start_byte();
-
-        let replacement = &" ".repeat(target_whitespace_width);
-
-        Some(edit::replace_range(start, end, replacement))
-    }
-}
-
-pub(super) struct Rewrite {
-    capture: CaptureIndex,
-}
-
-impl Rule for Rewrite {
-    fn new(query: &Query, _config: &config::FormatConfig) -> Option<Self>
-    where
-        Self: Sized,
-    {
-        Some(Self {
-            capture: query.capture_index_for_name("rewrite")?,
-        })
-    }
-
-    fn captures(&self) -> Vec<&'static str> {
-        vec!["rewrite"]
-    }
-
-    fn edit(&mut self, query: &Query, match_: &QueryMatch, source: &str) -> Option<Change> {
-        let to_replace = match_
-            .captures
-            .iter()
-            .find(|it| it.index == self.capture)?
-            .node;
-        let new_order = query
-            .general_predicates(match_.pattern_index)
-            .iter()
-            .find(|pred| pred.operator.deref() == "rewrite-to")
-            .map(|it| it.args.deref())?;
-        let captures: HashSet<CaptureIndex> = new_order
-            .iter()
-            .filter_map(|it| {
-                if let QueryPredicateArg::Capture(n) = *it {
-                    Some(n)
-                } else {
-                    None
+        for match_ in self
+            .cursor
+            .matches(&self.query, tree.root_node(), source.as_bytes())
+        {
+            dbg!(&match_);
+            for cap in match_.captures {
+                let mut rule = Rule::default();
+                if eq(cap.index, self.captures.align) {
+                    rule.align = Some(match_.pattern_index);
                 }
-            })
-            .collect();
-        let original_nodes: HashMap<CaptureIndex, &str> = match_
-            .captures
-            .iter()
-            .filter(|it| captures.contains(&it.index))
-            .map(|it| (it.index, &source[it.node.start_byte()..it.node.end_byte()]))
-            .collect();
-        let output: Vec<&str> = new_order
-            .iter()
-            .map(|item| match item {
-                QueryPredicateArg::Capture(n) => original_nodes.get(n).unwrap(),
-                QueryPredicateArg::String(s) => s.deref(),
-            })
-            .collect();
-        let output = output.join("");
-        Some(edit::replace_range(
-            to_replace.start_byte(),
-            to_replace.end_byte(),
-            &output,
-        ))
+                if let Some(string) = node_actions.get(&(match_.pattern_index, cap.index, "before"))
+                {
+                    rule.before = Some(string.clone());
+                }
+                if let Some(string) = node_actions.get(&(match_.pattern_index, cap.index, "after"))
+                {
+                    rule.after = Some(string.clone());
+                }
+                if let Some(string) =
+                    node_actions.get(&(match_.pattern_index, cap.index, "replace"))
+                {
+                    rule.replace = Some(string.clone());
+                }
+
+                if rule.is_empty() {
+                    continue;
+                }
+                if let Some(existing) = rules.get_mut(&cap.node.id()) {
+                    existing.merge(rule).expect("Rules shouldn't contradict");
+                } else {
+                    rules.insert(cap.node.id(), rule);
+                }
+            }
+        }
+        rules
     }
 }
