@@ -35,16 +35,20 @@
 ((gather_marks) @it
  (#after @it "   "))
 
-((list "=" @it)
- (#before @it " ")
- (#after @it " "))
+((list "LIST" @keyword "=" @eq)
+ (#after @keyword " ")
+ (#before @eq " ")
+ (#after @eq " "))
+
 
 ; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
-((list_value_def name: (_) . ")" @paren value: (_) @value)
- (#replace @paren "")
- (#after @value ")"))
+; BUG: this interferes with commas between value defs
+((list_value_def ")" @rparen . "=") @it
+ (#replace @rparen "")
+ (#after @it ")")
+ )
 
-((list_value_def "(" @open ")" @close)
+((list_value_def "(" @open ")" @close !value)
  (#after @open "")
  (#before @close ""))
 
@@ -54,4 +58,19 @@
 
 ((list_value_defs "," @it)
  (#before @it "")
+ (#after @it " "))
+
+((params "(" @left "," @comma ")" @right) @it
+ (#before @it "")
+
+ (#before @left "")
+ (#after  @left "")
+
+ (#before @comma "")
+ (#after  @comma " ")
+
+ (#before @right "")
+ (#after  @right ""))
+
+((divert "->" @it . (_))
  (#after @it " "))
