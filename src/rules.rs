@@ -4,7 +4,7 @@ use tree_sitter::{Node, Query, QueryCursor, QueryPredicateArg};
 
 use crate::{
     config,
-    edit::{replace, replace_between, Change},
+    edit::{insert_after, insert_before, replace, replace_between, Change},
 };
 
 type CaptureIndex = u32;
@@ -87,9 +87,15 @@ impl Rules {
             if let Some(rule) = rules.get(&item.node.id()) {
                 if let Some(ref text) = rule.before {
                     if let Some(prev_sibling) = item.prev_sibling {
-                        let var_name = &source[prev_sibling.end_byte()..item.node.start_byte()];
-                        if var_name != &**text {
+                        let existing = &source[prev_sibling.end_byte()..item.node.start_byte()];
+                        if existing != &**text {
                             edits.push(replace_between(&prev_sibling, &item.node, &text));
+                        }
+                    } else {
+                        let start = item.node.start_byte().saturating_sub(text.len());
+                        let existing = &source[start..item.node.start_byte()];
+                        if existing != &**text {
+                            edits.push(insert_before(&item.node, &text));
                         }
                     }
                 }
@@ -101,17 +107,40 @@ impl Rules {
                 }
                 if let Some(ref text) = rule.after {
                     if let Some(next_sibling) = item.next_sibling {
-                        let var_name = &source[item.node.end_byte()..next_sibling.start_byte()];
-                        if var_name != &**text {
+                        let existing = &source[item.node.end_byte()..next_sibling.start_byte()];
+                        if existing != &**text {
                             edits.push(replace_between(&item.node, &next_sibling, &text));
+                        }
+                    } else {
+                        let end = (item.node.end_byte() + text.len()).min(source.len());
+                        let existing = &source[item.node.end_byte()..end];
+                        if existing != &**text {
+                            edits.push(insert_after(&item.node, &text));
                         }
                     }
                 }
             }
         }
-        edits.sort_unstable_by_key(|it| it.range.start_byte);
-        dbg!(&edits);
-        edits
+        edits.sort_by_key(|it| it.range.start_byte);
+
+        // This merging can probably be done directly while building the edits.
+        let mut merged_edits = Vec::new();
+        let mut iter = edits.into_iter();
+        if let Some(mut accumulator) = iter.next() {
+            while let Some(edit) = iter.next() {
+                match accumulator.merge(edit) {
+                    Ok(()) => continue,
+                    Err(unmergable) => {
+                        merged_edits.push(accumulator);
+                        accumulator = unmergable;
+                    }
+                }
+            }
+            merged_edits.push(accumulator);
+            merged_edits
+        } else {
+            Vec::new()
+        }
     }
 
     fn rules<'cur, 'tree>(

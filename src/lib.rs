@@ -37,13 +37,21 @@ pub fn format(config: config::FormatConfig, mut source: String) -> String {
             std::fs::write("error.fmt", &source).expect("I should be able to write that file");
             panic!("Source can't be parsed. See log.dot.svg.\n{source}");
         }
+        eprintln!("{source}");
         for Change { range, text } in edits.iter().rev() {
             edit_count += 1;
+            eprintln!(
+                "{}:{} '{}' -> '{}'",
+                range.start_position.row,
+                range.start_position.column,
+                &source[range.start_byte..range.old_end_byte],
+                text
+            );
             source.replace_range(range.start_byte..range.old_end_byte, &text);
             tree.edit(range);
         }
 
-        // eprintln!("After round {round}:\n{source}");
+        eprintln!("==== Round {round} ends ====\n");
 
         tree = parser
             .parse(&source, Some(&tree))

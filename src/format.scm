@@ -28,25 +28,27 @@
  (#after @it " "))
 ; offset content after the last mark, for better visibility
 ((choice_marks) @it
- (#after @it "   "))
+ (#after @it " "))
 
 ((gather_mark) @it
  (#after @it " "))
 ((gather_marks) @it
- (#after @it "   "))
+ (#after @it " "))
 
 ((list "LIST" @keyword "=" @eq)
  (#after @keyword " ")
  (#before @eq " ")
  (#after @eq " "))
 
-
 ; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
-; BUG: this interferes with commas between value defs
-((list_value_def ")" @rparen . "=") @it
- (#replace @rparen "")
- (#after @it ")")
- )
+((list_value_def "(" @open name: (_) ")" @close value: (_) @value)
+ (#after @open "")
+ (#after @value ")")
+ (#replace @close ""))
+
+((list_value_def "(" @open value: (_) @value ")" @close)
+ (#after @open "")
+ (#before @close ""))
 
 ((list_value_def "(" @open ")" @close !value)
  (#after @open "")
@@ -74,3 +76,4 @@
 
 ((divert "->" @it . (_))
  (#after @it " "))
+
