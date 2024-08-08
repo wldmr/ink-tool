@@ -11,12 +11,10 @@
  (_)+ @align)
 
 ;;; Normalize Knot/Stitch marks
-((knot start_mark: _ @it)
- (#replace @it "===")
- (#after @it " "))
+((knot start_mark: _ @it @space.after)
+ (#replace @it "==="))
 
-((knot end_mark: _ @it)
- (#before @it " ")
+((knot end_mark: _ @it @space.before)
  (#replace @it "==="))
 
 ((knot !end_mark (_) @it .)
@@ -24,56 +22,46 @@
 
 ;;; Normalize Choices and gathers
 ; space afer each mark
-((choice_mark) @it
- (#after @it " "))
-; offset content after the last mark, for better visibility
-((choice_marks) @it
- (#after @it " "))
+[(choice_mark) (gather_mark)] @space.after
+[(choice) (gather)] @newline.after
 
-((gather_mark) @it
- (#after @it " "))
-((gather_marks) @it
- (#after @it " "))
-
-((list "LIST" @keyword "=" @eq)
- (#after @keyword " ")
- (#before @eq " ")
- (#after @eq " "))
+(list "LIST" @space.after name: (_) @space.after "=" @space.after)
+(external "EXTERNAL" @space.after (params) @nothing.before)
+ 
 
 ; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
-((list_value_def "(" @open name: (_) ")" @close value: (_) @value)
- (#after @open "")
- (#after @value ")")
- (#replace @close ""))
+; ((list_value_def "(" @open name: (_) ")" @close value: (_) @value)
+;  (#after @open "")
+;  (#after @value ")")
+;  (#replace @close ""))
 
-((list_value_def "(" @open value: (_) @value ")" @close)
- (#after @open "")
- (#before @close ""))
+(list_value_def "(" @nothing.after ")" @nothing.before)
+(list_value_def "=" @space.before @space.after)
+(list_value_defs "," @nothing.before @space.after)
 
-((list_value_def "(" @open ")" @close !value)
- (#after @open "")
- (#before @close ""))
+(params "("  @nothing.before @nothing.after
+        ","* @nothing.before @space.after
+        ")"  @nothing.before @nothing.after)
 
-((list_value_def "=" @it)
- (#before @it " ")
- (#after @it " "))
+(divert "->" @space.after)
 
-((list_value_defs "," @it)
- (#before @it "")
- (#after @it " "))
+(block_comment) @space.before @space.after
 
-((params "(" @left "," @comma ")" @right) @it
- (#before @it "")
+[(paragraph) (knot) (stitch) (code) (external) (global)] @newline.after
 
- (#before @left "")
- (#after  @left "")
+((_) @space.after . (line_comment) @newline.after)
+((_) @space.after . (block_comment))
+((block_comment) . (_) @space.before)
 
- (#before @comma "")
- (#after  @comma " ")
+; Lists stand alone, except a run of consecutive lists
+(list) @blankline.before @blankline.after
+((list) @newline.after . (list) @newline.before)
 
- (#before @right "")
- (#after  @right ""))
+((list) @space.after . (line_comment) @blankline.after)
 
-((divert "->" @it . (_))
- (#after @it " "))
+(eval "{" @nothing.after "}" @nothing.before)
+(binary op: _ @space.before @space.after)
+(unary op: _ @nothing.after)
+(conditional_text "{" @nothing.after ":" @nothing.before)
 
+(ink) @newline.after
