@@ -22,6 +22,7 @@ enum Output {
     Space,
     Newline,
     BlankLine,
+    ExistingWhitespace(String),
     Text(String),
 }
 
@@ -52,6 +53,25 @@ impl Output {
                 *self = Self::BlankLine;
                 None
             }
+
+            (Self::ExistingWhitespace(a), Self::ExistingWhitespace(b)) => {
+                if *a == b {
+                    // Two adjacent nodes reported the same whitespace as after and before respectively,
+                    // so we can absorb one;
+                    None
+                } else {
+                    // Not really sure how that could happen. Would this be a bug?
+                    Some(Self::ExistingWhitespace(b))
+                }
+            }
+
+            (Self::ExistingWhitespace(_), other @ Self::Text(_)) => Some(other),
+            (Self::Text(_), other @ Self::ExistingWhitespace(_)) => Some(other),
+
+            // all other rules clober existing whitespace
+            (Self::ExistingWhitespace(_), other @ _) => Some(other),
+            (_, Self::ExistingWhitespace(_)) => None,
+
             (_, other @ Self::Text(_)) | (Self::Text(_), other @ _) => Some(other),
         }
     }
@@ -70,6 +90,7 @@ impl ToString for Output {
             Output::Space => " ",
             Output::Newline => "\n",
             Output::BlankLine => "\n\n",
+            Output::ExistingWhitespace(ws) => ws,
             Output::Text(txt) => txt,
         }
         .to_owned()
@@ -182,6 +203,12 @@ impl Rules {
         let rule = rules.remove(&node.id()).unwrap_or_default();
         if let Some(output) = rule.before {
             outs.push(output);
+        } else if let Some(prev) = node.prev_sibling() {
+            let ws = source[prev.end_byte()..node.start_byte()].to_owned();
+            outs.push(Output::ExistingWhitespace(ws))
+        } else if let Some(parent) = node.parent() {
+            let ws = source[parent.start_byte()..node.start_byte()].to_owned();
+            outs.push(Output::ExistingWhitespace(ws))
         }
         if let Some(output) = rule.replace {
             outs.push(output);
@@ -195,6 +222,12 @@ impl Rules {
         }
         if let Some(output) = rule.after {
             outs.push(output);
+        } else if let Some(next) = node.next_sibling() {
+            let ws = source[node.end_byte()..next.start_byte()].to_owned();
+            outs.push(Output::ExistingWhitespace(ws))
+        } else if let Some(parent) = node.parent() {
+            let ws = source[node.end_byte()..parent.end_byte()].to_owned();
+            outs.push(Output::ExistingWhitespace(ws))
         }
     }
 

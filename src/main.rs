@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 
 use ink_fmt::{config::FormatConfig, format};
 
@@ -21,5 +21,8 @@ fn main() {
     assert!(!source.is_empty());
     let source = format(FormatConfig::default(), source);
 
-    println!("{}", source);
+    std::io::stdout()
+        .lock()
+        .write_all(source.as_bytes())
+        .expect("Writing to stdout should work");
 }
