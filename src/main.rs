@@ -19,10 +19,11 @@ fn main() {
     }
 
     assert!(!source.is_empty());
-    let source = format(FormatConfig::default(), source);
+
+    let output = format(FormatConfig::default(), source);
 
     std::io::stdout()
         .lock()
-        .write_all(source.as_bytes())
+        .write_all(output.as_bytes())
         .expect("Writing to stdout should work");
 }
