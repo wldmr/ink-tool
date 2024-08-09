@@ -1,5 +1,4 @@
 pub mod config;
-pub mod edit;
 pub mod rules;
 
 use tree_sitter::Parser;
