@@ -1,4 +1,7 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Write},
+};
 
 use tree_sitter::{Node, Point, Query, QueryCursor, QueryPredicateArg, TreeCursor};
 
@@ -30,13 +33,13 @@ enum Output {
 impl Debug for Output {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Output::Nothing => f.write_str("Nothing"),
-            Output::Antispace => f.write_str("Antispace"),
-            Output::Space => f.write_str("Space"),
-            Output::Newline => f.write_str("Newline"),
-            Output::BlankLine => f.write_str("BlankLine"),
+            Output::Nothing => f.write_char('⌧'),
+            Output::Antispace => f.write_char('⁀'),
+            Output::Space => f.write_char('␣'),
+            Output::Newline => f.write_char('⏎'),
+            Output::BlankLine => f.write_char('¶'),
             Output::ExistingWhitespace(sp) => {
-                f.write_str("Existing")?;
+                f.write_char('∃')?;
                 Debug::fmt(&sp, f)
             }
             Output::Text(txt) => f.write_fmt(format_args!("'{txt}'")),
@@ -67,7 +70,7 @@ impl Output {
             (Self::Newline, Self::BlankLine) => Ok(Self::BlankLine),
             (Self::Newline, Self::ExistingWhitespace(_)) => Ok(Self::Newline),
             (Self::Newline, Self::Text(_)) => Err((self, other)),
-            (Self::BlankLine, Self::Antispace) => Ok(Self::BlankLine),
+            (Self::BlankLine, Self::Antispace) => Ok(Self::Antispace),
             (Self::BlankLine, Self::Space) => Ok(Self::BlankLine),
             (Self::BlankLine, Self::Newline) => Ok(Self::BlankLine),
             (Self::BlankLine, Self::BlankLine) => Ok(Self::BlankLine),
@@ -142,7 +145,7 @@ impl Debug for Rule {
         if let Some(ref field) = self.replace {
             f.write_fmt(format_args!("•{:?}", field))?
         }
-        if let Some(ref field) = self.replace {
+        if let Some(ref field) = self.after {
             f.write_fmt(format_args!("→{:?}", field))?
         }
         Ok(())
@@ -310,9 +313,9 @@ impl Rules {
 
         // This could happen on init, speeds things up when these rules get re-used.
         for pattern_index in 1..self.query.pattern_count() {
-            for prop in self.query.property_settings(pattern_index) {
-                eprintln!("Found the query property {:?}", prop);
-            }
+            // for prop in self.query.property_settings(pattern_index) {
+            //     eprintln!("Found the query property {:?}", prop);
+            // }
             for prop in self.query.general_predicates(pattern_index) {
                 let op = &*prop.operator;
                 let args = &*prop.args;
@@ -366,11 +369,11 @@ impl Rules {
                 } else if cap_index == self.captures.blank_line_after {
                     rule.after = Some(Output::BlankLine);
                 } else if cap_index == self.captures.delete {
-                    eprintln!(
-                        "Delete requested for {:?} (id {}), overrides all other rules",
-                        cap,
-                        cap.node.id()
-                    );
+                    // eprintln!(
+                    //     "Delete requested for {:?} (id {}), overrides all other rules",
+                    //     cap,
+                    //     cap.node.id()
+                    // );
                     rule.replace = Some(Output::Nothing);
                     let _ = rules.insert(cap.node.id(), rule);
                     continue;
@@ -399,13 +402,13 @@ impl Rules {
                 }
 
                 if let Some(existing) = rules.get_mut(&cap.node.id()) {
-                    eprintln!(
-                        "Merging {:?} and {:?} for {:?} for node {}",
-                        existing,
-                        rule,
-                        cap,
-                        cap.node.id()
-                    );
+                    // eprintln!(
+                    //     "Merging {:?} and {:?} for {:?} for node {}",
+                    //     existing,
+                    //     rule,
+                    //     cap,
+                    //     cap.node.id()
+                    // );
                     existing.merge(rule);
                 } else {
                     rules.insert(cap.node.id(), rule);

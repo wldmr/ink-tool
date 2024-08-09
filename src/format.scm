@@ -1,6 +1,6 @@
 (ink
  [(content_block) (knot_block) (stitch_block)] @align
-) @align @no.space.before
+) @align @no.space.before @no.space.after
 
 (choice_block
  (choice (choice_marks) . (_) @align)
