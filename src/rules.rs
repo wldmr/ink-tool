@@ -13,12 +13,6 @@ type NodeId = usize;
 
 static QUERY: &str = include_str!("format.scm");
 
-pub struct Rules {
-    query: Query,
-    cursor: QueryCursor,
-    captures: CapIndex,
-}
-
 #[derive(PartialEq)]
 enum Output {
     Nothing,
@@ -92,6 +86,24 @@ impl Output {
             (Self::Text(_), Self::Text(_)) => Err((self, other)),
         }
     }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Output::Nothing => "",
+            Output::Antispace => "",
+            Output::Space => " ",
+            Output::Newline => "\n",
+            Output::BlankLine => "\n\n",
+            Output::ExistingWhitespace(ws) => ws,
+            Output::Text(txt) => txt,
+        }
+    }
+}
+
+impl ToString for Output {
+    fn to_string(&self) -> String {
+        self.as_str().to_owned()
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -106,21 +118,6 @@ impl Debug for Align {
             "{}|{}:{}",
             self.pattern, self.pos.row, self.pos.column
         ))
-    }
-}
-
-impl ToString for Output {
-    fn to_string(&self) -> String {
-        match self {
-            Output::Nothing => "",
-            Output::Antispace => "",
-            Output::Space => " ",
-            Output::Newline => "\n",
-            Output::BlankLine => "\n\n",
-            Output::ExistingWhitespace(ws) => ws,
-            Output::Text(txt) => txt,
-        }
-        .to_owned()
     }
 }
 
@@ -160,21 +157,124 @@ impl Rule {
             self.before = None;
             self.after = None;
         } else {
-            update(&mut self.align, other.align);
-            update(&mut self.before, other.before);
-            update(&mut self.after, other.after);
-            update(&mut self.replace, other.replace);
+            Self::update_option(&mut self.align, other.align);
+            Self::update_option(&mut self.before, other.before);
+            Self::update_option(&mut self.after, other.after);
+            Self::update_option(&mut self.replace, other.replace);
+        }
+    }
+
+    fn update_option<T: Debug + PartialEq>(old: &mut Option<T>, new: Option<T>) {
+        if new.is_none() {
+            return;
+        } else if old.as_ref().is_some() {
+            eprintln!("Warning: Updating Old {:?}, New {:?}", old, new);
+        }
+        *old = new;
+    }
+}
+
+type NodeRules = HashMap<NodeId, Rule>;
+
+#[derive(Debug)]
+pub struct FormattableOutput(Vec<Output>);
+
+impl FormattableOutput {
+    fn new(tree: &tree_sitter::Tree, source: &str, mut rules: NodeRules) -> Self {
+        let mut iter = tree.walk();
+        let mut out: Vec<Output> = Vec::new();
+        collect_outputs(&mut out, &mut rules, iter.node(), &mut iter, source);
+        Self(out)
+    }
+
+    pub fn normalize(&mut self) {
+        // This merging could be done directly while building the outputs,
+        // but taking it in steps will help with debugging.
+        let mut original = std::mem::take(&mut self.0).into_iter();
+
+        if let Some(mut accumulator) = original.next() {
+            while let Some(output) = original.next() {
+                match accumulator.merge(output) {
+                    Ok(merged) => accumulator = merged,
+                    Err((left, right)) => {
+                        self.0.push(left);
+                        accumulator = right;
+                    }
+                }
+            }
         }
     }
 }
 
-fn update<T: Debug + PartialEq>(old: &mut Option<T>, new: Option<T>) {
-    if new.is_none() {
-        return;
-    } else if old.as_ref().is_some() {
-        eprintln!("Warning: Updating Old {:?}, New {:?}", old, new);
+impl ToString for FormattableOutput {
+    fn to_string(&self) -> String {
+        let mut result = String::new();
+        for output in self.0.iter() {
+            result.push_str(output.as_str())
+        }
+        result
     }
-    *old = new;
+}
+
+/// Applies the appropriate rule from `rules` (if any) to the current node.
+/// If no rule applies, simply copies the input to the output for leaf nodes,
+/// including leading and trailing whitspace.
+///
+/// Recursively walk the children of this node.
+///
+/// `outs` will contain the collected output items, in the order that it should appear in the output.
+fn collect_outputs<'t>(
+    outs: &mut Vec<Output>,
+    rules: &mut NodeRules,
+    node: Node<'t>,
+    iter: &mut TreeCursor<'t>,
+    source: &str,
+) {
+    let rule = rules.remove(&node.id()).unwrap_or_default();
+
+    // dbg!(&node.id(), &node, &rule);
+
+    // TODO: We double up existing whitespace by adding it before and after. It probably makes sense to not do that.
+    // (unlike spaces added by rules, there's not much debugging value in duplicate existing whitespace).
+
+    if let Some(output) = rule.before {
+        outs.push(output);
+    } else if let Some(prev) = node.prev_sibling() {
+        let whitespace = source[prev.end_byte()..node.start_byte()].to_owned();
+        if whitespace.len() != 0 {
+            outs.push(Output::ExistingWhitespace(whitespace))
+        }
+    } else if let Some(parent) = node.parent() {
+        let whitespace = source[parent.start_byte()..node.start_byte()].to_owned();
+        if whitespace.len() != 0 {
+            outs.push(Output::ExistingWhitespace(whitespace))
+        }
+    }
+
+    if let Some(output) = rule.replace {
+        outs.push(output);
+    } else if node.child_count() == 0 {
+        outs.push(Output::Text(source[node.byte_range()].to_owned()))
+    } else {
+        let children: Vec<_> = node.children(iter).collect();
+        for child in children {
+            collect_outputs(outs, rules, child, iter, source);
+        }
+    }
+
+    if let Some(output) = rule.after {
+        outs.push(output);
+    } else if let Some(next) = node.next_sibling() {
+        let whitespace = source[node.end_byte()..next.start_byte()].to_owned();
+        if whitespace.len() != 0 {
+            outs.push(Output::ExistingWhitespace(whitespace))
+        }
+    } else if let Some(parent) = node.parent() {
+        let whitespace = source[node.end_byte()..parent.end_byte()].to_owned();
+        if whitespace.len() != 0 {
+            outs.push(Output::ExistingWhitespace(whitespace))
+        }
+    }
 }
 
 struct CapIndex {
@@ -190,7 +290,13 @@ struct CapIndex {
     delete: Option<CaptureIndex>,
 }
 
-impl Rules {
+pub struct FormatScanner {
+    query: Query,
+    cursor: QueryCursor,
+    captures: CapIndex,
+}
+
+impl FormatScanner {
     pub fn new(_config: config::FormatConfig) -> Self {
         let query = Query::new(&tree_sitter_ink::language(), QUERY).expect("query should be valid");
         let captures = CapIndex {
@@ -212,97 +318,7 @@ impl Rules {
         }
     }
 
-    pub fn output(&mut self, tree: &tree_sitter::Tree, source: &str) -> String {
-        let mut rules = self.rules(tree, source);
-        // dbg!(&rules);
-        let mut iter = tree.walk();
-        let mut out: Vec<Output> = Vec::new();
-        self.outputs(&mut out, &mut rules, iter.node(), &mut iter, source);
-
-        // dbg!(&out);
-
-        // This merging can probably be done directly while building the edits.
-        let mut merged = Vec::new();
-        let mut iter = out.into_iter();
-        // .skip_while(|it| !matches!(it, Output::Text(_)));
-
-        if let Some(mut accumulator) = iter.next() {
-            while let Some(edit) = iter.next() {
-                match accumulator.merge(edit) {
-                    Ok(merged) => accumulator = merged,
-                    Err((left, right)) => {
-                        merged.push(left);
-                        accumulator = right;
-                    }
-                }
-            }
-            merged.push(accumulator);
-        }
-        // dbg!(&merged);
-        merged
-            .into_iter()
-            .map(|it| it.to_string())
-            .collect::<Vec<String>>()
-            .join("")
-    }
-
-    fn outputs<'t>(
-        &mut self,
-        outs: &mut Vec<Output>,
-        rules: &mut HashMap<NodeId, Rule>,
-        node: Node<'t>,
-        iter: &mut TreeCursor<'t>,
-        source: &str,
-    ) {
-        let rule = rules.remove(&node.id()).unwrap_or_default();
-
-        // dbg!(&node.id(), &node, &rule);
-
-        if let Some(output) = rule.before {
-            outs.push(output);
-        } else if let Some(prev) = node.prev_sibling() {
-            let ws = source[prev.end_byte()..node.start_byte()].to_owned();
-            if ws.len() != 0 {
-                outs.push(Output::ExistingWhitespace(ws))
-            }
-        } else if let Some(parent) = node.parent() {
-            let ws = source[parent.start_byte()..node.start_byte()].to_owned();
-            if ws.len() != 0 {
-                outs.push(Output::ExistingWhitespace(ws))
-            }
-        }
-
-        if let Some(output) = rule.replace {
-            outs.push(output);
-        } else if node.child_count() == 0 {
-            outs.push(Output::Text(source[node.byte_range()].to_owned()))
-        } else {
-            let collect: Vec<_> = node.children(iter).collect();
-            for child in collect {
-                self.outputs(outs, rules, child, iter, source);
-            }
-        }
-
-        if let Some(output) = rule.after {
-            outs.push(output);
-        } else if let Some(next) = node.next_sibling() {
-            let ws = source[node.end_byte()..next.start_byte()].to_owned();
-            if ws.len() != 0 {
-                outs.push(Output::ExistingWhitespace(ws))
-            }
-        } else if let Some(parent) = node.parent() {
-            let ws = source[node.end_byte()..parent.end_byte()].to_owned();
-            if ws.len() != 0 {
-                outs.push(Output::ExistingWhitespace(ws))
-            }
-        }
-    }
-
-    fn rules<'cur, 'tree>(
-        &mut self,
-        tree: &tree_sitter::Tree,
-        source: &'tree str,
-    ) -> HashMap<NodeId, Rule> {
+    pub fn scan(&mut self, tree: &tree_sitter::Tree, source: &str) -> FormattableOutput {
         let mut rules: HashMap<NodeId, Rule> = HashMap::new();
 
         let mut node_actions: HashMap<(PatternIndex, CaptureIndex, &str), Box<str>> =
@@ -415,6 +431,7 @@ impl Rules {
                 }
             }
         }
-        rules
+
+        FormattableOutput::new(tree, source, rules)
     }
 }
