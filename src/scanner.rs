@@ -100,7 +100,8 @@ impl FormatScanner {
                 let cap_index = Some(cap.index);
                 if cap_index == self.captures.align {
                     rule.align = Some(Align {
-                        pattern: match_.pattern_index,
+                        pattern_id: match_.pattern_index,
+                        match_id: match_.id(),
                         pos: cap.node.start_position(),
                     });
                 } else if cap_index == self.captures.no_space_before {
@@ -171,7 +172,7 @@ impl FormatScanner {
         let mut out: Vec<FormatItem> = Vec::new();
         collect_outputs(&mut out, &mut rules, iter.node(), &mut iter, source);
 
-        Formatter(out)
+        Formatter::new(out)
     }
 }
 
@@ -208,6 +209,10 @@ fn collect_outputs<'t>(
         if whitespace.len() != 0 {
             outs.push(FormatItem::ExistingWhitespace(whitespace))
         }
+    }
+
+    if let Some(align) = rule.align {
+        outs.push(FormatItem::Align(align));
     }
 
     if let Some(output) = rule.replace {

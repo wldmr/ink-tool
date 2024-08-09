@@ -2,10 +2,11 @@ use std::fmt::{Debug, Write};
 
 use tree_sitter::Point;
 
-use super::PatternIndex;
+use super::{MatchIndex, PatternIndex};
 
 #[derive(PartialEq)]
 pub(crate) enum FormatItem {
+    Align(Align),
     Nothing,
     Antispace,
     Space,
@@ -18,6 +19,7 @@ pub(crate) enum FormatItem {
 impl Debug for FormatItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FormatItem::Align(it) => Debug::fmt(&it, f),
             FormatItem::Nothing => f.write_char('⌧'),
             FormatItem::Antispace => f.write_char('⁀'),
             FormatItem::Space => f.write_char('␣'),
@@ -25,9 +27,22 @@ impl Debug for FormatItem {
             FormatItem::BlankLine => f.write_char('¶'),
             FormatItem::ExistingWhitespace(sp) => {
                 f.write_char('∃')?;
-                Debug::fmt(&sp, f)
+                for c in sp.chars() {
+                    match c {
+                        '\n' => f.write_char('⏎')?,
+                        '\t' => f.write_char('»')?,
+                        ' ' => f.write_char('␣')?,
+                        it if it.is_control() => f.write_char('␦')?,
+                        _ => f.write_char(c)?,
+                    };
+                }
+                Ok(())
             }
-            FormatItem::Text(txt) => f.write_fmt(format_args!("'{txt}'")),
+            FormatItem::Text(txt) => {
+                f.write_char('\'')?;
+                f.write_str(txt)?;
+                f.write_char('\'')
+            }
         }
     }
 }
@@ -35,8 +50,14 @@ impl Debug for FormatItem {
 impl FormatItem {
     pub fn merge(self, other: FormatItem) -> Result<FormatItem, (FormatItem, FormatItem)> {
         match (&self, &other) {
+            // Alignments never get collapsed, unless they refer to the same position
+            (Self::Align(left), Self::Align(right)) if left == right => Ok(self),
+            (Self::Align(..), _) | (_, Self::Align(..)) => Err((self, other)),
+
+            // Nothings always gets collapsed
             (Self::Nothing, _) => Ok(other),
             (_, Self::Nothing) => Ok(self),
+
             (Self::Antispace, Self::Antispace) => Ok(Self::Antispace),
             (Self::Antispace, Self::Space) => Ok(Self::Antispace),
             (Self::Antispace, Self::Newline) => Ok(Self::Antispace),
@@ -80,6 +101,7 @@ impl FormatItem {
 
     pub fn as_str(&self) -> &str {
         match self {
+            FormatItem::Align(..) => "", // Should they print themselves?
             FormatItem::Nothing => "",
             FormatItem::Antispace => "",
             FormatItem::Space => " ",
@@ -96,17 +118,19 @@ impl ToString for FormatItem {
         self.as_str().to_owned()
     }
 }
+
 #[derive(PartialEq, Eq)]
 pub(crate) struct Align {
-    pub(crate) pattern: PatternIndex,
+    pub(crate) pattern_id: PatternIndex,
+    pub(crate) match_id: MatchIndex,
     pub(crate) pos: Point,
 }
 
 impl Debug for Align {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "{}|{}:{}",
-            self.pattern, self.pos.row, self.pos.column
+            "{},{}|{}:{}",
+            self.pattern_id, self.match_id, self.pos.row, self.pos.column
         ))
     }
 }

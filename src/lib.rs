@@ -10,6 +10,7 @@ use tree_sitter::{Parser, Query};
 
 pub(crate) type CaptureIndex = u32;
 pub(crate) type PatternIndex = usize;
+pub(crate) type MatchIndex = u32;
 pub(crate) type NodeId = usize;
 
 use crate::scanner::FormatScanner;
@@ -36,8 +37,8 @@ pub fn format(_config: config::FormatConfig, source: String) -> String {
 
     let mut output = scanner.scan(&tree, &source);
 
-    // dbg!(&output);
+    dbg!(&output);
     output.normalize();
-    // dbg!(&output);
+    dbg!(&output);
     output.to_string()
 }

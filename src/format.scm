@@ -33,7 +33,11 @@
 ;;; Normalize Choices and gathers
 ; space afer each mark
 [(choice_mark) (gather_mark)] @space.after
-[(choice) (gather)] @newline.after
+(choice) @newline.after
+
+; just leaving the eol as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
+; To get around this, we replace it by a formatting newline right away.
+(gather eol: (_) @delete) @newline.after
 
 (list "LIST" @space.after name: (_) @space.after "=" @space.after)
 (external "EXTERNAL" @space.after (params) @no.space.before)
