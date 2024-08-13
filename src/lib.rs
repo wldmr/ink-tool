@@ -37,8 +37,6 @@ pub fn format(_config: config::FormatConfig, source: String) -> String {
 
     let mut output = scanner.scan(&tree, &source);
 
-    dbg!(&output);
     output.normalize();
-    dbg!(&output);
     output.to_string()
 }

@@ -1,20 +1,19 @@
-use crate::{config, node_rule::NodeRules};
+use crate::{config, format_item::Align, node_rule::NodeRules};
 
 use tree_sitter::{Node, QueryPredicateArg, TreeCursor};
 
 use std::collections::HashMap;
 
 use super::{
-    format_item::{Align, FormatItem},
-    formatter::Formatter,
-    node_rule::NodeRule,
-    CaptureIndex, NodeId, PatternIndex,
+    format_item::FormatItem, formatter::Formatter, node_rule::NodeRule, CaptureIndex, NodeId,
+    PatternIndex,
 };
 
 use tree_sitter::{Query, QueryCursor};
 
 struct CapIndex {
     align: Option<CaptureIndex>,
+    aligned: Option<CaptureIndex>,
     no_space_before: Option<CaptureIndex>,
     no_space_after: Option<CaptureIndex>,
     newline_before: Option<CaptureIndex>,
@@ -36,6 +35,7 @@ impl FormatScanner {
     pub fn new(query: Query, _config: config::FormatConfig) -> Self {
         let captures = CapIndex {
             align: query.capture_index_for_name("align"),
+            aligned: query.capture_index_for_name("aligned"),
             no_space_before: query.capture_index_for_name("no.space.before"),
             no_space_after: query.capture_index_for_name("no.space.after"),
             newline_before: query.capture_index_for_name("newline.before"),
@@ -99,11 +99,10 @@ impl FormatScanner {
                 let mut rule = NodeRule::default();
                 let cap_index = Some(cap.index);
                 if cap_index == self.captures.align {
-                    rule.align = Some(Align {
-                        pattern_id: match_.pattern_index,
-                        match_id: match_.id(),
-                        pos: cap.node.start_position(),
-                    });
+                    // dbg!(&match_.id(), &match_.captures);
+                    rule.align_self = true;
+                } else if cap_index == self.captures.aligned {
+                    rule.align_children = true;
                 } else if cap_index == self.captures.no_space_before {
                     rule.before = Some(FormatItem::Antispace);
                 } else if cap_index == self.captures.no_space_after {
@@ -172,7 +171,7 @@ impl FormatScanner {
         let mut out: Vec<FormatItem> = Vec::new();
         collect_outputs(&mut out, &mut rules, iter.node(), &mut iter, source);
 
-        Formatter::new(out)
+        Formatter::new_from_items(out)
     }
 }
 
@@ -211,8 +210,12 @@ fn collect_outputs<'t>(
         }
     }
 
-    if let Some(align) = rule.align {
-        outs.push(FormatItem::Align(align));
+    if rule.align_self {
+        outs.push(FormatItem::Align(Align::new()));
+    }
+
+    if rule.align_children {
+        outs.push(FormatItem::AlignmentStart);
     }
 
     if let Some(output) = rule.replace {
@@ -224,6 +227,10 @@ fn collect_outputs<'t>(
         for child in children {
             collect_outputs(outs, rules, child, iter, source);
         }
+    }
+
+    if rule.align_children {
+        outs.push(FormatItem::AlignmentEnd);
     }
 
     if let Some(output) = rule.after {

@@ -1,12 +1,12 @@
 use std::fmt::{Debug, Write};
 
-use tree_sitter::Point;
-
-use super::{MatchIndex, PatternIndex};
+use crate::formatter::columns::ColumnId;
 
 #[derive(PartialEq)]
 pub(crate) enum FormatItem {
     Align(Align),
+    AlignmentStart,
+    AlignmentEnd,
     Nothing,
     Antispace,
     Space,
@@ -19,7 +19,9 @@ pub(crate) enum FormatItem {
 impl Debug for FormatItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FormatItem::Align(it) => Debug::fmt(&it, f),
+            FormatItem::Align(align) => Debug::fmt(&align, f),
+            FormatItem::AlignmentStart => f.write_str("{|"),
+            FormatItem::AlignmentEnd => f.write_str("|}"),
             FormatItem::Nothing => f.write_char('⌧'),
             FormatItem::Antispace => f.write_char('⁀'),
             FormatItem::Space => f.write_char('␣'),
@@ -50,9 +52,30 @@ impl Debug for FormatItem {
 impl FormatItem {
     pub fn merge(self, other: FormatItem) -> Result<FormatItem, (FormatItem, FormatItem)> {
         match (&self, &other) {
-            // Alignments never get collapsed, unless they refer to the same position
-            (Self::Align(left), Self::Align(right)) if left == right => Ok(self),
-            (Self::Align(..), _) | (_, Self::Align(..)) => Err((self, other)),
+            // Alignments never get collapsed
+            (Self::Align { .. }, _) | (_, Self::Align { .. }) => Err((self, other)),
+
+            // Alignment Starts distribute to the right through spaces (including linebreaks)
+            (
+                Self::AlignmentStart,
+                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
+            ) => Err((other, Self::AlignmentStart)),
+            (
+                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
+                Self::AlignmentStart,
+            ) => Err((self, Self::AlignmentStart)),
+            (Self::AlignmentStart, _) | (_, Self::AlignmentStart) => Err((self, other)),
+
+            // Alignment Ends distribute to the left through spaces (incl. linebreaks)
+            (
+                Self::AlignmentEnd,
+                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
+            ) => Err((Self::AlignmentEnd, other)),
+            (
+                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
+                Self::AlignmentEnd,
+            ) => Err((Self::AlignmentEnd, self)),
+            (Self::AlignmentEnd, _) | (_, Self::AlignmentEnd) => Err((self, other)),
 
             // Nothings always gets collapsed
             (Self::Nothing, _) => Ok(other),
@@ -101,7 +124,9 @@ impl FormatItem {
 
     pub fn as_str(&self) -> &str {
         match self {
-            FormatItem::Align(..) => "", // Should they print themselves?
+            FormatItem::Align { .. } => "",   // Should they print themselves?
+            FormatItem::AlignmentStart => "", // Should they print themselves?
+            FormatItem::AlignmentEnd => "",   // Should they print themselves?
             FormatItem::Nothing => "",
             FormatItem::Antispace => "",
             FormatItem::Space => " ",
@@ -119,18 +144,32 @@ impl ToString for FormatItem {
     }
 }
 
-#[derive(PartialEq, Eq)]
-pub(crate) struct Align {
-    pub(crate) pattern_id: PatternIndex,
-    pub(crate) match_id: MatchIndex,
-    pub(crate) pos: Point,
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub struct Align {
+    pub column: Option<ColumnId>,
+    pub is_virtual: bool,
+}
+
+impl Align {
+    pub fn new() -> Self {
+        Self {
+            column: None,
+            is_virtual: false,
+        }
+    }
 }
 
 impl Debug for Align {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{},{}|{}:{}",
-            self.pattern_id, self.match_id, self.pos.row, self.pos.column
-        ))
+        if self.is_virtual {
+            f.write_char('¦')?;
+        } else {
+            f.write_char('|')?;
+        }
+        if let Some(id) = self.column {
+            Debug::fmt(&id, f)
+        } else {
+            f.write_char('?')
+        }
     }
 }
