@@ -1,4 +1,4 @@
-use crate::{config, format_item::Align, node_rule::NodeRules};
+use crate::{config, node_rule::NodeRules};
 
 use tree_sitter::{Node, QueryPredicateArg, TreeCursor};
 
@@ -12,8 +12,8 @@ use super::{
 use tree_sitter::{Query, QueryCursor};
 
 struct CapIndex {
-    align: Option<CaptureIndex>,
-    aligned: Option<CaptureIndex>,
+    indent_anchor: Option<CaptureIndex>,
+    indent: Option<CaptureIndex>,
     no_space_before: Option<CaptureIndex>,
     no_space_after: Option<CaptureIndex>,
     newline_before: Option<CaptureIndex>,
@@ -34,8 +34,8 @@ pub struct FormatScanner {
 impl FormatScanner {
     pub fn new(query: Query, _config: config::FormatConfig) -> Self {
         let captures = CapIndex {
-            align: query.capture_index_for_name("align"),
-            aligned: query.capture_index_for_name("aligned"),
+            indent_anchor: query.capture_index_for_name("indent.anchor"),
+            indent: query.capture_index_for_name("indent"),
             no_space_before: query.capture_index_for_name("no.space.before"),
             no_space_after: query.capture_index_for_name("no.space.after"),
             newline_before: query.capture_index_for_name("newline.before"),
@@ -98,11 +98,11 @@ impl FormatScanner {
             for cap in match_.captures {
                 let mut rule = NodeRule::default();
                 let cap_index = Some(cap.index);
-                if cap_index == self.captures.align {
+                if cap_index == self.captures.indent_anchor {
                     // dbg!(&match_.id(), &match_.captures);
-                    rule.align_self = true;
-                } else if cap_index == self.captures.aligned {
-                    rule.align_children = true;
+                    rule.indent_anchor = true;
+                } else if cap_index == self.captures.indent {
+                    rule.indent_children = true;
                 } else if cap_index == self.captures.no_space_before {
                     rule.before = Some(FormatItem::Antispace);
                 } else if cap_index == self.captures.no_space_after {
@@ -210,12 +210,12 @@ fn collect_outputs<'t>(
         }
     }
 
-    if rule.align_self {
-        outs.push(FormatItem::Align(Align::new()));
+    if rule.indent_anchor {
+        outs.push(FormatItem::Indent { is_anchor: true });
     }
 
-    if rule.align_children {
-        outs.push(FormatItem::AlignmentStart);
+    if rule.indent_children {
+        outs.push(FormatItem::Indent { is_anchor: false });
     }
 
     if let Some(output) = rule.replace {
@@ -229,8 +229,8 @@ fn collect_outputs<'t>(
         }
     }
 
-    if rule.align_children {
-        outs.push(FormatItem::AlignmentEnd);
+    if rule.indent_children {
+        outs.push(FormatItem::Dedent);
     }
 
     if let Some(output) = rule.after {

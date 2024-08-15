@@ -1,17 +1,29 @@
-(ink
- [_ (_)] @align
-) @aligned @no.space.before @no.space.after
+(ink)  @no.space.before @newline.after
 
 ((_) . [(content_block) (knot_block) (stitch_block)] @blankline.before)
 ([(content_block) (knot_block) (stitch_block)] @blankline.after . (_))
 
+(content_block (_)* @newline.after)
+(knot_block (_)* @newline.after)
+(stitch_block (_)* @newline.after)
+
 (choice_block
- (choice (choice_marks) . (_) @align)
- (_)+ @align) @aligned
+ (choice (choice_marks) . (_) @indent.anchor)
+) @indent
 
 (gather_block
- (gather !eol) . (_) @align
- (_)+ @align) @aligned
+ (gather !eol !label) . (_) @indent.anchor
+) @indent
+
+(gather_block
+ (gather label: (_) @indent.anchor)
+) @indent
+
+(label) @space.before @space.after
+
+; just leaving the eol as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
+; To get around this, we replace it by a formatting newline right away.
+(eol) @delete @newline.after
 
 ;;; Normalize Knot/Stitch marks
 ((knot start_mark: _ @it @space.after)
@@ -22,9 +34,9 @@
 ; ensure that knots end in a mark
 ((knot !function end_mark: _ @it @space.before)
  (#replace @it "==="))
-((knot !function !end_mark (_) @it .)
+((knot !function !end_mark (_) @it @space.after .)
 ; TODO: find a way to insert a formatting space instead of a text space here.
- (#append @it " ==="))
+ (#append @it "==="))
 
 ;; Functions should look a little differently
 ((knot start_mark: _ @start @space.after
@@ -39,14 +51,10 @@
 
 [(paragraph) (choice)] @newline.after
 
-; just leaving the eol as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
-; To get around this, we replace it by a formatting newline right away.
-(gather eol: (_) @delete) @newline.after
-
 (list "LIST" @space.after name: (_) @space.after "=" @space.after)
 (external "EXTERNAL" @space.after (params) @no.space.before)
  
-(list_value_defs (list_value_def) @align ",") @aligned
+(list_value_defs (list_value_def) @indent.anchor ",") @indent
 
 ; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
 ((list_value_def name: (_) . ")" @delete value: (_) @value)
@@ -66,13 +74,25 @@
 ; Lists stand alone, except a run of consecutive lists
 ((_) . (list) @blankline.before)
 ((list) @blankline.after . (_))
-
 ((list) @newline.after . (list) @newline.before)
 
-((_) @space.after . (line_comment) @blankline.after)
+(line_comment) @newline.after @space.before
 
 (eval "{" @no.space.after "}" @no.space.before)
+
 (binary op: _ @space.before @space.after)
-(unary op: _ @no.space.after)
+
+(unary op: ["not"] @space.after)
+(unary op: ["-" "!"] @no.space.after)
+
 (conditional_text "{" @no.space.after ":" @no.space.before)
+
+(condition "{" @no.space.after "}" @no.space.before) @space.before @space.after
+
+(cond_block "{" @space.after "}" @newline.before @newline.after) @indent
+
+(cond_arm condition: (_) @space.before @no.space.after) @indent
+
+(cond_arm ":" @newline.after)
+(cond_arm ":" @space.after !eol)
 

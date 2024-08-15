@@ -1,12 +1,9 @@
 use std::fmt::{Debug, Write};
 
-use crate::formatter::columns::ColumnId;
-
 #[derive(PartialEq)]
 pub(crate) enum FormatItem {
-    Align(Align),
-    AlignmentStart,
-    AlignmentEnd,
+    Indent { is_anchor: bool },
+    Dedent,
     Nothing,
     Antispace,
     Space,
@@ -19,9 +16,9 @@ pub(crate) enum FormatItem {
 impl Debug for FormatItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FormatItem::Align(align) => Debug::fmt(&align, f),
-            FormatItem::AlignmentStart => f.write_str("{|"),
-            FormatItem::AlignmentEnd => f.write_str("|}"),
+            FormatItem::Indent { is_anchor } if *is_anchor => f.write_str("|=>"),
+            FormatItem::Indent { .. } => f.write_str("|->"),
+            FormatItem::Dedent => f.write_str("<-|"),
             FormatItem::Nothing => f.write_char('⌧'),
             FormatItem::Antispace => f.write_char('⁀'),
             FormatItem::Space => f.write_char('␣'),
@@ -51,31 +48,11 @@ impl Debug for FormatItem {
 
 impl FormatItem {
     pub fn merge(self, other: FormatItem) -> Result<FormatItem, (FormatItem, FormatItem)> {
-        match (&self, &other) {
-            // Alignments never get collapsed
-            (Self::Align { .. }, _) | (_, Self::Align { .. }) => Err((self, other)),
-
-            // Alignment Starts distribute to the right through spaces (including linebreaks)
-            (
-                Self::AlignmentStart,
-                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
-            ) => Err((other, Self::AlignmentStart)),
-            (
-                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
-                Self::AlignmentStart,
-            ) => Err((self, Self::AlignmentStart)),
-            (Self::AlignmentStart, _) | (_, Self::AlignmentStart) => Err((self, other)),
-
-            // Alignment Ends distribute to the left through spaces (incl. linebreaks)
-            (
-                Self::AlignmentEnd,
-                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
-            ) => Err((Self::AlignmentEnd, other)),
-            (
-                Self::Antispace | Self::Space | Self::Newline | Self::BlankLine,
-                Self::AlignmentEnd,
-            ) => Err((Self::AlignmentEnd, self)),
-            (Self::AlignmentEnd, _) | (_, Self::AlignmentEnd) => Err((self, other)),
+        // eprint!("{:?} + {:?}", &self, &other);
+        let result = match (&self, &other) {
+            // Indents never get collapsed
+            (Self::Indent { .. }, _) | (_, Self::Indent { .. }) => Err((self, other)),
+            (Self::Dedent, _) | (_, Self::Dedent) => Err((self, other)),
 
             // Nothings always gets collapsed
             (Self::Nothing, _) => Ok(other),
@@ -119,14 +96,18 @@ impl FormatItem {
             (Self::Text(_), Self::BlankLine) => Err((self, other)),
             (Self::Text(_), Self::ExistingWhitespace(_)) => Err((self, other)),
             (Self::Text(_), Self::Text(_)) => Err((self, other)),
-        }
+        };
+        // match result {
+        //     Ok(ref it) => eprintln!(" = {:?}", it),
+        //     Err(ref it) => eprintln!(" = {:?}", it),
+        // }
+        result
     }
 
     pub fn as_str(&self) -> &str {
         match self {
-            FormatItem::Align { .. } => "",   // Should they print themselves?
-            FormatItem::AlignmentStart => "", // Should they print themselves?
-            FormatItem::AlignmentEnd => "",   // Should they print themselves?
+            FormatItem::Indent { .. } => "", // Should they print themselves?
+            FormatItem::Dedent => "",
             FormatItem::Nothing => "",
             FormatItem::Antispace => "",
             FormatItem::Space => " ",
@@ -141,35 +122,5 @@ impl FormatItem {
 impl ToString for FormatItem {
     fn to_string(&self) -> String {
         self.as_str().to_owned()
-    }
-}
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub struct Align {
-    pub column: Option<ColumnId>,
-    pub is_virtual: bool,
-}
-
-impl Align {
-    pub fn new() -> Self {
-        Self {
-            column: None,
-            is_virtual: false,
-        }
-    }
-}
-
-impl Debug for Align {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_virtual {
-            f.write_char('¦')?;
-        } else {
-            f.write_char('|')?;
-        }
-        if let Some(id) = self.column {
-            Debug::fmt(&id, f)
-        } else {
-            f.write_char('?')
-        }
     }
 }

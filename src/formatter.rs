@@ -1,10 +1,5 @@
 use std::mem;
 
-use crate::{
-    format_item::Align,
-    formatter::columns::{ColumnId, ColumnWidths},
-};
-
 use super::format_item::FormatItem;
 
 #[derive(Debug)]
@@ -12,6 +7,7 @@ pub struct Formatter(Vec<FormatItem>);
 
 /// Abstract ID of a column
 pub mod columns;
+pub mod nested_columns;
 
 impl Formatter {
     pub(super) fn new_from_items(items: Vec<FormatItem>) -> Self {
@@ -19,7 +15,7 @@ impl Formatter {
     }
 
     pub fn normalize(&mut self) {
-        // dbg!("before normalization", &self.0);
+        dbg!("before normalization", &self.0);
 
         // This merging could be done directly while building the outputs,
         // but taking it in steps will help with debugging.
@@ -37,82 +33,43 @@ impl Formatter {
             }
         }
 
-        // dbg!("spaces collapsed", &self.0);
+        dbg!("spaces collapsed", &self.0);
 
-        // Insert leading aligns on linebreak
         // columns in consecutive lines share the same width
         let mut original = mem::take(&mut self.0).into_iter();
-        let mut widths = ColumnWidths::new(); // keep track of all columns ever seen
 
-        let mut virtual_columns: Vec<Vec<ColumnId>> = Vec::new();
-        let mut columns: Vec<ColumnId> = Vec::new(); // on top of the virtual columns
-        let mut column_index = 0; // again, on top
-        let mut text_width = 0;
-        while let Some(mut item) = original.next() {
-            // dbg!(&item);
-            if let FormatItem::Align(Align { ref mut column, .. }) = item {
-                assert_eq!(*column, None);
-                let column_id = if column_index < columns.len() {
-                    *columns
-                        .get(column_index)
-                        .expect("we just checked that it exists")
+        let mut indent_widths: Vec<usize> = vec![0];
+        let mut current_column = 0;
+        while let Some(item) = original.next() {
+            eprintln!(
+                "Item: {:?}, Column: {:?}. Indents = {:?}",
+                &item, &current_column, &indent_widths
+            );
+            if let FormatItem::Indent { is_anchor } = item {
+                if is_anchor {
+                    // an anchor supercedes the previous indent
+                    eprintln!("replace {current_column}");
+                    let top_indent = indent_widths.last_mut().expect("this mustn't be empty");
+                    *top_indent = current_column;
                 } else {
-                    let new_column_id = widths.new_column();
-                    columns.push(new_column_id);
-                    new_column_id
-                };
-                widths.width_at_least(&column_id, text_width);
-                *column = Some(column_id);
-                text_width = 0;
-                column_index += 1;
-                self.0.push(item);
-            } else if let FormatItem::AlignmentStart = item {
-                virtual_columns.push(mem::take(&mut columns));
-                column_index = 0;
-                text_width = 0;
-                self.0.push(item);
-            } else if let FormatItem::AlignmentEnd = item {
-                columns = virtual_columns
-                    .pop()
-                    .expect("Pushs and Pops should be balanced");
-                // columns = Vec::new();
-                column_index = 0;
-                text_width = 0;
-                self.0.push(item);
-            } else if is_linebreak(&item) {
-                column_index = 0;
-                text_width = 0;
-                self.0.push(item);
-                for column_id in virtual_columns.iter().flatten() {
-                    self.0.push(FormatItem::Align(Align {
-                        column: Some(*column_id),
-                        is_virtual: true,
-                    }));
+                    eprintln!("add {current_column} + 2");
+                    // just a bog-standard indent. IDEA: Make the indent configurable? Not sure Ink needs this, but it seems like the thing to do.
+                    indent_widths.push(current_column + 2);
                 }
+            } else if let FormatItem::Dedent = item {
+                current_column = indent_widths.pop().expect("we don't make mistakes");
+            } else if is_linebreak(&item) {
+                current_column = *indent_widths.last().expect("we _don't_ make mistakes");
+                let pad = " ".repeat(current_column);
+                let pad = FormatItem::Text(pad);
+                self.0.push(item);
+                self.0.push(pad);
             } else {
-                // add item width to current column, remember if bigger than current max.
-                text_width += width(&item);
+                current_column += width(&item);
                 self.0.push(item);
             }
-            // dbg!(&virtual_columns, &columns, &column_index, &text_width);
-            // eprintln!("\n-------------------------\n");
         }
-
-        // dbg!("widths calculated, columns assigned", &widths, &self.0);
-
-        text_width = 0;
-        for item in self.0.iter_mut() {
-            if let FormatItem::Align(align) = item {
-                let column_id = align.column.expect("We should have filled this");
-                let max_column_width = widths.width(&column_id);
-                let pad_width = max_column_width - text_width; // BUG: textwidh sometimes > max_column_width >:-(
-                *item = FormatItem::Text(" ".repeat(pad_width));
-            } else if is_linebreak(item) {
-                text_width = 0;
-            } else {
-                text_width += width(&item);
-            }
-        }
+        dbg!(&current_column, &indent_widths);
 
         // dbg!("padding added", &self.0);
     }
@@ -120,9 +77,8 @@ impl Formatter {
 
 fn is_linebreak(item: &FormatItem) -> bool {
     match item {
-        FormatItem::Align { .. } => false,
-        FormatItem::AlignmentStart => false,
-        FormatItem::AlignmentEnd => false,
+        FormatItem::Indent { .. } => false,
+        FormatItem::Dedent => false,
         FormatItem::Nothing => false,
         FormatItem::Antispace => false,
         FormatItem::Space => false,
@@ -132,33 +88,21 @@ fn is_linebreak(item: &FormatItem) -> bool {
     }
 }
 
-fn is_whitespace(item: &FormatItem) -> bool {
-    match item {
-        FormatItem::Align { .. } => false,
-        FormatItem::AlignmentStart => false,
-        FormatItem::AlignmentEnd => false,
-        FormatItem::Nothing => true,
-        FormatItem::Antispace => true,
-        FormatItem::Space => true,
-        FormatItem::Newline => true,
-        FormatItem::BlankLine => true,
-        FormatItem::ExistingWhitespace(it) | FormatItem::Text(it) => {
-            it.chars().all(char::is_whitespace)
-        }
-    }
-}
-
 fn width(item: &FormatItem) -> usize {
     match item {
-        FormatItem::Align { .. } => 0,
-        FormatItem::AlignmentStart => 0,
-        FormatItem::AlignmentEnd => 0,
+        FormatItem::Indent { .. } => 0,
+        FormatItem::Dedent => 0,
         FormatItem::Nothing => 0,
         FormatItem::Antispace => 0,
         FormatItem::Space => 1,
         FormatItem::Newline => 0,
         FormatItem::BlankLine => 0,
-        FormatItem::ExistingWhitespace(it) | FormatItem::Text(it) => it.len(), // we pretend byte == char here; hope that doesn't byte us …
+        FormatItem::ExistingWhitespace(it) => it
+            .split('\n')
+            .rev()
+            .find_map(|it| Some(it.len()))
+            .unwrap_or_default(),
+        FormatItem::Text(it) => it.len(),
     }
 }
 
