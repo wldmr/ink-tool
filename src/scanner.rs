@@ -1,19 +1,23 @@
-use crate::{config, node_rule::NodeRules};
+use crate::{
+    config,
+    format_item::Space,
+    formatter::InkFmt,
+    node_rule::{IndentType, NodeRules},
+};
 
 use tree_sitter::{Node, QueryPredicateArg, TreeCursor};
 
 use std::collections::HashMap;
 
-use super::{
-    format_item::FormatItem, formatter::Formatter, node_rule::NodeRule, CaptureIndex, NodeId,
-    PatternIndex,
-};
+use super::{format_item::FormatItem, node_rule::NodeRule, CaptureIndex, NodeId, PatternIndex};
 
 use tree_sitter::{Query, QueryCursor};
 
 struct CapIndex {
     indent_anchor: Option<CaptureIndex>,
     indent: Option<CaptureIndex>,
+    dedent: Option<CaptureIndex>,
+    leaf: Option<CaptureIndex>,
     no_space_before: Option<CaptureIndex>,
     no_space_after: Option<CaptureIndex>,
     newline_before: Option<CaptureIndex>,
@@ -36,6 +40,8 @@ impl FormatScanner {
         let captures = CapIndex {
             indent_anchor: query.capture_index_for_name("indent.anchor"),
             indent: query.capture_index_for_name("indent"),
+            dedent: query.capture_index_for_name("dedent"),
+            leaf: query.capture_index_for_name("leaf"),
             no_space_before: query.capture_index_for_name("no.space.before"),
             no_space_after: query.capture_index_for_name("no.space.after"),
             newline_before: query.capture_index_for_name("newline.before"),
@@ -53,7 +59,7 @@ impl FormatScanner {
         }
     }
 
-    pub fn scan(&mut self, tree: &tree_sitter::Tree, source: &str) -> Formatter {
+    pub fn scan(&mut self, tree: &tree_sitter::Tree, source: &str, formatter: &mut impl InkFmt) {
         let mut rules: HashMap<NodeId, NodeRule> = HashMap::new();
 
         let mut node_actions: HashMap<(PatternIndex, CaptureIndex, &str), Box<str>> =
@@ -95,30 +101,47 @@ impl FormatScanner {
             .cursor
             .matches(&self.query, tree.root_node(), source.as_bytes())
         {
+            let space = || {
+                FormatItem::Space(Space {
+                    repeats: 1,
+                    linebreak: false,
+                    existing: false,
+                })
+            };
+            let linebreak = |n| {
+                FormatItem::Space(Space {
+                    repeats: n,
+                    linebreak: true,
+                    existing: false,
+                })
+            };
             for cap in match_.captures {
                 let mut rule = NodeRule::default();
                 let cap_index = Some(cap.index);
-                if cap_index == self.captures.indent_anchor {
-                    // dbg!(&match_.id(), &match_.captures);
-                    rule.indent_anchor = true;
-                } else if cap_index == self.captures.indent {
-                    rule.indent_children = true;
+                if cap_index == self.captures.indent {
+                    rule.indent = IndentType::Indent;
+                } else if cap_index == self.captures.indent_anchor {
+                    rule.indent = IndentType::Anchor;
+                } else if cap_index == self.captures.dedent {
+                    rule.dedent = true;
+                } else if cap_index == self.captures.leaf {
+                    rule.is_leaf = true;
                 } else if cap_index == self.captures.no_space_before {
                     rule.before = Some(FormatItem::Antispace);
                 } else if cap_index == self.captures.no_space_after {
                     rule.after = Some(FormatItem::Antispace);
                 } else if cap_index == self.captures.space_before {
-                    rule.before = Some(FormatItem::Space);
+                    rule.before = Some(space());
                 } else if cap_index == self.captures.space_after {
-                    rule.after = Some(FormatItem::Space);
+                    rule.after = Some(space());
                 } else if cap_index == self.captures.newline_before {
-                    rule.before = Some(FormatItem::Newline);
+                    rule.before = Some(linebreak(1));
                 } else if cap_index == self.captures.newline_after {
-                    rule.after = Some(FormatItem::Newline);
+                    rule.after = Some(linebreak(1));
                 } else if cap_index == self.captures.blank_line_before {
-                    rule.before = Some(FormatItem::BlankLine);
+                    rule.before = Some(linebreak(2));
                 } else if cap_index == self.captures.blank_line_after {
-                    rule.after = Some(FormatItem::BlankLine);
+                    rule.after = Some(linebreak(2));
                 } else if cap_index == self.captures.delete {
                     // eprintln!(
                     //     "Delete requested for {:?} (id {}), overrides all other rules",
@@ -168,10 +191,42 @@ impl FormatScanner {
         }
 
         let mut iter = tree.walk();
-        let mut out: Vec<FormatItem> = Vec::new();
-        collect_outputs(&mut out, &mut rules, iter.node(), &mut iter, source);
 
-        Formatter::new_from_items(out)
+        collect_outputs(formatter, &mut rules, iter.node(), &mut iter, source);
+    }
+}
+
+fn collect_whitespace(outs: &mut impl InkFmt, whitespace: &str) {
+    let newlines = whitespace
+        .chars()
+        .inspect(|it| assert!(it.is_whitespace()))
+        .filter(|it| *it == '\n')
+        .count();
+    // We make a bunch of decisions about admissable existing whitespace here.
+    // These can _only_ be overriden by rules mandating wider spacing.
+    match newlines {
+        // Existing spaces and linebreaks are kept, but capped at 1.
+        0 if whitespace.len() >= 1 => outs.space(1),
+        0 => {}
+        1 => outs.line(1),
+        // At most one blank line allowed
+        _ => outs.line(2),
+    }
+}
+
+// IDEA: Get rid of format_item and use something like Vec<FnMut(impl InkFmt)>
+fn item_to_inkfmt(outs: &mut impl InkFmt, item: FormatItem) {
+    match item {
+        FormatItem::Nothing => {}
+        FormatItem::Antispace => outs.antispace(),
+        FormatItem::Space(it) => {
+            if it.linebreak {
+                outs.line(it.repeats)
+            } else {
+                outs.space(it.repeats)
+            }
+        }
+        FormatItem::Text(it) => outs.text(&it),
     }
 }
 
@@ -183,7 +238,7 @@ impl FormatScanner {
 ///
 /// `outs` will contain the collected output items, in the order that it should appear in the output.
 fn collect_outputs<'t>(
-    outs: &mut Vec<FormatItem>,
+    outs: &mut impl InkFmt,
     rules: &mut NodeRules,
     node: Node<'t>,
     iter: &mut TreeCursor<'t>,
@@ -197,31 +252,25 @@ fn collect_outputs<'t>(
     // (unlike spaces added by rules, there's not much debugging value in duplicate existing whitespace).
 
     if let Some(output) = rule.before {
-        outs.push(output);
+        item_to_inkfmt(outs, output);
     } else if let Some(prev) = node.prev_sibling() {
         let whitespace = source[prev.end_byte()..node.start_byte()].to_owned();
-        if whitespace.len() != 0 {
-            outs.push(FormatItem::ExistingWhitespace(whitespace))
-        }
+        collect_whitespace(outs, &whitespace);
     } else if let Some(parent) = node.parent() {
         let whitespace = source[parent.start_byte()..node.start_byte()].to_owned();
-        if whitespace.len() != 0 {
-            outs.push(FormatItem::ExistingWhitespace(whitespace))
-        }
+        collect_whitespace(outs, &whitespace);
     }
 
-    if rule.indent_anchor {
-        outs.push(FormatItem::Indent { is_anchor: true });
-    }
-
-    if rule.indent_children {
-        outs.push(FormatItem::Indent { is_anchor: false });
+    match rule.indent {
+        IndentType::Indent => outs.indent(),
+        IndentType::Anchor => outs.align_indent_to_current_column(),
+        IndentType::None => (),
     }
 
     if let Some(output) = rule.replace {
-        outs.push(output);
-    } else if node.child_count() == 0 {
-        outs.push(FormatItem::Text(source[node.byte_range()].to_owned()))
+        item_to_inkfmt(outs, output);
+    } else if rule.is_leaf || node.child_count() == 0 {
+        outs.text(&source[node.byte_range()].to_owned());
     } else {
         let children: Vec<_> = node.children(iter).collect();
         for child in children {
@@ -229,21 +278,17 @@ fn collect_outputs<'t>(
         }
     }
 
-    if rule.indent_children {
-        outs.push(FormatItem::Dedent);
+    if rule.dedent {
+        outs.dedent();
     }
 
     if let Some(output) = rule.after {
-        outs.push(output);
+        item_to_inkfmt(outs, output);
     } else if let Some(next) = node.next_sibling() {
         let whitespace = source[node.end_byte()..next.start_byte()].to_owned();
-        if whitespace.len() != 0 {
-            outs.push(FormatItem::ExistingWhitespace(whitespace))
-        }
+        collect_whitespace(outs, &whitespace);
     } else if let Some(parent) = node.parent() {
         let whitespace = source[node.end_byte()..parent.end_byte()].to_owned();
-        if whitespace.len() != 0 {
-            outs.push(FormatItem::ExistingWhitespace(whitespace))
-        }
+        collect_whitespace(outs, &whitespace);
     }
 }
