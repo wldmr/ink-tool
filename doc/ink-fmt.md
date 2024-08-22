@@ -88,7 +88,8 @@ both become:
 
 ## Formatting Structure Elements (Knots, Stitches)
 
-Knots and stitches are flush left, along with all top level content inside it.
+Knots and stitches are set flush left, along with all top level content inside it.
+They are also set apart by a blank line.
 
 ```ink input
           = stitch_outside_knot
@@ -102,10 +103,15 @@ Knots and stitches are flush left, along with all top level content inside it.
 
 ```ink output
 = stitch_outside_knot
+
 some text
+
 === knot
+
 = stitch_inside_knot
+
 === another_knot
+
 ~ code
 text
 ```
