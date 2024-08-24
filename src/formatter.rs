@@ -1,13 +1,14 @@
 use std::fmt::{Debug, Write};
 
+use crate::util::constrained_value::Constrained;
+
 pub trait InkFmt {
     fn indent(&mut self);
     fn dedent(&mut self);
     fn align_indent_to_current_column(&mut self);
 
-    fn space(&mut self, max_repeats: usize);
-    fn antispace(&mut self);
-    fn line(&mut self, max_repeats: usize);
+    fn space(&mut self, repeats: impl Into<Constrained>);
+    fn line(&mut self, repeats: impl Into<Constrained>);
 
     fn text(&mut self, s: &str);
 }
@@ -25,16 +26,12 @@ impl<T: InkFmt> InkFmt for &mut T {
         (*self).align_indent_to_current_column()
     }
 
-    fn space(&mut self, max_repeats: usize) {
-        (*self).space(max_repeats)
+    fn space(&mut self, repeats: impl Into<Constrained>) {
+        (*self).space(repeats)
     }
 
-    fn antispace(&mut self) {
-        (*self).antispace()
-    }
-
-    fn line(&mut self, max_repeats: usize) {
-        (*self).line(max_repeats)
+    fn line(&mut self, repeats: impl Into<Constrained>) {
+        (*self).line(repeats)
     }
 
     fn text(&mut self, s: &str) {
@@ -47,26 +44,12 @@ pub struct InkFormatter<T> {
     pub downstream: T,
     buffer_item: Option<Bufferable>,
     indents: Vec<usize>,
-    relative_indent: isize,
+    relative_indent: i8,
     current_column: usize,
-    aligment: Option<Alignment>,
-}
-
-impl<T: Default> Default for InkFormatter<T> {
-    fn default() -> Self {
-        Self {
-            downstream: T::default(),
-            buffer_item: None,
-            indents: vec![0],
-            relative_indent: 0,
-            current_column: 0,
-            aligment: None,
-        }
-    }
+    alignment: Option<Alignment>,
 }
 
 enum Bufferable {
-    Antispace,
     Space(BufData),
     Line(BufData),
     Text(String),
@@ -75,15 +58,14 @@ enum Bufferable {
 impl std::fmt::Debug for Bufferable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Bufferable::Antispace => f.write_char('⁀'),
             Bufferable::Space(it) => {
-                for _ in 0..it.repeats {
+                for _ in 0..it.repeats.value() {
                     f.write_char('␣')?;
                 }
                 Ok(())
             }
             Bufferable::Line(it) => {
-                for _ in 0..it.repeats {
+                for _ in 0..it.repeats.value() {
                     f.write_char('⏎')?;
                 }
                 Ok(())
@@ -95,7 +77,7 @@ impl std::fmt::Debug for Bufferable {
 
 #[derive(Debug)]
 struct BufData {
-    repeats: usize,
+    repeats: Constrained,
 }
 
 impl<T: InkFmt> InkFmt for InkFormatter<T> {
@@ -109,19 +91,19 @@ impl<T: InkFmt> InkFmt for InkFormatter<T> {
 
     fn align_indent_to_current_column(&mut self) {
         self.relative_indent += 1;
-        self.aligment = Some(Alignment::Tentative);
+        self.alignment = Some(Alignment::Tentative);
     }
 
-    fn space(&mut self, repeats: usize) {
-        self.handle_next_bufferable(Bufferable::Space(BufData { repeats }))
+    fn space(&mut self, repeats: impl Into<Constrained>) {
+        self.handle_next_bufferable(Bufferable::Space(BufData {
+            repeats: repeats.into(),
+        }))
     }
 
-    fn antispace(&mut self) {
-        self.handle_next_bufferable(Bufferable::Antispace)
-    }
-
-    fn line(&mut self, repeats: usize) {
-        self.handle_next_bufferable(Bufferable::Line(BufData { repeats }))
+    fn line(&mut self, repeats: impl Into<Constrained>) {
+        self.handle_next_bufferable(Bufferable::Line(BufData {
+            repeats: repeats.into(),
+        }))
     }
 
     fn text(&mut self, s: &str) {
@@ -143,7 +125,7 @@ impl<T: InkFmt> InkFormatter<T> {
             indents: vec![0],
             relative_indent: 0,
             current_column: 0,
-            aligment: None,
+            alignment: None,
         }
     }
 
@@ -155,54 +137,42 @@ impl<T: InkFmt> InkFormatter<T> {
 
         let next_is_text = matches!(next, Bufferable::Text(_));
 
-        let mut buf = self
+        let buf = self
             .buffer_item
-            .as_mut()
+            .take()
             .expect("We just checked that it's filled");
 
         use Bufferable::*;
-        match (&mut buf, &next) {
-            // Antispace eats any space
-            (Antispace, Antispace) => {}
-            (Antispace, Space(_)) => {}
-            (Space(_), Antispace) => *buf = next,
-
-            // Antispace is replaced by any non-space
-            (Antispace, _) => *buf = next,
-
-            (Space(a), Space(b)) => {
-                if a.repeats < b.repeats {
-                    a.repeats = b.repeats;
-                }
+        self.buffer_item = Some(match (buf, next) {
+            (Space(mut a), Space(b)) => {
+                a.repeats.combine_mut(b.repeats);
+                Space(a)
             }
-            (Space { .. }, Line { .. }) => {
+            (Space { .. }, it @ Line(_)) => {
                 // spaces at line ends are dropped
-                self.buffer_item = Some(next)
+                it
             }
 
-            (Line { .. }, Space { .. } | Antispace) => {
-                // spaces at line starts are dropped
+            (it @ Line(_), Space(_)) => it,
+
+            (Line(mut a), Line(b)) => {
+                a.repeats.combine_mut(b.repeats);
+                Line(a)
             }
 
-            (Line(a), Line(b)) => {
-                if a.repeats < b.repeats {
-                    a.repeats = b.repeats;
-                }
-            }
-
-            (Space(sp), Text(_)) => {
+            (Space(sp), text @ Text(_)) => {
                 let spaces = sp.repeats;
                 self.downstream.space(spaces);
-                self.current_column += spaces;
-                *buf = next;
+                self.current_column += spaces.value() as usize;
+                text
             }
 
-            (Line(line), Text(_)) => {
+            (Line(line), text @ Text(_)) => {
                 // new text after a line break. This is where we must handle indentation, and only here!
                 let newlines = line.repeats;
                 self.downstream.line(newlines);
                 if self.relative_indent > 0 {
-                    let next_indent = match self.aligment {
+                    let next_indent = match self.alignment {
                         Some(Alignment::Determined(column)) => column,
                         Some(Alignment::Tentative) => {
                             eprintln!("Tentative alignment at newline. Is this a bug?");
@@ -219,22 +189,25 @@ impl<T: InkFmt> InkFormatter<T> {
                     }
                 }
                 self.relative_indent = 0;
-                self.aligment = None;
+                self.alignment = None;
                 let column_for_next_line = *self.indents.last().expect("this shouldn't be empty");
                 self.downstream.space(column_for_next_line);
                 self.current_column = column_for_next_line;
 
-                *buf = next;
+                text
             }
-            (Text(l), Text(r)) => l.push_str(r),
-            (Text(t), _) => {
+            (Text(mut l), Text(r)) => {
+                l.push_str(&r);
+                Text(l)
+            }
+            (Text(t), other @ _) => {
                 self.current_column += t.len();
-                self.downstream.text(t);
-                *buf = next;
+                self.downstream.text(&t);
+                other
             }
-        }
-        if next_is_text && matches!(self.aligment, Some(Alignment::Tentative)) {
-            self.aligment = Some(Alignment::Determined(self.current_column));
+        });
+        if next_is_text && matches!(self.alignment, Some(Alignment::Tentative)) {
+            self.alignment = Some(Alignment::Determined(self.current_column));
         }
     }
 }
@@ -279,26 +252,18 @@ impl<T: InkFmt> InkFmt for Tracing<T> {
         self.trace.push('|');
     }
 
-    fn space(&mut self, max_repeats: usize) {
-        self.downstream.space(max_repeats);
+    fn space(&mut self, repeats: impl Into<Constrained>) {
+        let repeats: Constrained = repeats.into();
         self.sep_space();
-        for _ in 0..max_repeats {
-            self.trace.push('␣');
-        }
+        self.trace.push_str(&format!("␣{:?}", repeats));
+        self.downstream.space(repeats);
     }
 
-    fn antispace(&mut self) {
-        self.downstream.antispace();
+    fn line(&mut self, repeats: impl Into<Constrained>) {
+        let repeats: Constrained = repeats.into();
+        self.downstream.line(repeats);
         self.sep_space();
-        self.trace.push('⁀');
-    }
-
-    fn line(&mut self, max_repeats: usize) {
-        self.downstream.line(max_repeats);
-        self.sep_space();
-        for _ in 0..max_repeats {
-            self.trace.push('⏎');
-        }
+        self.trace.push_str(&format!("⏎{:?}", repeats));
         self.trace.push('\n');
     }
 
@@ -318,16 +283,16 @@ impl InkFmt for &mut String {
 
     fn align_indent_to_current_column(&mut self) {}
 
-    fn space(&mut self, max_repeats: usize) {
-        for _ in 0..max_repeats {
+    fn space(&mut self, repeats: impl Into<Constrained>) {
+        let repeats: Constrained = repeats.into();
+        for _ in 0..repeats.value() {
             self.push(' ')
         }
     }
 
-    fn antispace(&mut self) {}
-
-    fn line(&mut self, max_repeats: usize) {
-        for _ in 0..max_repeats {
+    fn line(&mut self, repeats: impl Into<Constrained>) {
+        let repeats: Constrained = repeats.into();
+        for _ in 0..repeats.value() {
             self.push('\n')
         }
     }

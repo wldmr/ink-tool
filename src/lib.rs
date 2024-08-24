@@ -4,6 +4,7 @@ mod format_item;
 mod formatter;
 mod node_rule;
 mod scanner;
+mod util;
 
 use tree_sitter::{Parser, Query};
 

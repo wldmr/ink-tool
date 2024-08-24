@@ -1,13 +1,14 @@
-(ink)  @no.space.before @newline.after
+(ink) @no.blankline.before @newline.after
 
 ; Idea: Separate consecutive knot blocks by two blank lines
 ([(content_block) (knot_block) (stitch_block)] . [(content_block) (knot_block) (stitch_block)] @blankline.before)
 
 ; Text is a tricky beast; it actuall has individual children (such as '<' '-' etc, to allow for parsing syntax elements)⭲
-(text) @leaf 
+(text) @take.as-is @space.before.if-present @space.after.if-present
 
 ; Choice blocks indent their contents and align them to the first thing after the marks indent.
 (choice_block (choice (choice_marks) . (_) @indent.anchor)) @dedent
+
 
 ; Gathers behave a bit strangely, because they can be empty.
 ; If they're not empty (that is, have a label or content on the same line)
@@ -15,7 +16,7 @@
 ; A completely naked gather is intended to stand out as a separation line. Indenting would look weird, so we don't.
 (gather_block (gather label: (_) @indent.anchor)) @dedent
 (gather_block (gather !label !eol) . (_) @indent.anchor) @dedent
-(gather_block (gather !label eol: (_)))
+(gather_block (gather eol: (_) @delete) @newline.after)
 
 ; Idea for a different style, basically a more 'extreme' version of the above:
 ; Only, gathers with content on the same line get indentation, all the other ones don't
@@ -27,19 +28,19 @@
 
 ; Just leaving the eol as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
 ; To get around this, we replace it by a formatting newline right away.
-(eol) @delete @newline.after
+(eol) @delete
 
 ;;; Normalize Knot/Stitch marks
-((knot start_mark: _ @it @space.after) @blankline.after
+((knot !function start_mark: _ @it @space.after) @blankline.after
  (#replace @it "==="))
 
 ; ensure that knots end in a mark
-((knot !function end_mark: _ @it @space.before)
- (#replace @it "==="))
+((knot !function end_mark: _ @space.before)
+ (#replace @space.before "==="))
 
-((knot !function !end_mark (_) @it @space.after .)
+((knot !function !end_mark (_) @space.after .)
 ; TODO: find a way to insert a formatting space instead of a text space here.
- (#append @it "==="))
+ (#append @space.after "==="))
 
 [(knot) (stitch)] @blankline.after
 
@@ -53,18 +54,16 @@
 
 (global keyword: _ @space.after)
 
-((_) . (global)) @blankline.before
-((global) . (_)) @blankline.after
-((global) . (global)) @newline.before @newline.after
-
 "=" @space.before @space.after
 
 ;;; Normalize Choices and gathers
 [(choice_mark) (gather_mark)] @space.after
 
+(choice choice_only: (_) @space.before.if-present @space.after.if-present)
+
 ; [(paragraph) (choice)] @newline.after
 
-(list "LIST" @space.after name: (_) @space.after "=" @space.after)
+(list "LIST" @space.after "=" @space.before @space.after)
 (external "EXTERNAL" @space.after (params) @no.space.before)
 
 ; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
@@ -80,12 +79,8 @@
         ")" @no.space.before
 ) @no.space.before
 
-(divert "->" @space.after)
-
-; Lists stand alone, except a run of consecutive lists
-((_) . (list)    @blankline.before)
-((list) . (_)    @newline.before)
-((list) . (list) @newline.before)
+"->" @space.after
+"<-" @space.after
 
 (line_comment) @newline.after @space.before
 
@@ -96,11 +91,14 @@
 (unary op: "not" @space.after)
 (unary op: ["-" "!"] @no.space.after)
 
-(conditional_text "{" @no.space.after ":" @no.space.before)
+(conditional_text "{" @no.space.after ":" @no.space.before) @space.before.if-present @space.after.if-present
+
+(alternatives mark: _ @no.space.before) @space.before.if-present @space.after.if-present
 
 (condition "{" @no.space.after "}" @no.space.before) @space.before @space.after
 
-(cond_block "{" @space.after "}" @newline.before)
+(cond_block "{" @space.after "}" @newline.before) @space.before.if-present @space.after.if-present
+
 (cond_arm condition: (_) @indent @space.before @no.space.after) @dedent
 
 (cond_arm ":" @newline.after)

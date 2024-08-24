@@ -1,21 +1,28 @@
 use std::fmt::{Debug, Formatter, Write};
 
+use crate::util::constrained_value::Constrained;
+
 #[derive(PartialEq)]
 pub struct Space {
-    pub repeats: usize,
-    pub linebreak: bool,
+    pub repeats: Constrained,
     pub existing: bool,
 }
 
 #[derive(PartialEq)]
 pub enum FormatItem {
+    /// Replace something that existist with nothing (i.e. delete)
     Nothing,
+    /// Collapse all adjacent spaces
     Antispace,
-    Space(Space),
+    /// Collapse all adjacent blank lines
+    Antiblank,
+    Space(Constrained),
+    Line(Constrained),
+    // IDEA: Softline?
     Text(String),
 }
 
-fn repeat_char(f: &mut Formatter<'_>, c: char, repeats: usize) -> std::fmt::Result {
+fn repeat_char(f: &mut Formatter<'_>, c: char, repeats: u8) -> std::fmt::Result {
     for _ in 0..repeats {
         f.write_char(c)?;
     }
@@ -26,17 +33,9 @@ impl Debug for FormatItem {
         match self {
             FormatItem::Nothing => f.write_char('⌧'),
             FormatItem::Antispace => f.write_char('⁀'),
-            FormatItem::Space(Space {
-                repeats,
-                existing,
-                linebreak,
-            }) => {
-                if *existing {
-                    f.write_char('∃')?;
-                }
-                let c = if *linebreak { '⏎' } else { '␣' };
-                repeat_char(f, c, *repeats)
-            }
+            FormatItem::Antiblank => f.write_char('⮌'), // sort of the rounded opposite of return
+            FormatItem::Space(it) => repeat_char(f, '␣', it.value()),
+            FormatItem::Line(it) => repeat_char(f, '⏎', it.value()),
             FormatItem::Text(txt) => {
                 f.write_char('\'')?;
                 f.write_str(txt)?;

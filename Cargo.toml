@@ -9,6 +9,8 @@ tree-sitter-ink = { path = "../tree-sitter-ink/", version = '24.6.18'}
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
+quickcheck = "1.0.3"
+quickcheck_macros = "1.0.0"
 
 [build-dependencies]
 cc="*"

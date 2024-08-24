@@ -1,8 +1,8 @@
 use crate::{
     config,
-    format_item::Space,
     formatter::InkFmt,
     node_rule::{IndentType, NodeRules},
+    util::constrained_value::Constrained,
 };
 
 use tree_sitter::{Node, QueryPredicateArg, TreeCursor};
@@ -17,15 +17,20 @@ struct CapIndex {
     indent_anchor: Option<CaptureIndex>,
     indent: Option<CaptureIndex>,
     dedent: Option<CaptureIndex>,
-    leaf: Option<CaptureIndex>,
+    take_asis: Option<CaptureIndex>,
     no_space_before: Option<CaptureIndex>,
     no_space_after: Option<CaptureIndex>,
     newline_before: Option<CaptureIndex>,
     newline_after: Option<CaptureIndex>,
     space_before: Option<CaptureIndex>,
     space_after: Option<CaptureIndex>,
+    space_before_ifpresent: Option<CaptureIndex>,
+    space_after_ifpresent: Option<CaptureIndex>,
     blank_line_before: Option<CaptureIndex>,
     blank_line_after: Option<CaptureIndex>,
+    no_blank_line_before: Option<CaptureIndex>,
+    no_blank_line_after: Option<CaptureIndex>,
+
     delete: Option<CaptureIndex>,
 }
 
@@ -41,15 +46,19 @@ impl FormatScanner {
             indent_anchor: query.capture_index_for_name("indent.anchor"),
             indent: query.capture_index_for_name("indent"),
             dedent: query.capture_index_for_name("dedent"),
-            leaf: query.capture_index_for_name("leaf"),
+            take_asis: query.capture_index_for_name("take.as-is"),
             no_space_before: query.capture_index_for_name("no.space.before"),
             no_space_after: query.capture_index_for_name("no.space.after"),
             newline_before: query.capture_index_for_name("newline.before"),
             newline_after: query.capture_index_for_name("newline.after"),
             space_before: query.capture_index_for_name("space.before"),
             space_after: query.capture_index_for_name("space.after"),
+            space_before_ifpresent: query.capture_index_for_name("space.before.if-present"),
+            space_after_ifpresent: query.capture_index_for_name("space.after.if-present"),
             blank_line_before: query.capture_index_for_name("blankline.before"),
             blank_line_after: query.capture_index_for_name("blankline.after"),
+            no_blank_line_before: query.capture_index_for_name("no.blankline.before"),
+            no_blank_line_after: query.capture_index_for_name("no.blankline.after"),
             delete: query.capture_index_for_name("delete"),
         };
         Self {
@@ -101,62 +110,58 @@ impl FormatScanner {
             .cursor
             .matches(&self.query, tree.root_node(), source.as_bytes())
         {
-            let space = || {
-                FormatItem::Space(Space {
-                    repeats: 1,
-                    linebreak: false,
-                    existing: false,
-                })
-            };
-            let linebreak = |n| {
-                FormatItem::Space(Space {
-                    repeats: n,
-                    linebreak: true,
-                    existing: false,
-                })
-            };
             for cap in match_.captures {
-                let mut rule = NodeRule::default();
+                let rule = rules.entry(cap.node.id()).or_default();
+                // Deleting completely clobers all other intentions related to that node.
+                // Let's handle that first;
+                if let Some(FormatItem::Nothing) = rule.replace {
+                    continue;
+                }
                 let cap_index = Some(cap.index);
-                if cap_index == self.captures.indent {
+                if cap_index == self.captures.delete {
+                    *rule = NodeRule::default();
+                    rule.replace = Some(FormatItem::Nothing);
+                    continue;
+                } else if cap_index == self.captures.indent {
                     rule.indent = IndentType::Indent;
                 } else if cap_index == self.captures.indent_anchor {
                     rule.indent = IndentType::Anchor;
                 } else if cap_index == self.captures.dedent {
                     rule.dedent = true;
-                } else if cap_index == self.captures.leaf {
-                    rule.is_leaf = true;
+                } else if cap_index == self.captures.take_asis {
+                    rule.take_asis = true;
                 } else if cap_index == self.captures.no_space_before {
-                    rule.before = Some(FormatItem::Antispace);
+                    rule.before.push(FormatItem::Antispace);
                 } else if cap_index == self.captures.no_space_after {
-                    rule.after = Some(FormatItem::Antispace);
+                    rule.after.push(FormatItem::Antispace);
                 } else if cap_index == self.captures.space_before {
-                    rule.before = Some(space());
+                    rule.before
+                        .push(FormatItem::Space(Constrained::between(1, 1)));
                 } else if cap_index == self.captures.space_after {
-                    rule.after = Some(space());
+                    rule.after
+                        .push(FormatItem::Space(Constrained::between(1, 1)));
+                } else if cap_index == self.captures.space_before_ifpresent {
+                    rule.before.push(FormatItem::Space(Constrained::at_most(1)));
+                } else if cap_index == self.captures.space_after_ifpresent {
+                    rule.after.push(FormatItem::Space(Constrained::at_most(1)));
                 } else if cap_index == self.captures.newline_before {
-                    rule.before = Some(linebreak(1));
+                    rule.before.push(FormatItem::Line(Constrained::at_least(1)));
                 } else if cap_index == self.captures.newline_after {
-                    rule.after = Some(linebreak(1));
+                    rule.after.push(FormatItem::Line(Constrained::at_least(1)));
                 } else if cap_index == self.captures.blank_line_before {
-                    rule.before = Some(linebreak(2));
+                    rule.before.push(FormatItem::Line(Constrained::at_least(2)));
                 } else if cap_index == self.captures.blank_line_after {
-                    rule.after = Some(linebreak(2));
-                } else if cap_index == self.captures.delete {
-                    // eprintln!(
-                    //     "Delete requested for {:?} (id {}), overrides all other rules",
-                    //     cap,
-                    //     cap.node.id()
-                    // );
-                    rule.replace = Some(FormatItem::Nothing);
-                    let _ = rules.insert(cap.node.id(), rule);
-                    continue;
+                    rule.after.push(FormatItem::Line(Constrained::at_least(2)));
+                } else if cap_index == self.captures.no_blank_line_before {
+                    rule.before.push(FormatItem::Antiblank);
+                } else if cap_index == self.captures.no_blank_line_after {
+                    rule.after.push(FormatItem::Antiblank);
                 }
 
                 if let Some(action) =
                     node_actions.get(&(match_.pattern_index, cap.index, "replace"))
                 {
-                    if let Some(existing) = rule.replace {
+                    if let Some(ref existing) = rule.replace {
                         panic!(
                             "Conflicting directives for replacement of {:?}: {:?} vs {:?}",
                             cap, existing, action
@@ -168,30 +173,18 @@ impl FormatScanner {
                 if let Some(action) =
                     node_actions.get(&(match_.pattern_index, cap.index, "prepend"))
                 {
-                    rule.before = Some(FormatItem::Text(action.clone().into_string()))
+                    rule.before
+                        .push(FormatItem::Text(action.clone().into_string()))
                 }
                 if let Some(action) = node_actions.get(&(match_.pattern_index, cap.index, "append"))
                 {
-                    rule.after = Some(FormatItem::Text(action.clone().into_string()))
-                }
-
-                if let Some(existing) = rules.get_mut(&cap.node.id()) {
-                    // eprintln!(
-                    //     "Merging {:?} and {:?} for {:?} for node {}",
-                    //     existing,
-                    //     rule,
-                    //     cap,
-                    //     cap.node.id()
-                    // );
-                    existing.merge(rule);
-                } else {
-                    rules.insert(cap.node.id(), rule);
+                    rule.after
+                        .push(FormatItem::Text(action.clone().into_string()))
                 }
             }
         }
 
         let mut iter = tree.walk();
-
         collect_outputs(formatter, &mut rules, iter.node(), &mut iter, source);
     }
 }
@@ -202,15 +195,9 @@ fn collect_whitespace(outs: &mut impl InkFmt, whitespace: &str) {
         .inspect(|it| assert!(it.is_whitespace()))
         .filter(|it| *it == '\n')
         .count();
-    // We make a bunch of decisions about admissable existing whitespace here.
-    // These can _only_ be overriden by rules mandating wider spacing.
     match newlines {
-        // Existing spaces and linebreaks are kept, but capped at 1.
-        0 if whitespace.len() >= 1 => outs.space(1),
-        0 => {}
-        1 => outs.line(1),
-        // At most one blank line allowed
-        _ => outs.line(2),
+        0 => outs.space(whitespace.len()),
+        n => outs.line(n),
     }
 }
 
@@ -218,14 +205,10 @@ fn collect_whitespace(outs: &mut impl InkFmt, whitespace: &str) {
 fn item_to_inkfmt(outs: &mut impl InkFmt, item: FormatItem) {
     match item {
         FormatItem::Nothing => {}
-        FormatItem::Antispace => outs.antispace(),
-        FormatItem::Space(it) => {
-            if it.linebreak {
-                outs.line(it.repeats)
-            } else {
-                outs.space(it.repeats)
-            }
-        }
+        FormatItem::Antispace => outs.space(Constrained::at_most(0)),
+        FormatItem::Antiblank => outs.line(Constrained::at_most(1)),
+        FormatItem::Space(it) => outs.space(it),
+        FormatItem::Line(it) => outs.line(it),
         FormatItem::Text(it) => outs.text(&it),
     }
 }
@@ -250,15 +233,14 @@ fn collect_outputs<'t>(
 
     // TODO: We double up existing whitespace by adding it before and after. It probably makes sense to not do that.
     // (unlike spaces added by rules, there's not much debugging value in duplicate existing whitespace).
-
-    if let Some(output) = rule.before {
-        item_to_inkfmt(outs, output);
-    } else if let Some(prev) = node.prev_sibling() {
-        let whitespace = source[prev.end_byte()..node.start_byte()].to_owned();
-        collect_whitespace(outs, &whitespace);
+    if let Some(prev) = node.prev_sibling() {
+        collect_whitespace(outs, &source[prev.end_byte()..node.start_byte()]);
     } else if let Some(parent) = node.parent() {
-        let whitespace = source[parent.start_byte()..node.start_byte()].to_owned();
-        collect_whitespace(outs, &whitespace);
+        collect_whitespace(outs, &source[parent.start_byte()..node.start_byte()]);
+    }
+
+    for output in rule.before {
+        item_to_inkfmt(outs, output);
     }
 
     match rule.indent {
@@ -269,8 +251,8 @@ fn collect_outputs<'t>(
 
     if let Some(output) = rule.replace {
         item_to_inkfmt(outs, output);
-    } else if rule.is_leaf || node.child_count() == 0 {
-        outs.text(&source[node.byte_range()].to_owned());
+    } else if rule.take_asis || node.child_count() == 0 {
+        outs.text(&source[node.byte_range()]);
     } else {
         let children: Vec<_> = node.children(iter).collect();
         for child in children {
@@ -282,13 +264,13 @@ fn collect_outputs<'t>(
         outs.dedent();
     }
 
-    if let Some(output) = rule.after {
+    for output in rule.after {
         item_to_inkfmt(outs, output);
-    } else if let Some(next) = node.next_sibling() {
-        let whitespace = source[node.end_byte()..next.start_byte()].to_owned();
-        collect_whitespace(outs, &whitespace);
+    }
+
+    if let Some(next) = node.next_sibling() {
+        collect_whitespace(outs, &source[node.end_byte()..next.start_byte()]);
     } else if let Some(parent) = node.parent() {
-        let whitespace = source[node.end_byte()..parent.end_byte()].to_owned();
-        collect_whitespace(outs, &whitespace);
+        collect_whitespace(outs, &source[node.end_byte()..parent.end_byte()]);
     }
 }

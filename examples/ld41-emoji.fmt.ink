@@ -1,7 +1,7 @@
 # author: Pat Scott
 # title: ⏰
-
 # description: Made for the Ludum Dare 41 Compo. The theme was "combine two incompatible genres." Thus, a textless text-based choose-your-own adventure.
+
 
 VAR seenCat = false
 VAR haveCoat = false
@@ -24,10 +24,11 @@ VAR time = 0
 -
 + 💤
   <>{|💤|💤💤|💤💤💤}
-  {alarm < 4: -> awaken | -> angry_cat ->}
+  {alarm < 4: -> awaken | -> angry_cat -> }
 * [😫]
 
   //Morning prep loop
+
 - (prep) {not seenCat:🐈}
   {time == 3: <>🕖}
 
@@ -48,6 +49,7 @@ VAR time = 0
   {time < 4: -> prep}
 
   //End morning prep
+
 * [🎒]
 -
 * [🚪]
@@ -55,6 +57,7 @@ VAR time = 0
       🚪
   * * ->
 - -> street
+
 
 = angry_cat
 
@@ -68,7 +71,6 @@ VAR time = 0
 = street
 
 VAR coldness = 0
-
 ~ time = 0
 { awaken.dressed:
     ~ haveCoat = true
@@ -94,6 +96,7 @@ VAR coldness = 0
   -> checkCold ->
 
   //Elder encounter
+
 * [{~👵|👴}]♿
   * * (elder_chat) [💪]
       <- increase_time
@@ -105,6 +108,7 @@ VAR coldness = 0
   -> checkCold ->
 
   //Getting on the train
+
 * [🚇]🎫
   * * (police) {stolenCoat} [👮]️✋
       👉🧥
@@ -132,6 +136,7 @@ VAR coldness = 0
   <- increase_time
   <>
   <- increase_time
+
 
 - -> adventure
 
@@ -188,6 +193,7 @@ VAR coldness = 0
 
             -> adventure
 
+
 === adventure ===
 
 = arrival_at_office
@@ -226,6 +232,7 @@ VAR got_written_up = false
   💻
 
   //Work loop
+
   VAR ok_we_get_it_you_write_a_lot = false
   VAR work_loop = 0
 
@@ -316,7 +323,6 @@ VAR got_written_up = false
   🌈
 
 -
-
 + (forest) 🌳[] 🏔️🏞️ 🌳🌳 🌳🌴 🌳 🌴 🌳 🌴🌴
   VAR have_crown = false
 
@@ -383,6 +389,7 @@ VAR got_written_up = false
       <>💨
       -> volcano
 
+
   + + [🏔️️]
       <- increase_time
 
@@ -404,10 +411,12 @@ VAR got_written_up = false
 
       + + + [↩️]
 
+
   * * [🌵]🦎
       * * * [🦎]👁️
             * * * * [🦎]👁️‍🗨️
                     🦎💨
+
 
   * * [🌵]🐍
       * * * {entre.street.hobo_gaveMoney} [🧔💸]🧔💪
@@ -433,6 +442,7 @@ VAR got_written_up = false
             -> mountain
 
   - - -> desert
+
 
 + [🌳]
   -> leave
@@ -520,6 +530,7 @@ VAR got_written_up = false
       {used_crown:<>🐒|<>🕺}
   }
   {tea_party < 4:<>✨}
+
 
 -
 * (used_crown) {have_crown} [👑]✨🎩✨

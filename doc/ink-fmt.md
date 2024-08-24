@@ -88,15 +88,22 @@ both become:
 
 ## Formatting Structure Elements (Knots, Stitches)
 
+Default formatting for both Knots and Stitches:
+* no indentation (flush left)
+* set apart by a blank line before and after
+* marks are separated by one space
+
+Knots:
+* opening and closing mark normalized to `===` (ending mark added if necessary)
+
 Knots and stitches are set flush left, along with all top level content inside it.
-They are also set apart by a blank line.
 
 ```ink input
           = stitch_outside_knot
     some text
-    === knot
+    == knot
        = stitch_inside_knot
-         === another_knot
+         ========= another_knot ==
   ~ code
         text
 ```
@@ -106,11 +113,11 @@ They are also set apart by a blank line.
 
 some text
 
-=== knot
+=== knot ===
 
 = stitch_inside_knot
 
-=== another_knot
+=== another_knot ===
 
 ~ code
 text
