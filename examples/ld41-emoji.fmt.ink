@@ -74,6 +74,7 @@ VAR coldness = 0
 ~ time = 0
 { awaken.dressed:
     ~ haveCoat = true
+
 }
 
 ❄️
@@ -153,7 +154,7 @@ VAR coldness = 0
             💨
 
       - - - <- increase_time
-            ~haveCoat = true
+            ~ haveCoat = true
 + ->
 
 - ->->
@@ -286,6 +287,7 @@ VAR got_written_up = false
   -> computer
 
 -
+
 -> finale
 
 = cat_in_a_bag
@@ -498,6 +500,7 @@ VAR got_written_up = false
   + + ->
 
   - - (rabbit)
+
 + [↩️]
   -> leave
 

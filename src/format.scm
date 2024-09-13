@@ -42,13 +42,14 @@
 ; TODO: find a way to insert a formatting space instead of a text space here.
  (#append @space.after "==="))
 
-[(knot) (stitch)] @blankline.after
+[(knot !function) (stitch)] @blankline.after
 
 ;; Functions should look a little differently
-((knot start_mark: _ @start @space.after
-       function: _
-       end_mark: _? @delete)
- (#replace @start "=="))
+((knot_block
+ (knot start_mark: _ @start @space.after
+       function: _ @space.before @space.after @indent.anchor
+       end_mark: _? @delete) @no.blankline.after)
+ (#replace @start "==")) @dedent
 
 (stitch start_mark: _ @space.after)
 
@@ -63,8 +64,7 @@
 
 ; [(paragraph) (choice)] @newline.after
 
-(list "LIST" @space.after "=" @space.before @space.after)
-(external "EXTERNAL" @space.after (params) @no.space.before)
+"=" @space.before @space.after
 
 ; Move parens around list definitions to the outside: (name) = 1 -> (name = 1)
 ((list_value_def name: (_) . ")" @delete value: (_) @value)
@@ -75,14 +75,13 @@
 
 "," @no.space.before @space.after
 
-(params "(" @no.space.after
-        ")" @no.space.before
-) @no.space.before
+(params "(" @no.space.after ")" @no.space.before ) @no.space.before
 
-"->" @space.after
-"<-" @space.after
+(call "(" @no.space.before @no.space.after ")" @no.space.before)
 
-(line_comment) @newline.after @space.before
+["->" "<-"] @space.after
+
+(line_comment) @newline.after
 
 (eval "{" @no.space.after "}" @no.space.before)
 
@@ -104,3 +103,7 @@
 (cond_arm ":" @newline.after)
 (cond_arm ":" @space.after !eol)
 
+(code "~" @space.after)
+["temp" "return" "VAR" "EXTERNAL" "LIST"] @space.after
+
+(paren "(" @no.space.after ")" @no.space.before)

@@ -53,18 +53,18 @@ VAR DEBUG = false
     // First diversion: where do we begin?
     -> start
 }
+
 /*--------------------------------------------------------------------------------
 	Wrap up character movement using functions, in case we want to develop this logic in future
 --------------------------------------------------------------------------------*/
 
 
 == function lower(ref x)
-
-~ x = x - 1
+   ~ x = x - 1
 
 == function raise(ref x)
+   ~ x = x + 1
 
-~ x = x + 1
 /*--------------------------------------------------------------------------------
 
 	Start the story!
@@ -379,6 +379,7 @@ Harris doesn't stiffen. Doesn't lean away, as though my condition might be infec
 He offers no sympathy either. He nods, once. His understanding of me is a mere turning cog in his calculations, with no meaning to it.
 -> harris_has_seen_it_before
 
+
 === admitted_to_something ===
 
 // Admitting Something
@@ -413,10 +414,12 @@ There's a long pause, like the delay between feeding a line of cypher into the B
 "I know where your component is because it's obvious where your component is. That doesn't mean I took it, just because I can figure out a simple problem, any more than it means I'm a German spy because I can crack their codes."
 -> harris_asks_for_theory
 
+
 = ive_done_things
 
 "I've done things," I begin{harris_demands_component.cant_talk_right: helplessly}. "Things I didn't want to do. I tried not to. But in the end, it felt like cutting off my own arm to resist."
 -> harris_presses_for_details
+
 
 
 
@@ -481,7 +484,7 @@ He slides his thumb between two fingers.
 
 * {drugged} {forceful < 0} [Apologise]
   "Harris, I..."
-  ~lower(forceful)
+  ~ lower(forceful)
   "Stop it," he interrupts. "There's no jury here to sway.  And there's no time.
 
 - (tell_me_now) <> So why don't you tell me, right now. Where is it?"
@@ -762,6 +765,7 @@ Harris shakes his head.
 "Oh, yes? And what's that?"
 -> its_your_problem
 
+
 = its_your_problem
 
 // Won't Help
@@ -961,6 +965,7 @@ Harris hustles me over to the barracks. "I hope that's the end of it," he mutter
 -> slam_door_shut_and_gone
 
 
+
 /*--------------------------------------------------------------------------------
 	Left alone overnight
 --------------------------------------------------------------------------------*/
@@ -1006,6 +1011,7 @@ From outside, I hear a voice. Hooper's. He's haranguing someone.
 
 I go over to the window and try to jimmy it open. Not much luck, but in my struggling I notice this window only backs on the thin little brook that runs down the back of the compound. Which means, if I smashed it, I might get away with no—one seeing.
 -> from_outside_heard
+
 
 = try_to_smash_the_window
 
@@ -1211,12 +1217,14 @@ It's the work of a moment. I was once an excellent bowler for the second XI back
 ~ gotcomponent = false
 For a second I hold my breath, but nothing and no—one stirs. -> return_to_room_after_excursion
 
+
 = toss_component_into_bushes
 
 I toss the component away into the bushes behind Hooper's tent and return to my barrack, wishing myself a long sleep followed by a morning, free of this business.
 ~ gotcomponent = false
 ~ throwncomponentaway = true
 -> return_to_room_after_excursion
+
 /*--------------------------------------------------------------------------------
 	Ending: Run away from the camp
 --------------------------------------------------------------------------------*/
@@ -1229,6 +1237,7 @@ And then I'm on the road. Walking, not running. Silent. Free.
 //  End - Run Away
 For the moment, at least.
 -> END
+
 /*--------------------------------------------------------------------------------
 	Return to room after slipping out
 --------------------------------------------------------------------------------*/
@@ -1481,6 +1490,7 @@ It's not long after that Harris enters the hut. He closes the door behind him, c
 
 
 
+
 /*---------------------------------------------------------------
 	Ending: they don't think it was you
 ---------------------------------------------------------------*/
@@ -1652,6 +1662,7 @@ On my way across the paddocks, between the huts and the House, I catch sight of 
 Harris stands, and slips away smartly. -> left_alone
 
 
+
 === my_lips_are_sealed ===
 
 I say nothing, my lips tightly, firmly sealed. It's true I am a traitor, to the very laws of nature. The world has taught me that since a very early age. But not to my country — should the Reich win this war, I would hardly be treated as an honoured hero. I was doomed from the very start.
@@ -1660,6 +1671,7 @@ I explain none of this. How could a man like Harris understand?
 The Commander takes one look back from the doorway as he pulls it to.
 "It's been a pleasure working with you, Mr Manning," he declares. "You've done a great service to this country. If we come through, I'm sure they'll remember you name. I'm sorry it had to end this way and I'll do my best to keep it quiet. No—one need know what you did."
 -> left_alone
+
 
 
 
@@ -1672,11 +1684,13 @@ Then he steps out of the door, muttering to himself.
 -> make_your_peace
 
 
+
 === left_alone ===
 
 //  Alone, about to die
 {slam_door_shut_and_gone.time_to_move_now:The Commander holds the door for his superior, and follows him out.} Then the door closes. I am alone again, as I have been for most of my short life.
 -> make_your_peace
+
 
 === make_your_peace ===
 
