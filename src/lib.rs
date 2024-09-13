@@ -6,7 +6,7 @@ mod node_rule;
 mod scanner;
 mod util;
 
-use tree_sitter::{Parser, Query};
+use tree_sitter::{Language, Parser, Query};
 
 pub(crate) type CaptureIndex = u32;
 pub(crate) type PatternIndex = usize;
@@ -23,7 +23,7 @@ static QUERY: &str = include_str!("format.scm");
 ///
 /// For multiple repeated formatting operations, you'll want to construct a [`FormatScanner`] and re-use that.
 pub fn format(config: config::FormatConfig, source: String) -> String {
-    let language = tree_sitter_ink::language();
+    let language: Language = tree_sitter_ink::LANGUAGE.into();
 
     let mut parser = Parser::new();
     parser
