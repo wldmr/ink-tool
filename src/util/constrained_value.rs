@@ -149,9 +149,12 @@ impl Constrained {
     pub(crate) fn combine_mut(&mut self, other: Constrained) {
         self.min = Ord::max(self.min, other.min);
         self.max = Ord::min(self.max, other.max);
-        if self.min > self.max {
+        if self.min > self.max && self.max != 0 {
             // ensure that min never exceeds max, by growing max.
             self.max = self.min
+        } else if self.max == 0 {
+            // the exception is zero: Constraining to zero always takes precedence.
+            self.min = 0;
         }
         self.desired = match (self.desired, other.desired) {
             (None, None) => None,
@@ -234,9 +237,19 @@ mod tests {
     }
 
     #[quickcheck]
-    fn plus_min_is_biggest_possible(a: Constrained, b: Constrained) -> bool {
-        let c = a + b;
-        c.min == Ord::max(a.min, b.min)
+    fn plus_min_is_biggest_possible_if_max_not_zero(a: Constrained, b: Constrained) -> TestResult {
+        in_case! { a.max != 0 && b.max != 0 =>
+            let c = a + b;
+            c.min == Ord::max(a.min, b.min)
+        }
+    }
+
+    #[quickcheck]
+    fn plus_min_is_zero_if_max_zero(a: Constrained, b: Constrained) -> TestResult {
+        in_case! { a.max == 0 || b.max == 0 =>
+            let c = a + b;
+            c.min == 0
+        }
     }
 
     #[quickcheck]
@@ -249,12 +262,22 @@ mod tests {
 
     #[quickcheck]
     /// Conflict resolution: If any min bound is greater than the other max bound,
-    /// the min wins and the max grows to accomodate it..
+    /// the min wins and the max grows to accomodate it ... IF the max is not 0!
     fn plus_conflict_grows_max(a: Constrained, b: Constrained) -> TestResult {
-        in_case! { a.min > b.max || b.min > a.max =>
+        in_case! { (a.min > b.max && b.max != 0) || (b.min > a.max && a.max != 0) =>
             let c = a + b;
             let new_max = Ord::max(a.min, b.min);
             c.min == c.max && c.max == new_max
+        }
+    }
+
+    #[quickcheck]
+    /// Conflict resolution: If any min bound is greater than the other max bound,
+    /// the max wins ... IF the max is 0!
+    fn plus_conflict_zero_always_wins(a: Constrained, b: Constrained) -> TestResult {
+        in_case! { (a.min > b.max && b.max == 0) || (b.min > a.max && a.max == 0) =>
+            let c = a + b;
+            c.min == c.max && c.max == 0
         }
     }
 }
