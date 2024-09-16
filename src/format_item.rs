@@ -12,10 +12,6 @@ pub struct Space {
 pub enum FormatItem {
     /// Replace something that existist with nothing (i.e. delete)
     Nothing,
-    /// Collapse all adjacent spaces
-    Antispace,
-    /// Collapse all adjacent blank lines
-    Antiblank,
     Space(Constrained),
     Line(Constrained),
     // IDEA: Softline?
@@ -32,8 +28,6 @@ impl Debug for FormatItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FormatItem::Nothing => f.write_char('⌧'),
-            FormatItem::Antispace => f.write_char('⁀'),
-            FormatItem::Antiblank => f.write_char('⮌'), // sort of the rounded opposite of return
             FormatItem::Space(it) => repeat_char(f, '␣', it.value()),
             FormatItem::Line(it) => repeat_char(f, '⏎', it.value()),
             FormatItem::Text(txt) => {

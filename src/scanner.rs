@@ -131,9 +131,9 @@ impl FormatScanner {
                 } else if cap_index == self.captures.take_asis {
                     rule.take_asis = true;
                 } else if cap_index == self.captures.no_space_before {
-                    rule.before.push(FormatItem::Antispace);
+                    rule.before.push(FormatItem::Space(Constrained::at_most(0)));
                 } else if cap_index == self.captures.no_space_after {
-                    rule.after.push(FormatItem::Antispace);
+                    rule.after.push(FormatItem::Space(Constrained::at_most(0)));
                 } else if cap_index == self.captures.space_before {
                     rule.before
                         .push(FormatItem::Space(Constrained::between(1, 1)));
@@ -153,9 +153,9 @@ impl FormatScanner {
                 } else if cap_index == self.captures.blank_line_after {
                     rule.after.push(FormatItem::Line(Constrained::at_least(2)));
                 } else if cap_index == self.captures.no_blank_line_before {
-                    rule.before.push(FormatItem::Antiblank);
+                    rule.before.push(FormatItem::Line(Constrained::at_most(1)));
                 } else if cap_index == self.captures.no_blank_line_after {
-                    rule.after.push(FormatItem::Antiblank);
+                    rule.after.push(FormatItem::Line(Constrained::at_most(1)));
                 }
 
                 if let Some(action) =
@@ -205,8 +205,6 @@ fn collect_whitespace(outs: &mut impl InkFmt, whitespace: &str) {
 fn item_to_inkfmt(outs: &mut impl InkFmt, item: FormatItem) {
     match item {
         FormatItem::Nothing => {}
-        FormatItem::Antispace => outs.space(Constrained::at_most(0)),
-        FormatItem::Antiblank => outs.line(Constrained::at_most(1)),
         FormatItem::Space(it) => outs.space(it),
         FormatItem::Line(it) => outs.line(it),
         FormatItem::Text(it) => outs.text(&it),
