@@ -31,7 +31,7 @@ VAR time = 0
     {alarm < 4: -> awaken | -> angry_cat -> }
 *   [😫]
 
-    //Morning prep loop
+//Morning prep loop
 
 -   (prep) {not seenCat:🐈}
     {time == 3: <>🕖}
@@ -52,7 +52,7 @@ VAR time = 0
     <- increase_time
     {time < 4: -> prep}
 
-    //End morning prep
+//End morning prep
 
 *   [🎒]
 -
@@ -100,7 +100,7 @@ VAR coldness = 0
 -   <- increase_time
     -> checkCold ->
 
-    //Elder encounter
+//Elder encounter
 
 *   [{~👵|👴}]♿
     * *   (elder_chat) [💪]
@@ -112,7 +112,7 @@ VAR coldness = 0
 -   <- increase_time
     -> checkCold ->
 
-    //Getting on the train
+//Getting on the train
 
 *   [🚇]🎫
     * *   (police) {stolenCoat} [👮]️✋

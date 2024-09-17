@@ -37,7 +37,7 @@
 ; (gather_block (gather !label !eol) . (_) @indent.anchor) @dedent
 ; (gather_block (gather eol: (_)))
 
-(label) @space.before @space.after
+(label "(" @space.after.0 ")" @space.before.0) @space.before @space.after
 
 ; Just leaving the eol as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
 ; To get around this, we replace it by a formatting newline right away.

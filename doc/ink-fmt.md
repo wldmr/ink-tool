@@ -44,6 +44,7 @@ paragraph 0
 
 * Flows of the same depth are aligned to each other (as you would expect, but it bears saying)
 * Initial indentation is removed
+* Labels have no inner spaces and one outer space
 
 So this means that
 
@@ -52,7 +53,8 @@ So this means that
                 * * a.1
   * b
          * * b.1
-     - c
+     -( label      )c
+ more c
 ```
 
 becomes
@@ -62,9 +64,53 @@ becomes
     * *   a.1
 *   b
     * *   b.1
--   c
+-   (label) c
+    more c
 ```
 
+### Empty Gathers
+
+"Empty gathers" deserve special mention. Gathers that have a label or some piece of content on them
+cause the following content follow the rules above. But gathers that have no content whatsoever (not even a label)
+on the same line, are treated as "horizontal rules" and content before and after is indented the same.
+
+```ink input
+* A choice
+* * Sub Choice 1
+* * Sub Choice 2
+- -
+Gathered text
+More gathered text
+```
+
+```ink input
+*   A choice
+    * *   Sub Choice 1
+    * *   Sub Choice 2
+    - -
+    Gathered text
+    More gathered text
+```
+
+as opposed to the examples above, or this one with a label
+
+```ink input
+* A choice
+* * Sub Choice 1
+* * Sub Choice 2
+- - (label)
+Gathered text
+More gathered text
+```
+
+```ink input
+*   A choice
+    * *   Sub Choice 1
+    * *   Sub Choice 2
+    - -   (label)
+          Gathered text
+          More gathered text
+```
 
 ## Structure Elements
 

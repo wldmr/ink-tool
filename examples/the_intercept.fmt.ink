@@ -64,13 +64,12 @@ VAR DEBUG = false
    ~ x = x + 1
 
 
+
 /*--------------------------------------------------------------------------------
 
 	Start the story!
 
 --------------------------------------------------------------------------------*/
-
-
 
 === start ===
 
@@ -173,7 +172,7 @@ VAR DEBUG = false
     I try a weak smile. It is not returned.
     ~ lower(forceful)
 
-    // Why you're here
+// Why you're here
 -
 "We need that component," he says.
 
@@ -304,7 +303,7 @@ VAR DEBUG = false
 
 -   (silence) There's an icy silence. {forceful > 2:I've cracked him a little.|{evasive > 2:He's tiring of my evasiveness.}}
 
-    // Drink tea and talk
+// Drink tea and talk
 -   (drinkit) "Now drink your tea and talk."
 *   {teacup} [Drink] -> drinkfromcup
 *   {teacup} [Put the cup down]
@@ -647,10 +646,11 @@ His eyes bear down like carbonised drill—bits.
 
     -> claim_hooper_took_component.harrumphs
 
-    /*--------------------------------------------------------------------------------
+
+
+/*--------------------------------------------------------------------------------
 	Trying to frame Hooper
 --------------------------------------------------------------------------------*/
-
 
 
 === claim_hooper_took_component ===
@@ -814,11 +814,11 @@ Harris considers it. I watch his eyes, flicking backwards and forwards over mine
 
 -   -> inside_hoopers_hut
 
-    /*--------------------------------------------------------------------------------
+
+
+/*--------------------------------------------------------------------------------
 	Quick visit to see Hooper
 --------------------------------------------------------------------------------*/
-
-
 
 === harris_takes_you_to_hooper ===
 
@@ -971,10 +971,11 @@ Harris hustles me over to the barracks. "I hope that's the end of it," he mutter
 "Just be sure to let him out," I reply. "And then see where he goes."
 -> slam_door_shut_and_gone
 
+
+
 /*--------------------------------------------------------------------------------
 	Left alone overnight
 --------------------------------------------------------------------------------*/
-
 
 
 === slam_door_shut_and_gone ===
@@ -1140,7 +1141,7 @@ Then I heft {smashingWindowItem == BUCKET:up the bucket — this really is quite
     -> night_passes
 *   [Slip out]
     Moving quickly and quietly, I hoist myself up onto the window—frame and worm my way outside into the freezing night air. Then I am away, slipping down the paths between the Huts, sticking to the shadows, on my way to Hut 2.
-    // Out at night
+// Out at night
 -
 *   [Go the shortest way]
     There's no time to lose. Throwing caution to the wind I make my way quickly to Hut 2, and around the back. I don't think I've been seen but if I have it is too late. My actions are suspicious enough for the noose. I have no choice but to follow through.
@@ -1169,10 +1170,10 @@ Then I heft {smashingWindowItem == BUCKET:up the bucket — this really is quite
           * * *   {gotcomponent && not go_to_hoopers_dorm} [To Hooper's dorm] -> go_to_hoopers_dorm
 
 
-                  /*--------------------------------------------------------------------------------
+
+/*--------------------------------------------------------------------------------
 	Visit Hooper's dorm overnight
 --------------------------------------------------------------------------------*/
-
 
 
 === go_to_hoopers_dorm ===
@@ -1235,10 +1236,11 @@ I toss the component away into the bushes behind Hooper's tent and return to my 
 ~ throwncomponentaway = true
 -> return_to_room_after_excursion
 
+
+
 /*--------------------------------------------------------------------------------
 	Ending: Run away from the camp
 --------------------------------------------------------------------------------*/
-
 
 
 === live_on_the_run ===
@@ -1249,10 +1251,11 @@ And then I'm on the road. Walking, not running. Silent. Free.
 For the moment, at least.
 -> END
 
+
+
 /*--------------------------------------------------------------------------------
 	Return to room after slipping out
 --------------------------------------------------------------------------------*/
-
 
 
 === return_to_room_after_excursion ===
@@ -1261,10 +1264,11 @@ For the moment, at least.
 It's a little harder getting back through — the window is higher off the ground than the floor inside — but after a decent bit of jumping and hauling I manage to get my elbows up, and then one leg, and finally I collapse inside, quite winded and out breath.
 *   [Wait] -> night_passes
 
-    /*--------------------------------------------------------------------------------
+
+
+/*--------------------------------------------------------------------------------
 	Night passes
 --------------------------------------------------------------------------------*/
-
 
 
 === night_passes ===
@@ -1504,10 +1508,11 @@ It's not long after that Harris enters the hut. He closes the door behind him, c
 ~ losttemper = false
 -> harris_threatens_lynching
 
+
+
 /*---------------------------------------------------------------
 	Ending: they don't think it was you
 ---------------------------------------------------------------*/
-
 
 
 === head_for_my_dorm_free ===
@@ -1618,11 +1623,11 @@ On my way across the paddocks, between the huts and the House, I catch sight of 
     He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.
     -> END
 
-    /*---------------------------------------------------------------
+
+
+/*---------------------------------------------------------------
 	Ending: they think it was you
 ---------------------------------------------------------------*/
-
-
 
 === harris_threatens_lynching ===
 
