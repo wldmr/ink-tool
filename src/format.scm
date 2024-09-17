@@ -117,7 +117,8 @@
 
 (multiline_alternatives
  type: _+ @space.before @space.after
- ":" @space.before.0
+ ":" @space.before.0 @indent
+ "}" @dedent.this
 )
 
 (alt_arm "-" . (_) @indent.anchor) @dedent @break.before.0-2 @break.after.1-2

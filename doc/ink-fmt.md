@@ -404,6 +404,7 @@ But that's no cause for negativity.
 #### Multiline Alternatives
 
 * Similar rules apply to multiline alternatives, only that these must start on a new line.
+* To more easily distinguish them from conditionals, the inner content as a whole is indented.
 * The keywords are separeed from their surroundings by a single space each
 
 Combined example:
@@ -413,7 +414,7 @@ Combined example:
    - The coin came up heads.
  Just as I had predicted, with 50% confidence.
   -     It was tails.
-     The most surprising thing about that was the number side of a coin is called 'tails'. 
+      The most surprising thing about that was that the number side of a coin is called 'tails'.
 - The damn thing came to rest on its side.
 How very strange.
 }
@@ -421,12 +422,12 @@ How very strange.
 
 ```ink output
 { shuffle once:
-- The coin came up heads.
-  Just as I had predicted, with 50% confidence.
-- It was tails.
-  The most surprising thing about that was the number side of a coin is called 'tails'.
-- The damn thing came to rest on its side.
-  How very strange.
+    - The coin came up heads.
+      Just as I had predicted, with 50% confidence.
+    - It was tails.
+      The most surprising thing about that was that the number side of a coin is called 'tails'.
+    - The damn thing came to rest on its side.
+      How very strange.
 }
 ```
 

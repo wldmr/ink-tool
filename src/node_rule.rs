@@ -11,14 +11,26 @@ pub(crate) type NodeRules = HashMap<NodeId, NodeRule>;
 pub(crate) enum IndentType {
     #[default]
     None,
+    // Add a level of indentation after this node
     Indent,
+    // Add a level of indentation after this node; the level is determined by the column position at the start of the current or upcoming non-whitespace.
     Anchor,
+}
+
+#[derive(Default)]
+pub(crate) enum DedentType {
+    #[default]
+    None,
+    // Remove a level after this node (this node will not be indented, but the following will)
+    DedentFollowing,
+    // Remove a level before this node (this node itself will be dedented)
+    DedentThis,
 }
 
 #[derive(Default)]
 pub(crate) struct NodeRule {
     pub(crate) indent: IndentType,
-    pub(crate) dedent: bool,
+    pub(crate) dedent: DedentType,
     pub(crate) take_asis: bool,
     pub(crate) before: Vec<FormatItem>,
     pub(crate) after: Vec<FormatItem>,
@@ -35,9 +47,9 @@ impl Debug for NodeRule {
             IndentType::Indent => f.write_char('›')?,
             IndentType::Anchor => f.write_char('»')?,
             IndentType::None => (),
-        }
-        if self.dedent {
-            f.write_char('‹')?
+        };
+        if let DedentType::DedentThis = self.dedent {
+            f.write_char('‹')?;
         }
         if !self.before.is_empty() {
             f.write_fmt(format_args!("⨭{:?}", self.before))?
@@ -47,6 +59,9 @@ impl Debug for NodeRule {
         }
         if !self.after.is_empty() {
             f.write_fmt(format_args!("{:?}⨮", self.after))?
+        }
+        if let DedentType::DedentThis = self.dedent {
+            f.write_char('‹')?;
         }
         Ok(())
     }

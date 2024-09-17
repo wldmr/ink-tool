@@ -1,7 +1,7 @@
 use crate::{
     config,
     formatter::InkFmt,
-    node_rule::{IndentType, NodeRules},
+    node_rule::{DedentType, IndentType, NodeRules},
     util::constrained_value::Constrained,
 };
 
@@ -18,6 +18,7 @@ struct CapIndex {
     indent_anchor: Option<CaptureIndex>,
     indent: Option<CaptureIndex>,
     dedent: Option<CaptureIndex>,
+    dedent_this: Option<CaptureIndex>,
     take_asis: Option<CaptureIndex>,
 
     spacing: HashMap<CaptureIndex, RulePositioning>,
@@ -97,6 +98,7 @@ impl FormatScanner {
             indent_anchor: query.capture_index_for_name("indent.anchor"),
             indent: query.capture_index_for_name("indent"),
             dedent: query.capture_index_for_name("dedent"),
+            dedent_this: query.capture_index_for_name("dedent.this"),
             take_asis: query.capture_index_for_name("take.as-is"),
 
             spacing,
@@ -173,8 +175,10 @@ impl FormatScanner {
                             rule.indent = IndentType::Indent;
                         } else if cap_index == self.captures.indent_anchor {
                             rule.indent = IndentType::Anchor;
+                        } else if cap_index == self.captures.dedent_this {
+                            rule.dedent = DedentType::DedentThis;
                         } else if cap_index == self.captures.dedent {
-                            rule.dedent = true;
+                            rule.dedent = DedentType::DedentFollowing;
                         } else if cap_index == self.captures.take_asis {
                             rule.take_asis = true;
                         }
@@ -261,6 +265,10 @@ fn collect_outputs<'t>(
         collect_whitespace(outs, &source[parent.start_byte()..node.start_byte()]);
     }
 
+    if matches!(rule.dedent, DedentType::DedentThis) {
+        outs.dedent();
+    }
+
     for output in rule.before {
         item_to_inkfmt(outs, output);
     }
@@ -282,12 +290,12 @@ fn collect_outputs<'t>(
         }
     }
 
-    if rule.dedent {
-        outs.dedent();
-    }
-
     for output in rule.after {
         item_to_inkfmt(outs, output);
+    }
+
+    if matches!(rule.dedent, DedentType::DedentFollowing) {
+        outs.dedent();
     }
 
     if let Some(next) = node.next_sibling() {
