@@ -13,25 +13,22 @@ use super::{format_item::FormatItem, node_rule::NodeRule, CaptureIndex, NodeId, 
 
 use tree_sitter::{Query, QueryCursor};
 
+#[derive(Debug)]
 struct CapIndex {
     indent_anchor: Option<CaptureIndex>,
     indent: Option<CaptureIndex>,
     dedent: Option<CaptureIndex>,
     take_asis: Option<CaptureIndex>,
-    no_space_before: Option<CaptureIndex>,
-    no_space_after: Option<CaptureIndex>,
-    newline_before: Option<CaptureIndex>,
-    newline_after: Option<CaptureIndex>,
-    space_before: Option<CaptureIndex>,
-    space_after: Option<CaptureIndex>,
-    space_before_ifpresent: Option<CaptureIndex>,
-    space_after_ifpresent: Option<CaptureIndex>,
-    blank_line_before: Option<CaptureIndex>,
-    blank_line_after: Option<CaptureIndex>,
-    no_blank_line_before: Option<CaptureIndex>,
-    no_blank_line_after: Option<CaptureIndex>,
+
+    spacing: HashMap<CaptureIndex, RulePositioning>,
 
     delete: Option<CaptureIndex>,
+}
+
+#[derive(Debug)]
+enum RulePositioning {
+    Before(FormatItem),
+    After(FormatItem),
 }
 
 pub struct FormatScanner {
@@ -42,23 +39,68 @@ pub struct FormatScanner {
 
 impl FormatScanner {
     pub fn new(query: Query, _config: config::FormatConfig) -> Self {
+        let spacing = query.capture_names().into_iter().map(|capture| {
+            let mut split = capture.splitn(3, '.');
+            let kind = split.next();
+            let position = split.next();
+            let repeats = split.next();
+
+            let item = match kind {
+                Some("space") => FormatItem::Space,
+                Some("break") => FormatItem::Line,
+                _ => return Err(capture),
+            };
+
+            let pos = match position {
+                Some("before") => RulePositioning::Before,
+                Some("after") => RulePositioning::After,
+                _ => return Err(capture),
+            };
+
+            let constraint = match repeats {
+                Some(n) => {
+                    let mut split = n.splitn(2, "-");
+                    let (a, b) = match (split.next(), split.next()) {
+                        (Some(a), Some(b)) => match (a.parse::<u8>(), b.parse::<u8>()) {
+                            (Ok(n1), Ok(n2)) => (n1, n2),
+                            _ => return Err(capture),
+                        },
+                        (Some(a), None) => match a.parse::<u8>() {
+                            Ok(n1) => (n1, n1),
+                            _ => return Err(capture),
+                        },
+
+                        _ => return Err(capture),
+                    };
+                    Constrained::between(a, b)
+                }
+                None => Constrained::between(1, 1),
+            };
+
+            if split.next().is_some() {
+                // We want exact matches, so if there happens to be another part, then the capture doesn't match.
+                return Err(capture);
+            }
+
+            let cap_index = query
+                .capture_index_for_name(&capture)
+                .expect("we're iterating over existing strings");
+
+            Ok((cap_index, pos(item(constraint))))
+        });
+
+        // explicit filter step so it's easy to debug-print if something is off.
+        let spacing = spacing.filter_map(Result::ok).collect();
+        // eprintln!("{:?}", spacing);
+
         let captures = CapIndex {
             indent_anchor: query.capture_index_for_name("indent.anchor"),
             indent: query.capture_index_for_name("indent"),
             dedent: query.capture_index_for_name("dedent"),
             take_asis: query.capture_index_for_name("take.as-is"),
-            no_space_before: query.capture_index_for_name("no.space.before"),
-            no_space_after: query.capture_index_for_name("no.space.after"),
-            newline_before: query.capture_index_for_name("newline.before"),
-            newline_after: query.capture_index_for_name("newline.after"),
-            space_before: query.capture_index_for_name("space.before"),
-            space_after: query.capture_index_for_name("space.after"),
-            space_before_ifpresent: query.capture_index_for_name("space.before.if-present"),
-            space_after_ifpresent: query.capture_index_for_name("space.after.if-present"),
-            blank_line_before: query.capture_index_for_name("blankline.before"),
-            blank_line_after: query.capture_index_for_name("blankline.after"),
-            no_blank_line_before: query.capture_index_for_name("no.blankline.before"),
-            no_blank_line_after: query.capture_index_for_name("no.blankline.after"),
+
+            spacing,
+
             delete: query.capture_index_for_name("delete"),
         };
         Self {
@@ -117,45 +159,26 @@ impl FormatScanner {
                 if let Some(FormatItem::Nothing) = rule.replace {
                     continue;
                 }
-                let cap_index = Some(cap.index);
-                if cap_index == self.captures.delete {
-                    *rule = NodeRule::default();
-                    rule.replace = Some(FormatItem::Nothing);
-                    continue;
-                } else if cap_index == self.captures.indent {
-                    rule.indent = IndentType::Indent;
-                } else if cap_index == self.captures.indent_anchor {
-                    rule.indent = IndentType::Anchor;
-                } else if cap_index == self.captures.dedent {
-                    rule.dedent = true;
-                } else if cap_index == self.captures.take_asis {
-                    rule.take_asis = true;
-                } else if cap_index == self.captures.no_space_before {
-                    rule.before.push(FormatItem::Space(Constrained::at_most(0)));
-                } else if cap_index == self.captures.no_space_after {
-                    rule.after.push(FormatItem::Space(Constrained::at_most(0)));
-                } else if cap_index == self.captures.space_before {
-                    rule.before
-                        .push(FormatItem::Space(Constrained::between(1, 1)));
-                } else if cap_index == self.captures.space_after {
-                    rule.after
-                        .push(FormatItem::Space(Constrained::between(1, 1)));
-                } else if cap_index == self.captures.space_before_ifpresent {
-                    rule.before.push(FormatItem::Space(Constrained::at_most(1)));
-                } else if cap_index == self.captures.space_after_ifpresent {
-                    rule.after.push(FormatItem::Space(Constrained::at_most(1)));
-                } else if cap_index == self.captures.newline_before {
-                    rule.before.push(FormatItem::Line(Constrained::at_least(1)));
-                } else if cap_index == self.captures.newline_after {
-                    rule.after.push(FormatItem::Line(Constrained::at_least(1)));
-                } else if cap_index == self.captures.blank_line_before {
-                    rule.before.push(FormatItem::Line(Constrained::at_least(2)));
-                } else if cap_index == self.captures.blank_line_after {
-                    rule.after.push(FormatItem::Line(Constrained::at_least(2)));
-                } else if cap_index == self.captures.no_blank_line_before {
-                    rule.before.push(FormatItem::Line(Constrained::at_most(1)));
-                } else if cap_index == self.captures.no_blank_line_after {
-                    rule.after.push(FormatItem::Line(Constrained::at_most(1)));
+
+                match self.captures.spacing.get(&cap.index) {
+                    Some(RulePositioning::Before(item)) => rule.before.push(item.clone()),
+                    Some(RulePositioning::After(item)) => rule.after.push(item.clone()),
+                    None => {
+                        let cap_index = Some(cap.index);
+                        if cap_index == self.captures.delete {
+                            *rule = NodeRule::default();
+                            rule.replace = Some(FormatItem::Nothing);
+                            continue;
+                        } else if cap_index == self.captures.indent {
+                            rule.indent = IndentType::Indent;
+                        } else if cap_index == self.captures.indent_anchor {
+                            rule.indent = IndentType::Anchor;
+                        } else if cap_index == self.captures.dedent {
+                            rule.dedent = true;
+                        } else if cap_index == self.captures.take_asis {
+                            rule.take_asis = true;
+                        }
+                    }
                 }
 
                 if let Some(action) =
@@ -183,6 +206,7 @@ impl FormatScanner {
                 }
             }
         }
+        // eprintln!("{:#?}", rules);
 
         let mut iter = tree.walk();
         collect_outputs(formatter, &mut rules, iter.node(), &mut iter, source);

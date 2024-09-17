@@ -32,21 +32,21 @@ impl Debug for NodeRule {
         }
         f.write_str("Rule")?;
         match self.indent {
-            IndentType::Indent => f.write_char('→')?,
-            IndentType::Anchor => f.write_str("|>")?,
+            IndentType::Indent => f.write_char('›')?,
+            IndentType::Anchor => f.write_char('»')?,
             IndentType::None => (),
         }
         if self.dedent {
-            f.write_str("←")?
+            f.write_char('‹')?
         }
         if !self.before.is_empty() {
-            f.write_fmt(format_args!("←{:?}", self.before))?
+            f.write_fmt(format_args!("⨭{:?}", self.before))?
         }
         if let Some(ref it) = self.replace {
             f.write_fmt(format_args!("•{:?}", it))?
         }
         if !self.after.is_empty() {
-            f.write_fmt(format_args!("→{:?}", self.after))?
+            f.write_fmt(format_args!("{:?}⨮", self.after))?
         }
         Ok(())
     }

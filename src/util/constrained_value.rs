@@ -20,16 +20,19 @@ pub(crate) struct Constrained {
 
 impl Debug for Constrained {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('≈')?;
         if let Some(value) = self.desired {
-            f.write_fmt(format_args!("{}", value))?;
+            write!(f, "{value}")?;
+        }
+        if self.min == self.max {
+            write!(f, "={}", self.min)?;
         } else {
-            f.write_char('?')?;
-        }
-        if self.min != N::MIN {
-            f.write_fmt(format_args!("≥{}", self.min))?;
-        }
-        if self.max != N::MAX {
-            f.write_fmt(format_args!("≤{}", self.max))?;
+            if self.min != N::MIN {
+                write!(f, "≥{}", self.min)?;
+            }
+            if self.max != N::MAX {
+                write!(f, "≤{}", self.max)?;
+            }
         }
         Ok(())
     }
