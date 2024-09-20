@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use ink_fmt::{config::FormatConfig, format};
+use ink_fmt::format;
 
 fn main() {
     let mut source = String::new();
@@ -20,7 +20,7 @@ fn main() {
 
     assert!(!source.is_empty());
 
-    let output = format(FormatConfig::default(), source);
+    let output = format(source);
 
     std::io::stdout()
         .lock()

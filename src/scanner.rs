@@ -1,5 +1,4 @@
 use crate::{
-    config,
     formatting::Formatting,
     node_rule::{DedentType, IndentType, NodeRules},
     util::constrained_value::Constrained,
@@ -39,7 +38,7 @@ pub struct FormatScanner {
 }
 
 impl FormatScanner {
-    pub fn new(query: Query, _config: config::FormatConfig) -> Self {
+    pub fn new(query: Query) -> Self {
         let spacing = query.capture_names().into_iter().map(|capture| {
             let mut split = capture.splitn(3, '.');
             let kind = split.next();
