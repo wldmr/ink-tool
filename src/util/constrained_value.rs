@@ -178,6 +178,7 @@ impl Constrained {
 mod tests {
     use super::Constrained as C;
     use super::*;
+    use crate::util::testing::in_case;
     use quickcheck::{Arbitrary, TestResult};
     use quickcheck_macros::quickcheck;
 
@@ -189,16 +190,29 @@ mod tests {
             new.desired = Option::arbitrary(g);
             new
         }
-    }
 
-    macro_rules! in_case {
-        ($prereq:expr => $($stmts:stmt);+) => {
-            if $prereq {
-                TestResult::from_bool({$($stmts)*})
-            } else {
-                TestResult::discard()
+        fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+            let mut attempts = Vec::new();
+            if let Some(desired) = self.desired {
+                if desired > 0 {
+                    let mut smaller = self.clone();
+                    smaller.desired = Some(desired - 1);
+                    attempts.push(smaller);
+                }
             }
-        };
+            if self.max > 0 {
+                let mut smaller = self.clone();
+                smaller.max = self.max - 1;
+                smaller.min = Ord::min(smaller.min, smaller.max);
+                attempts.push(smaller);
+            }
+            if self.min > 0 {
+                let mut smaller = self.clone();
+                smaller.min = self.min - 1;
+                attempts.push(smaller);
+            }
+            Box::new(attempts.into_iter())
+        }
     }
 
     #[quickcheck]

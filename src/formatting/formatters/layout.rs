@@ -39,7 +39,7 @@ impl<T: Formatting> Formatting for Layout<T> {
     fn space(&mut self, repeats: impl Into<Constrained>) {
         self.handle_next_bufferable({
             Bufferable::Whitespace({
-                whitespace::UndecidedWhitespace {
+                whitespace::Undecided {
                     space: repeats.into(),
                     newline: Constrained::new(),
                 }
@@ -50,7 +50,7 @@ impl<T: Formatting> Formatting for Layout<T> {
     fn line(&mut self, repeats: impl Into<Constrained>) {
         self.handle_next_bufferable({
             Bufferable::Whitespace({
-                whitespace::UndecidedWhitespace {
+                whitespace::Undecided {
                     space: Constrained::new(),
                     newline: repeats.into(),
                 }
@@ -147,7 +147,7 @@ impl<T: Formatting> Layout<T> {
 /// This enables us to look at all the whitespace constraints before deciding what to actually output
 /// (how many spaces or newlines).
 pub(crate) enum Bufferable {
-    Whitespace(whitespace::UndecidedWhitespace),
+    Whitespace(whitespace::Undecided),
     Text(String),
 }
 
