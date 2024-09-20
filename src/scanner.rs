@@ -1,6 +1,6 @@
 use crate::{
     config,
-    formatter::InkFmt,
+    formatting::Formatting,
     node_rule::{DedentType, IndentType, NodeRules},
     util::constrained_value::Constrained,
 };
@@ -112,7 +112,12 @@ impl FormatScanner {
         }
     }
 
-    pub fn scan(&mut self, tree: &tree_sitter::Tree, source: &str, formatter: &mut impl InkFmt) {
+    pub fn scan(
+        &mut self,
+        tree: &tree_sitter::Tree,
+        source: &str,
+        formatter: &mut impl Formatting,
+    ) {
         let mut rules: HashMap<NodeId, NodeRule> = HashMap::new();
 
         let mut node_actions: HashMap<(PatternIndex, CaptureIndex, &str), Box<str>> =
@@ -217,7 +222,7 @@ impl FormatScanner {
     }
 }
 
-fn collect_whitespace(outs: &mut impl InkFmt, whitespace: &str) {
+fn collect_whitespace(outs: &mut impl Formatting, whitespace: &str) {
     let newlines = whitespace
         .chars()
         .inspect(|it| assert!(it.is_whitespace()))
@@ -230,7 +235,7 @@ fn collect_whitespace(outs: &mut impl InkFmt, whitespace: &str) {
 }
 
 // IDEA: Get rid of format_item and use something like Vec<FnMut(impl InkFmt)>
-fn item_to_inkfmt(outs: &mut impl InkFmt, item: FormatItem) {
+fn item_to_inkfmt(outs: &mut impl Formatting, item: FormatItem) {
     match item {
         FormatItem::Nothing => {}
         FormatItem::Space(it) => outs.space(it),
@@ -247,7 +252,7 @@ fn item_to_inkfmt(outs: &mut impl InkFmt, item: FormatItem) {
 ///
 /// `outs` will contain the collected output items, in the order that it should appear in the output.
 fn collect_outputs<'t>(
-    outs: &mut impl InkFmt,
+    outs: &mut impl Formatting,
     rules: &mut NodeRules,
     node: Node<'t>,
     iter: &mut TreeCursor<'t>,

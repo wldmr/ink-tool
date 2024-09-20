@@ -1,21 +1,20 @@
 pub mod config;
 
 mod format_item;
-mod formatter;
+mod formatting;
 mod node_rule;
 mod scanner;
 mod util;
 
+use formatting::Layout;
+use formatting::Tracing;
 use tree_sitter::{Language, Parser, Query};
 
 pub(crate) type CaptureIndex = u32;
 pub(crate) type PatternIndex = usize;
 pub(crate) type NodeId = usize;
 
-use crate::{
-    formatter::{InkFormatter, Tracing},
-    scanner::FormatScanner,
-};
+use crate::scanner::FormatScanner;
 
 static QUERY: &str = include_str!("format.scm");
 
@@ -37,7 +36,7 @@ pub fn format(config: config::FormatConfig, source: String) -> String {
     let query = Query::new(&language, QUERY).expect("query should be valid");
     let mut scanner = FormatScanner::new(query, config);
     let mut result = String::new();
-    let mut formatter = Tracing::new(InkFormatter::new(Tracing::new(&mut result)));
+    let mut formatter = Tracing::new(Layout::new(Tracing::new(&mut result)));
 
     scanner.scan(&tree, &source, &mut formatter);
     // eprintln!("outer:\n{}", formatter.trace);
