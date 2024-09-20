@@ -15,7 +15,7 @@
  (global)
  (list)
  (choice_block)
- (gather_block)] @break.before.0-2 @break.after.1-2
+ (gather_block)] @break.before.0-2 @break.after.0-2
 
 ; Text is a tricky beast; it actually has individual children (such as '<' '-' etc, to allow for parsing syntax elements)
 (text) @take.as-is @space.before.0-1 @space.after.0-1
