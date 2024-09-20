@@ -56,12 +56,12 @@ VAR DEBUG = false
 --------------------------------------------------------------------------------*/
 
 
-== function lower(ref x)
-   ~ x = x - 1
+=== function lower(ref x)
+    ~ x = x - 1
 
 
-== function raise(ref x)
-   ~ x = x + 1
+=== function raise(ref x)
+    ~ x = x + 1
 
 
 

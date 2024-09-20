@@ -228,26 +228,26 @@ VAR has_trinket_b = false
 ```
 
 ```ink output
-== function addition(a, b)
-   ~ return a + b
+=== function addition(a, b)
+    ~ return a + b
 ```
 
 Additonally, because functions tend to not be very long (*hem* …), they are separated by only two blank lines.
 
 ```ink input
-== function neg(x)
-   ~ return -x
-== function inv(x)
-   ~ return 1 / x
+=== function neg(x)
+    ~ return -x
+=== function inv(x)
+    ~ return 1 / x
 ```
 
 ```ink output
-== function neg(x)
-   ~ return -x
+=== function neg(x)
+    ~ return -x
 
 
-== function inv(x)
-   ~ return 1 / x
+=== function inv(x)
+    ~ return 1 / x
 ```
 
 

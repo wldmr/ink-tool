@@ -62,7 +62,7 @@
  (knot start_mark: _ @start @space.after
        function: _ @space.before @space.after @indent.anchor
        end_mark: _? @delete) @break.after)
- (#replace @start "==")) @dedent @break.after.3
+ (#replace @start "===")) @dedent @break.after.3
 
 (stitch "="
         @space.before.0 ; to counteract the general rule for "=" that puts a space around it. Unfortunate side-effect of the grammar naming both syntax elements "=" :-/
