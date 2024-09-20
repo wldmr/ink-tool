@@ -113,7 +113,7 @@
 (cond_arm condition: (_) @space.before @space.after.0) @break.before.0-2 @break.after.1-2
 ; If linebreak: simple indent, if not: align the content on first line
 (cond_arm ":" @break.after @indent eol: _) @dedent
-(cond_arm ":" @space.after !eol . (_) @indent.anchor) @dedent
+(cond_arm ":" !eol . (_) @indent.anchor) @dedent
 
 (multiline_alternatives
  type: _+ @space.before @space.after

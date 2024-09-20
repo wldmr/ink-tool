@@ -406,11 +406,11 @@ x is something else
 }
 ```
 
+##### Content after Conditions
 
-If content starts on the same line, then a space is enforced after the ':'.
-Both "inline" and "newline" styles can be mixed. For example, here is a simple
-if-else block with mixed styles (where content isn't even allowed on the same
-line as the first condition; the compiler would reject it):
+Content can mostly follow on the same line as conditions. The first item in an it/else block
+is an exception; the compiler will reject it). Both "inline" and "newline" styles can be mixed.
+For example, here is a simple if-else block with mixed styles:
  
 ```ink input
 { x > 0:
@@ -447,35 +447,58 @@ But that's no cause for negativity.
 }
 ```
 
-#### Multiline Alternatives
 
-* Similar rules apply to multiline alternatives, only that these must start on a new line.
-* To more easily distinguish them from conditionals, the inner content as a whole is indented.
-* The keywords are separeed from their surroundings by a single space each
+##### Whitespace after Conditions
 
-Combined example:
+The same rules for whitespace apply as for other content: Existing spaces get collapsed to one,
+but if there is no space, none is added.
 
 ```ink input
-{shuffle     once:
-   - The coin came up heads.
- Just as I had predicted, with 50% confidence.
-  -     It was tails.
-      The most surprising thing about that was that the number side of a coin is called 'tails'.
-- The damn thing came to rest on its side.
-How very strange.
+{ distance:
+- 2:  it is a two steps away
+- 1: it is one step away
+- 0:it is right here
+- else:       it is somewhere else
 }
 ```
 
 ```ink output
-{ shuffle once:
-    - The coin came up heads.
-      Just as I had predicted, with 50% confidence.
-    - It was tails.
-      The most surprising thing about that was that the number side of a coin is called 'tails'.
-    - The damn thing came to rest on its side.
-      How very strange.
+{ distance:
+- 2: it is a two steps away
+- 1: it is one step away
+- 0:it is right here
+- else: it is somewhere else
 }
 ```
+
+#### Multiline Alternatives
+
+* To more easily distinguish them from conditionals, the inner content as a whole is indented.
+* The keywords are separeed from their surroundings by a single space each
+* The usual content-boundary whitespace rules apply
+
+Combined example:
+
+```ink input
+The food was{shuffle    once    :
+                    -<>n't
+-<>    kinda
+                -<>
+        -<> bad.
+                    Ok, maybe I'm exaggerating, but it certainly wasn't
+}<>      good.
+```
+
+```ink output
+The food was{ shuffle once:
+    -<>n't
+    -<> kinda
+    -<>
+    -<> bad.
+     Ok, maybe I'm exaggerating, but it certainly wasn't
+}<> good.
+```
+
 
 ## Code
 
