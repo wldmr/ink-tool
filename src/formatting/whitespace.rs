@@ -56,8 +56,7 @@ impl std::fmt::Debug for Whitespace {
 
 #[cfg(test)]
 mod tests {
-    use quickcheck::{Arbitrary, TestResult};
-    use quickcheck_macros::quickcheck;
+    use quickcheck::{quickcheck, Arbitrary, TestResult};
 
     use crate::util::testing::in_case;
 
@@ -88,22 +87,22 @@ mod tests {
         }
     }
 
-    #[quickcheck]
-    fn if_contains_newlines_then_collapse_to_newlines(undecided: Undecided) -> TestResult {
-        in_case! { undecided.newline.value() != 0 =>
-            match Whitespace::from(undecided) {
-                Whitespace::Newline(repeats) => repeats == undecided.newline,
-                _ => false
+    quickcheck! {
+        fn if_contains_newlines_then_collapse_to_newlines(undecided: Undecided) -> TestResult {
+            in_case! { undecided.newline.value() != 0 =>
+                match Whitespace::from(undecided) {
+                    Whitespace::Newline(repeats) => repeats == undecided.newline,
+                    _ => false
+                }
             }
         }
-    }
 
-    #[quickcheck]
-    fn if_no_newlines_then_collapse_to_spaces(undecided: Undecided) -> TestResult {
-        in_case! { undecided.newline.value() == 0 =>
-            match Whitespace::from(undecided) {
-                Whitespace::Space(repeats) => repeats == undecided.space,
-                _ => false
+        fn if_no_newlines_then_collapse_to_spaces(undecided: Undecided) -> TestResult {
+            in_case! { undecided.newline.value() == 0 =>
+                match Whitespace::from(undecided) {
+                    Whitespace::Space(repeats) => repeats == undecided.space,
+                    _ => false
+                }
             }
         }
     }

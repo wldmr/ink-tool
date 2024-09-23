@@ -179,8 +179,7 @@ mod tests {
     use super::Constrained as C;
     use super::*;
     use crate::util::testing::in_case;
-    use quickcheck::{Arbitrary, TestResult};
-    use quickcheck_macros::quickcheck;
+    use quickcheck::{quickcheck, Arbitrary, TestResult};
 
     impl Arbitrary for Constrained {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
@@ -215,86 +214,76 @@ mod tests {
         }
     }
 
-    #[quickcheck]
-    fn unconstrained_value(n: N) -> bool {
-        C::desired(n).value() == n
-    }
-
-    #[quickcheck]
-    fn value_greater_equal_min(constrained: Constrained) -> bool {
-        constrained.value() >= constrained.min
-    }
-
-    #[quickcheck]
-    fn value_less_equal_min(constrained: Constrained) -> bool {
-        constrained.value() <= constrained.max
-    }
-
-    #[quickcheck]
-    fn value_without_desired_is_min(c: Constrained) -> TestResult {
-        in_case! { c.desired.is_none() => c.value() == c.min }
-    }
-
-    #[quickcheck]
-    fn unconstrained_plus_at_most(n: N, max: N) -> bool {
-        let sum = Constrained::desired(n) + Constrained::at_most(max);
-        sum.value() == Ord::min(n, max)
-    }
-
-    #[quickcheck]
-    fn unconstrained_plus_at_least(n: N, min: N) -> bool {
-        let sum = Constrained::desired(n) + Constrained::at_least(min);
-        sum.value() == Ord::max(n, min)
-    }
-
-    #[quickcheck]
-    fn plus_desired_is_always_max(a: Constrained, b: Constrained) -> bool {
-        let c = a + b;
-        c.desired == Ord::max(a.desired, b.desired)
-    }
-
-    #[quickcheck]
-    fn plus_min_is_biggest_possible_if_max_not_zero(a: Constrained, b: Constrained) -> TestResult {
-        in_case! { a.max != 0 && b.max != 0 =>
-            let c = a + b;
-            c.min == Ord::max(a.min, b.min)
+    quickcheck! {
+        fn unconstrained_value(n: N) -> bool {
+            C::desired(n).value() == n
         }
-    }
 
-    #[quickcheck]
-    fn plus_min_is_zero_if_max_zero(a: Constrained, b: Constrained) -> TestResult {
-        in_case! { a.max == 0 || b.max == 0 =>
-            let c = a + b;
-            c.min == 0
+        fn value_greater_equal_min(constrained: Constrained) -> bool {
+            constrained.value() >= constrained.min
         }
-    }
 
-    #[quickcheck]
-    fn plus_max_is_smallest_possible(a: Constrained, b: Constrained) -> TestResult {
-        in_case! { a.min <= b.max && b.min <= a.max =>
-            let c = a + b;
-            c.max == Ord::min(a.max, b.max)
+        fn value_less_equal_min(constrained: Constrained) -> bool {
+            constrained.value() <= constrained.max
         }
-    }
 
-    #[quickcheck]
-    /// Conflict resolution: If any min bound is greater than the other max bound,
-    /// the min wins and the max grows to accomodate it ... IF the max is not 0!
-    fn plus_conflict_grows_max(a: Constrained, b: Constrained) -> TestResult {
-        in_case! { (a.min > b.max && b.max != 0) || (b.min > a.max && a.max != 0) =>
-            let c = a + b;
-            let new_max = Ord::max(a.min, b.min);
-            c.min == c.max && c.max == new_max
+        fn value_without_desired_is_min(c: Constrained) -> TestResult {
+            in_case! { c.desired.is_none() => c.value() == c.min }
         }
-    }
 
-    #[quickcheck]
-    /// Conflict resolution: If any min bound is greater than the other max bound,
-    /// the max wins ... IF the max is 0!
-    fn plus_conflict_zero_always_wins(a: Constrained, b: Constrained) -> TestResult {
-        in_case! { (a.min > b.max && b.max == 0) || (b.min > a.max && a.max == 0) =>
+        fn unconstrained_plus_at_most(n: N, max: N) -> bool {
+            let sum = Constrained::desired(n) + Constrained::at_most(max);
+            sum.value() == Ord::min(n, max)
+        }
+
+        fn unconstrained_plus_at_least(n: N, min: N) -> bool {
+            let sum = Constrained::desired(n) + Constrained::at_least(min);
+            sum.value() == Ord::max(n, min)
+        }
+
+        fn plus_desired_is_always_max(a: Constrained, b: Constrained) -> bool {
             let c = a + b;
-            c.min == c.max && c.max == 0
+            c.desired == Ord::max(a.desired, b.desired)
+        }
+
+        fn plus_min_is_biggest_possible_if_max_not_zero(a: Constrained, b: Constrained) -> TestResult {
+            in_case! { a.max != 0 && b.max != 0 =>
+                let c = a + b;
+                c.min == Ord::max(a.min, b.min)
+            }
+        }
+
+        fn plus_min_is_zero_if_max_zero(a: Constrained, b: Constrained) -> TestResult {
+            in_case! { a.max == 0 || b.max == 0 =>
+                let c = a + b;
+                c.min == 0
+            }
+        }
+
+        fn plus_max_is_smallest_possible(a: Constrained, b: Constrained) -> TestResult {
+            in_case! { a.min <= b.max && b.min <= a.max =>
+                let c = a + b;
+                c.max == Ord::min(a.max, b.max)
+            }
+        }
+
+        /// Conflict resolution: If any min bound is greater than the other max bound,
+        /// the min wins and the max grows to accomodate it ... IF the max is not 0!
+        fn plus_conflict_grows_max(a: Constrained, b: Constrained) -> TestResult {
+            in_case! { (a.min > b.max && b.max != 0) || (b.min > a.max && a.max != 0) =>
+                let c = a + b;
+                let new_max = Ord::max(a.min, b.min);
+                c.min == c.max && c.max == new_max
+            }
+        }
+
+        /// Conflict resolution: If any min bound is greater than the other max bound,
+        /// the max wins ... IF the max is 0!
+        fn plus_conflict_zero_always_wins(a: Constrained, b: Constrained) -> TestResult {
+            in_case! { (a.min > b.max && b.max == 0) || (b.min > a.max && a.max == 0) =>
+                let c = a + b;
+                c.min == c.max && c.max == 0
+            }
         }
     }
 }
