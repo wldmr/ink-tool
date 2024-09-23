@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.18", features = ["derive"] }
 tree-sitter = "0.23"
 tree-sitter-ink = { path = "../tree-sitter-ink/", version = '24.6.18'}
+walkdir = "2.5.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
@@ -15,3 +17,8 @@ quickcheck = "1.0.3"
 cc="*"
 derive_builder = "0.20.0"
 markdown = "1.0.0-alpha.17"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
