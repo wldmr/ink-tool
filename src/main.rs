@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::{command, Args, Parser, Subcommand};
-use ink_fmt::format;
+use ink_tool::format;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

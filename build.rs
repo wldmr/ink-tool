@@ -54,7 +54,7 @@ fn mod_per_file(path: &Path) -> String {
                 r###"
                 #[test]
                 fn test_{idx:0>2}_{function_name}() {{
-                    let output = ink_fmt::format(r#"{input}"#.to_string());
+                    let output = ink_tool::format(r#"{input}"#.to_string());
                     pretty_assertions::assert_str_eq!(
                         output,
                         r#"{expected}"#,

@@ -1,5 +1,8 @@
 [package]
-name = "ink-fmt"
+name = "ink-tool"
+description = "Toolset for Inkle's Ink language"
+keywords = ["ink", "formatter", "language-server"]
+categories = ["command-line-utilities", "development-tools", "game-development"]
 version = "0.1.0"
 edition = "2021"
 
