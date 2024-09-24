@@ -1,6 +1,7 @@
-use crate::{formatting::whitespace, util::constrained_value::Constrained};
-
-use crate::formatting::Formatting;
+use crate::fmt::{
+    formatting::{whitespace, Formatting},
+    util::constrained_value::Constrained,
+};
 
 use std::fmt::Debug;
 

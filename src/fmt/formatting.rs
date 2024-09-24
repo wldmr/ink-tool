@@ -1,4 +1,4 @@
-use crate::util::constrained_value::Constrained;
+use crate::fmt::util::constrained_value::Constrained;
 
 mod formatters;
 mod whitespace;

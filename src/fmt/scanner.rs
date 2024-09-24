@@ -1,4 +1,4 @@
-use crate::{
+use crate::fmt::{
     formatting::Formatting,
     node_rule::{DedentType, IndentType, NodeRules},
     util::constrained_value::Constrained,

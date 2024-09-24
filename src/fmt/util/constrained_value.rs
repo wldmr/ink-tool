@@ -178,7 +178,7 @@ impl Constrained {
 mod tests {
     use super::Constrained as C;
     use super::*;
-    use crate::util::testing::in_case;
+    use crate::fmt::util::testing::in_case;
     use quickcheck::{quickcheck, Arbitrary, TestResult};
 
     impl Arbitrary for Constrained {

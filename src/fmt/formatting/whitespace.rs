@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use crate::util::constrained_value::Constrained;
+use crate::fmt::util::constrained_value::Constrained;
 
 /// Keeps track of the constraints on spaces and newlines.
 ///
@@ -58,7 +58,7 @@ impl std::fmt::Debug for Whitespace {
 mod tests {
     use quickcheck::{quickcheck, Arbitrary, TestResult};
 
-    use crate::util::testing::in_case;
+    use crate::fmt::util::testing::in_case;
 
     use super::*;
 
