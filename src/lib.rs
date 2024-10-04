@@ -7,4 +7,7 @@ pub mod ink_syntax {
 
         include!(concat!(env!("OUT_DIR"), "/type_sitter_ink.rs"));
     }
+
+    mod visitor;
+    pub use visitor::Visitor;
 }
