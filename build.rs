@@ -3,9 +3,13 @@ use markdown::{mdast::Node, unist::Position, ParseOptions};
 use std::env;
 use std::fs;
 use std::path::Path;
+use type_sitter_gen::{generate_nodes, NodeTypeMap};
 
 fn main() {
     let out_dir = env::var_os("OUT_DIR").unwrap();
+
+    compile_type_sitter();
+
     let dest_path = Path::new(&out_dir).join("userdoc.rs");
     println!("cargo::rerun-if-changed=doc/");
     let userdoc_tests: String = fs::read_dir("doc")
@@ -119,4 +123,32 @@ fn get_test_cases(path: &Path) -> Vec<TestCase> {
         }
     }
     return result;
+}
+
+fn compile_type_sitter() {
+    use tree_sitter_ink;
+    let out_dir = env::var_os("OUT_DIR").unwrap();
+
+    let mut node_map = NodeTypeMap::try_from(tree_sitter_ink::NODE_TYPES)
+        .expect("generating nodes should work, otherwise the feature is pointless");
+    let (named, unnamed): (Vec<_>, Vec<_>) = node_map
+        .values()
+        .map(|node| node.name.clone())
+        .partition(|name| name.is_named);
+    let named = node_map
+        .add_custom_supertype("_all_named", named)
+        .expect("this shouldn't already exist");
+    let unnamed = node_map
+        .add_custom_supertype("_all_unnamed", unnamed)
+        .expect("this shouldn't already exist");
+    node_map
+        .add_custom_supertype("_all_nodes", vec![named, unnamed])
+        .expect("this shouldn't already exist");
+    let type_sitter_ink_types = generate_nodes(node_map)
+        .expect("generating rust code should work, otherwise the feature is pointless")
+        .into_string();
+
+    let type_sitter_ink_path = Path::new(&out_dir).join("type_sitter_ink.rs");
+    println!("cargo::warning=Writing {}", type_sitter_ink_path.display());
+    std::fs::write(&type_sitter_ink_path, type_sitter_ink_types).unwrap();
 }
