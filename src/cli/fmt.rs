@@ -4,6 +4,7 @@ use std::{
 };
 
 use clap::Args;
+use ink_tool::AppResult;
 
 #[derive(Args, Debug)]
 /// Format ink files or STDIN
@@ -29,7 +30,7 @@ pub(crate) struct FmtOpt {
     output: Option<PathBuf>,
 }
 
-pub(crate) fn fmt(opt: FmtOpt) -> std::io::Result<()> {
+pub(crate) fn fmt(opt: FmtOpt) -> AppResult<()> {
     match &opt.input {
         None => {
             let mut source = String::new();

@@ -1,5 +1,7 @@
+use ink_tool::AppResult;
+
 mod cli;
 
-fn main() -> std::io::Result<()> {
+fn main() -> AppResult<()> {
     cli::main()
 }

@@ -1,3 +1,5 @@
+use std::error::Error;
+
 pub mod fmt;
 pub mod lsp;
 
@@ -11,3 +13,5 @@ pub mod ink_syntax {
     mod visitor;
     pub use visitor::Visitor;
 }
+
+pub type AppResult<T> = Result<T, Box<dyn Error + Sync + Send>>;

@@ -1,4 +1,5 @@
 use clap::{command, Parser, Subcommand};
+use ink_tool::AppResult;
 
 pub(crate) mod fmt;
 pub(crate) mod lsp;
@@ -16,7 +17,7 @@ enum Commands {
     Lsp(lsp::LspOpt),
 }
 
-pub(crate) fn main() -> std::io::Result<()> {
+pub(crate) fn main() -> AppResult<()> {
     let args = Cli::parse();
     match args.command {
         Commands::Fmt(opt) => fmt::fmt(opt),
