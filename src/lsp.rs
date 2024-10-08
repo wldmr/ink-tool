@@ -1,50 +1,61 @@
-use std::error::Error;
-
+use clap::error::Result;
 use lsp_types::OneOf;
-use lsp_types::{
-    request::GotoDefinition, GotoDefinitionResponse, InitializeParams, ServerCapabilities,
-};
+use lsp_types::{InitializeParams, ServerCapabilities};
 
-use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
-use request::HoverRequest;
-
-use std::{
-    collections::HashMap,
-    io::{self, Write},
-    str::FromStr,
-    sync::mpsc,
+use lsp_server::{
+    Connection, ExtractError, Message, ReqQueue, Request, RequestId, Response, ResponseError,
 };
+use request::{DocumentSymbolRequest, HoverRequest};
+
+use std::collections::HashMap;
 
 use lsp_types::*;
-use serde::{Deserialize, Serialize};
 use type_sitter_lib::Node;
 
 mod tree;
 
-#[derive(Default, Debug)]
-pub struct ServerState {
+pub struct LspState {
+    parser: tree_sitter::Parser,
     documents: HashMap<Uri, tree_sitter::Tree>,
+}
+
+impl LspState {
+    pub fn new() -> Self {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_ink::LANGUAGE.into())
+            .expect("If this fails, we can't recover.");
+        Self {
+            parser,
+            documents: HashMap::new(),
+        }
+    }
 }
 
 use crate::AppResult;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct LspMessage;
+// *** Config Area: Register Server behaviors here ***
 
-impl FromStr for LspMessage {
-    type Err = std::io::Error;
-
-    fn from_str(_s: &str) -> Result<Self, Self::Err> {
-        Ok(LspMessage)
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        ..Default::default()
     }
 }
 
-pub struct LspBackend {
-    input: mpsc::Receiver<LspMessage>,
-    output: mpsc::Sender<LspMessage>,
-    parser: tree_sitter::Parser,
-    state: ServerState,
+static HANDLERS: &'static [RequestHandlerFn] = &[
+    HoverRequest::handle_request,
+    DocumentSymbolRequest::handle_request,
+];
+
+enum RequestHandlerResult {
+    Success(RequestId, serde_json::Value),
+    Failure(RequestId, ResponseError),
+    NotInterested(Request),
 }
+
+type RequestHandlerFn = fn(Request, &mut LspState) -> RequestHandlerResult;
 
 pub fn run_lsp() -> AppResult<()> {
     // Note that  we must have our logging only write out to stderr.
@@ -55,11 +66,7 @@ pub fn run_lsp() -> AppResult<()> {
     let (connection, io_threads) = Connection::stdio();
 
     // Run the server and wait for the two threads to end (typically by trigger LSP Exit event).
-    let server_capabilities = serde_json::to_value(&ServerCapabilities {
-        hover_provider: Some(HoverProviderCapability::Simple(true)),
-        ..Default::default()
-    })
-    .unwrap();
+    let server_capabilities = serde_json::to_value(&server_capabilities()).unwrap();
     let initialization_params = match connection.initialize(server_capabilities) {
         Ok(it) => it,
         Err(e) => {
@@ -69,16 +76,9 @@ pub fn run_lsp() -> AppResult<()> {
             return Err(e.into());
         }
     };
-    main_loop(connection, initialization_params)?;
-    io_threads.join()?;
+    let _params: InitializeParams = serde_json::from_value(initialization_params).unwrap();
+    let mut state = LspState::new();
 
-    // Shut down gracefully.
-    eprintln!("shutting down server");
-    Ok(())
-}
-
-fn main_loop(connection: Connection, params: serde_json::Value) -> AppResult<()> {
-    let _params: InitializeParams = serde_json::from_value(params).unwrap();
     eprintln!("starting example main loop");
     for msg in &connection.receiver {
         eprintln!("got msg: {msg:?}");
@@ -88,28 +88,10 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> AppResult<()>
                     return Ok(());
                 }
                 eprintln!("got request: {req:?}");
-                match cast::<HoverRequest>(req) {
-                    Ok((id, params)) => {
-                        eprintln!("got gotoDefinition request #{id}: {params:?}");
-                        let result = Some(Hover {
-                            contents: HoverContents::Scalar(MarkedString::String(
-                                "You are indeed hovering".to_owned(),
-                            )),
-                            range: None,
-                        });
-                        let result = serde_json::to_value(&result).unwrap();
-                        let resp = Response {
-                            id,
-                            result: Some(result),
-                            error: None,
-                        };
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"),
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-                // ...
+                match handle_request(req, &mut state).into() {
+                    Ok(response) => connection.sender.send(Message::Response(response))?,
+                    Err(req) => eprintln!("unhandled request {req:?}"),
+                }
             }
             Message::Response(resp) => {
                 eprintln!("got response: {resp:?}");
@@ -119,15 +101,80 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> AppResult<()>
             }
         }
     }
+    io_threads.join()?;
+
+    // Shut down gracefully.
+    eprintln!("shutting down server");
     Ok(())
 }
 
-fn cast<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>
-where
-    R: lsp_types::request::Request,
-    R::Params: serde::de::DeserializeOwned,
-{
-    req.extract(R::METHOD)
+fn handle_request(mut request: Request, state: &mut LspState) -> Result<Response, Request> {
+    for handler in HANDLERS {
+        use RequestHandlerResult::*;
+        match handler(request, state) {
+            NotInterested(it) => request = it, // let the next handler try
+            Success(id, succ) => {
+                return Ok(Response {
+                    id,
+                    result: Some(succ),
+                    error: None,
+                })
+            }
+            Failure(id, fail) => {
+                return Ok(Response {
+                    id,
+                    result: None,
+                    error: Some(fail),
+                })
+            }
+        }
+    }
+    Err(request)
+}
+
+trait RequestHandler: lsp_types::request::Request {
+    fn execute(params: Self::Params, state: &mut LspState) -> Self::Result;
+
+    fn handle_request(req: Request, state: &mut LspState) -> RequestHandlerResult {
+        match req.extract(Self::METHOD) {
+            Ok((id, params)) => {
+                // eprintln!("got gotoDefinition request #{id}: {params:?}");
+                let result = Self::execute(params, state);
+                let result = serde_json::to_value(&result).unwrap();
+                RequestHandlerResult::Success(id, result)
+            }
+            Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"), // maybe we should skip malformed json gracefully?
+            Err(ExtractError::MethodMismatch(req)) => RequestHandlerResult::NotInterested(req),
+        }
+    }
+}
+
+impl RequestHandler for HoverRequest {
+    fn execute(_params: Self::Params, _state: &mut LspState) -> Self::Result {
+        Some(Hover {
+            contents: HoverContents::Scalar(MarkedString::String(
+                "You are indeed hovering".to_owned(),
+            )),
+            range: None,
+        })
+    }
+}
+
+impl RequestHandler for DocumentSymbolRequest {
+    fn execute(params: Self::Params, _state: &mut LspState) -> Self::Result {
+        let info = SymbolInformation {
+            name: "Boo".to_owned(),
+            kind: SymbolKind::FIELD,
+            tags: None,
+            deprecated: None,
+            location: Location {
+                uri: params.text_document.uri,
+                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            },
+            container_name: None,
+        };
+        Some(DocumentSymbolResponse::Flat(vec![info]))
+    }
 }
 
 fn text<'s, 'a, T: Node<'a>>(txt: &'s str, node: &T) -> &'s str {
