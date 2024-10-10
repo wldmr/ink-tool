@@ -1,10 +1,10 @@
-use lsp_types::*;
-
+use crate::AppResult;
+use line_index::WideEncoding;
 use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
 };
-
-use crate::AppResult;
+use lsp_types::*;
+use state::ServerState;
 
 mod document;
 mod notification_handlers;
@@ -14,7 +14,20 @@ mod tree;
 
 // *** Config Area: Define Server behaviors here ***
 
-fn server_capabilities() -> ServerCapabilities {
+fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
+    /// This function only exists so we can use the ? operator.
+    fn find_utf8(params: &InitializeParams) -> Option<PositionEncodingKind> {
+        params
+            .capabilities
+            .general
+            .as_ref()?
+            .position_encodings
+            .as_ref()?
+            .iter()
+            .find(|&it| it == &PositionEncodingKind::UTF8)
+            .cloned()
+    }
+
     ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
@@ -27,7 +40,7 @@ fn server_capabilities() -> ServerCapabilities {
                 save: None,
             },
         )),
-        position_encoding: Some(PositionEncodingKind::UTF16),
+        position_encoding: find_utf8(params).or(Some(PositionEncodingKind::UTF16)),
         ..Default::default()
     }
 }
@@ -57,8 +70,8 @@ enum NotificationHandlerResult {
     NotInterested(Notification),
 }
 
-type RequestHandlerFn = fn(Request, &mut state::ServerState) -> RequestHandlerResult;
-type NotificationHandlerFn = fn(Notification, &mut state::ServerState) -> NotificationHandlerResult;
+type RequestHandlerFn = fn(Request, &mut ServerState) -> RequestHandlerResult;
+type NotificationHandlerFn = fn(Notification, &mut ServerState) -> NotificationHandlerResult;
 
 pub fn run_lsp() -> AppResult<()> {
     // Note that  we must have our logging only write out to stderr.
@@ -67,9 +80,9 @@ pub fn run_lsp() -> AppResult<()> {
     // also be implemented to use sockets or HTTP.
     let (connection, io_threads) = Connection::stdio();
 
-    // Run the server and wait for the two threads to end (typically by trigger LSP Exit event).
-    let server_capabilities = serde_json::to_value(&server_capabilities()).unwrap();
-    let initialization_params = match connection.initialize(server_capabilities) {
+    // Init
+
+    let (init_id, params) = match connection.initialize_start() {
         Ok(it) => it,
         Err(e) => {
             if e.channel_is_disconnected() {
@@ -78,12 +91,43 @@ pub fn run_lsp() -> AppResult<()> {
             return Err(e.into());
         }
     };
-    let params: InitializeParams = serde_json::from_value(initialization_params).unwrap();
+    let params: InitializeParams = serde_json::from_value(params).unwrap();
+    let server_capabilities = server_capabilities(&params);
+
+    let wide_encoding = match server_capabilities.position_encoding {
+        Some(ref enc) if *enc == PositionEncodingKind::UTF8 => None,
+        Some(ref enc) if *enc == PositionEncodingKind::UTF16 => Some(WideEncoding::Utf16),
+        Some(ref enc) if *enc == PositionEncodingKind::UTF32 => Some(WideEncoding::Utf32),
+        Some(ref other) => panic!("Unknown encoding '{other:?}'"),
+        None => panic!("We must guarantee a position encoding!"),
+    };
+
+    let init_result = InitializeResult {
+        capabilities: server_capabilities,
+        server_info: Some(ServerInfo {
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }),
+    };
+    let init_result = serde_json::to_value(&init_result)?;
+
     eprintln!(
-        "initparams: {}",
+        "init params: {}",
         serde_json::to_string_pretty(&params).unwrap()
     );
-    let mut state = state::ServerState::new();
+    eprintln!(
+        "init result: {}",
+        serde_json::to_string_pretty(&init_result).unwrap()
+    );
+
+    if let Err(e) = connection.initialize_finish(init_id, init_result) {
+        if e.channel_is_disconnected() {
+            io_threads.join()?;
+        }
+        return Err(e.into());
+    };
+
+    let mut state = ServerState::new(wide_encoding);
 
     for msg in &connection.receiver {
         // eprintln!("got msg: {}", serde_json::to_string_pretty(&msg).unwrap());
@@ -120,10 +164,7 @@ pub fn run_lsp() -> AppResult<()> {
     Ok(())
 }
 
-fn handle_request(
-    mut request: Request,
-    state: &mut state::ServerState,
-) -> Result<Response, Request> {
+fn handle_request(mut request: Request, state: &mut ServerState) -> Result<Response, Request> {
     for handler in HANDLERS {
         use RequestHandlerResult::*;
         match handler(request, state) {
@@ -149,7 +190,7 @@ fn handle_request(
 
 fn handle_notification(
     mut notification: Notification,
-    state: &mut state::ServerState,
+    state: &mut ServerState,
 ) -> Result<Option<Notification>, Notification> {
     for handler in NOTIFICATION_HANDLERS {
         use NotificationHandlerResult::*;
@@ -176,10 +217,10 @@ where
 {
     fn execute(
         params: Self::Params,
-        state: &mut state::ServerState,
+        state: &mut ServerState,
     ) -> Result<Self::Result, ResponseError>;
 
-    fn handle_request(req: Request, state: &mut state::ServerState) -> RequestHandlerResult {
+    fn handle_request(req: Request, state: &mut ServerState) -> RequestHandlerResult {
         use RequestHandlerResult::*;
         match req.extract(Self::METHOD) {
             Ok((id, params)) => match Self::execute(params, state) {
@@ -201,12 +242,12 @@ where
 {
     fn execute(
         params: Self::Params,
-        state: &mut state::ServerState,
+        state: &mut ServerState,
     ) -> Result<Option<Notification>, ResponseError>;
 
     fn handle_notification(
         notification: lsp_server::Notification,
-        state: &mut state::ServerState,
+        state: &mut ServerState,
     ) -> NotificationHandlerResult {
         use NotificationHandlerResult::*;
         match notification.extract(Self::METHOD) {
