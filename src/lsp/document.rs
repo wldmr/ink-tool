@@ -1,6 +1,9 @@
 use line_index::{LineCol, LineIndex, WideEncoding};
 
-pub(crate) struct Document {
+use super::tree::ink_parser;
+
+pub(crate) struct InkDocument {
+    parser: tree_sitter::Parser,
     tree: tree_sitter::Tree,
     enc: Option<WideEncoding>,
     lines: line_index::LineIndex,
@@ -8,18 +11,17 @@ pub(crate) struct Document {
 }
 
 pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
+
 /// Public API
-impl Document {
-    pub(crate) fn new(
-        text: String,
-        enc: Option<WideEncoding>,
-        parser: &mut tree_sitter::Parser,
-    ) -> Self {
+impl InkDocument {
+    pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
+        let mut parser = ink_parser();
         let tree = parser
             .parse(&text, None)
             .expect("parsing should always work");
         let lines = LineIndex::new(&text);
         Self {
+            parser,
             tree,
             lines,
             enc,
@@ -27,8 +29,8 @@ impl Document {
         }
     }
 
-    pub fn edit(&mut self, edits: Vec<DocumentEdit>, parser: &mut tree_sitter::Parser) {
-        eprintln!("{} edits to apply", edits.len());
+    pub fn edit(&mut self, edits: Vec<DocumentEdit>) {
+        eprintln!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
             let edit = range.map(|range| self.edit_range(range, &new_text));
             let modified_tree = if let Some(edit) = edit {
@@ -40,28 +42,39 @@ impl Document {
                 self.text = new_text;
                 None
             };
-            self.tree = parser
+            self.tree = self
+                .parser
                 .parse(&self.text, modified_tree)
                 .expect("parsing must work");
             self.lines = LineIndex::new(&self.text);
         }
+        eprintln!("document now is {}", self.text);
     }
+}
 
+/// Private Helpers
+impl InkDocument {
     fn edit_range(&self, range: lsp_types::Range, new_text: &str) -> tree_sitter::InputEdit {
         let start = self.to_line_col(range.start);
         let end = self.to_line_col(range.end);
 
+        let start_byte = self.to_byte(start);
+        let old_end_byte = self.to_byte(end);
+        let new_end_byte = start_byte + new_text.bytes().len();
+
         tree_sitter::InputEdit {
-            start_byte: self.to_byte(start),
-            old_end_byte: self.to_byte(end),
-            new_end_byte: self.to_byte(start) + new_text.bytes().len(),
+            start_byte,
+            old_end_byte,
+            new_end_byte,
 
             /* https://github.com/tree-sitter/tree-sitter/discussions/1793#discussioncomment-3094712
-            > So if you never plan to read from a tree again after editing it, except to re-parse and create a new tree, you can actually pass bogus row/column information if you want, and re-parsing will still work fine.
+            > So if you never plan to read from a tree again after editing it,
+            > except to re-parse and create a new tree, you can actually pass
+            > bogus row/column information if you want, and re-parsing will still work fine.
             */
             start_position: tree_sitter::Point::new(0, 0),
-            old_end_position: tree_sitter::Point::new(0, 0).clone(),
-            new_end_position: tree_sitter::Point::new(0, 0).clone(),
+            old_end_position: tree_sitter::Point::new(0, 0),
+            new_end_position: tree_sitter::Point::new(0, 0),
         }
     }
 

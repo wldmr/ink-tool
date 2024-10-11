@@ -5,7 +5,7 @@ use crate::ink_syntax::Visitor;
 use tree_sitter::Parser;
 use type_sitter_lib::{Node, NodeResult};
 
-fn ink_parser() -> Parser {
+pub fn ink_parser() -> Parser {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_ink::LANGUAGE.into())
