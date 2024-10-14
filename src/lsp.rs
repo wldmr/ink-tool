@@ -4,6 +4,7 @@ use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
 };
 use lsp_types::*;
+use request::Request as _;
 use state::ServerState;
 
 mod document;
@@ -13,6 +14,8 @@ mod state;
 mod tree;
 
 // *** Config Area: Define Server behaviors here ***
+
+const INK_GLOB: &str = "**/*.ink";
 
 fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
     /// This function only exists so we can use the ? operator.
@@ -91,8 +94,8 @@ pub fn run_lsp() -> AppResult<()> {
             return Err(e.into());
         }
     };
-    let params: InitializeParams = serde_json::from_value(params).unwrap();
-    let server_capabilities = server_capabilities(&params);
+    let init_params: InitializeParams = serde_json::from_value(params).unwrap();
+    let server_capabilities = server_capabilities(&init_params);
 
     let wide_encoding = match server_capabilities.position_encoding {
         Some(ref enc) if *enc == PositionEncodingKind::UTF8 => None,
@@ -113,7 +116,7 @@ pub fn run_lsp() -> AppResult<()> {
 
     eprintln!(
         "init params: {}",
-        serde_json::to_string_pretty(&params).unwrap()
+        serde_json::to_string_pretty(&init_params).unwrap()
     );
     eprintln!(
         "init result: {}",
@@ -126,6 +129,45 @@ pub fn run_lsp() -> AppResult<()> {
         }
         return Err(e.into());
     };
+
+    let can_watch_files = init_params
+        .capabilities
+        .workspace
+        .and_then(|it| it.did_change_watched_files)
+        .and_then(|it| it.dynamic_registration)
+        .unwrap_or(false);
+
+    if can_watch_files {
+        let ink_files = lsp_types::FileSystemWatcher {
+            glob_pattern: GlobPattern::String(INK_GLOB.into()),
+            kind: None,
+        };
+        let options = lsp_types::DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![ink_files],
+        };
+        let registration = Registration {
+            id: "ink-files-watcher".into(),
+            method: "workspace/didChangeWatchedFiles".into(),
+            register_options: Some(serde_json::to_value(&options).unwrap()),
+        };
+        let dyn_reg_id: RequestId = 0.into();
+        let request = Request {
+            id: dyn_reg_id.clone(),
+            method: request::RegisterCapability::METHOD.into(),
+            params: serde_json::to_value(RegistrationParams {
+                registrations: vec![registration],
+            })
+            .unwrap(),
+        };
+        eprintln!(
+            "dynamic registration request: {}",
+            serde_json::to_string_pretty(&request).unwrap()
+        );
+        let msg = Message::Request(request);
+        connection.sender.send(msg).expect(
+            "If this doesn't work, it means sending doesn't work at all. No need to go on.",
+        );
+    }
 
     let mut state = ServerState::new(wide_encoding);
 

@@ -22,10 +22,9 @@ impl ServerState {
 /// Document handling
 impl ServerState {
     pub fn open_document(&mut self, uri: Uri, text: String) -> Result<(), String> {
-        let new = InkDocument::new(text, self.wide_encoding);
         match self.documents.entry(uri) {
             Entry::Vacant(vacant) => {
-                vacant.insert(new);
+                vacant.insert(InkDocument::new(text, self.wide_encoding));
                 Ok(())
             }
             Entry::Occupied(old) => Err(format!("Document '{}' already open", old.key().as_str())),

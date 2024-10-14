@@ -29,7 +29,7 @@ impl InkDocument {
         }
     }
 
-    pub fn edit(&mut self, edits: Vec<DocumentEdit>) {
+    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) {
         // eprintln!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
             let edit = range.map(|range| self.edit_range(range, &new_text));
