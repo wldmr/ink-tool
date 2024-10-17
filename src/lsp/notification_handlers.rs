@@ -1,51 +1,57 @@
-use super::{state::ServerState, NotificationHandler};
-use lsp_server::{Notification, ResponseError};
+use super::{
+    state::{self},
+    NotificationHandler,
+};
+use lsp_server::ResponseError;
 
 impl NotificationHandler for lsp_types::notification::DidOpenTextDocument {
     fn execute(
         params: Self::Params,
-        state: &mut ServerState,
-    ) -> Result<Option<Notification>, ResponseError> {
-        state
-            .open_document(params.text_document.uri, params.text_document.text)
-            .map(|()| None)
-            .map_err(request_failed)
+        sender: &crossbeam::channel::Sender<state::Request>,
+    ) -> Result<(), ResponseError> {
+        let edit = vec![(None, params.text_document.text)];
+        sender
+            .send((
+                state::Command::EditDocument(params.text_document.uri, edit),
+                None,
+            ))
+            .map_err(|e| error(lsp_server::ErrorCode::InternalError, e.to_string()))
     }
 }
 
 impl NotificationHandler for lsp_types::notification::DidCloseTextDocument {
     fn execute(
-        params: Self::Params,
-        state: &mut ServerState,
-    ) -> Result<Option<Notification>, ResponseError> {
-        state
-            .close_document(params.text_document.uri)
-            .map(|_| None)
-            .map_err(request_failed)
+        _params: Self::Params,
+        _sender: &crossbeam::channel::Sender<state::Request>,
+    ) -> Result<(), ResponseError> {
+        // not sure if we need to do anything
+        Ok(())
     }
 }
 
 impl NotificationHandler for lsp_types::notification::DidChangeTextDocument {
     fn execute(
         params: Self::Params,
-        state: &mut ServerState,
-    ) -> Result<Option<Notification>, ResponseError> {
+        sender: &crossbeam::channel::Sender<state::Request>,
+    ) -> Result<(), ResponseError> {
         let edits = params
             .content_changes
             .into_iter()
             .map(|it| (it.range, it.text))
             .collect();
-        state
-            .edit_document(params.text_document.uri, edits)
-            .map(|()| None)
-            .map_err(request_failed)
+        sender
+            .send((
+                state::Command::EditDocument(params.text_document.uri, edits),
+                None,
+            ))
+            .map_err(|e| error(lsp_server::ErrorCode::InternalError, e.to_string()))
     }
 }
 
-fn request_failed(message: String) -> ResponseError {
+fn error(code: lsp_server::ErrorCode, message: impl Into<String>) -> ResponseError {
     ResponseError {
-        code: lsp_server::ErrorCode::RequestFailed as i32,
-        message,
+        code: code as i32,
+        message: message.into(),
         data: None,
     }
 }

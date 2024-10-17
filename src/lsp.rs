@@ -5,7 +5,8 @@ use lsp_server::{
 };
 use lsp_types::*;
 use request::Request as _;
-use state::ServerState;
+use state::State;
+use std::fs;
 
 mod document;
 mod notification_handlers;
@@ -16,6 +17,7 @@ mod tree;
 // *** Config Area: Define Server behaviors here ***
 
 const INK_GLOB: &str = "**/*.ink";
+const DID_CHANGE_WATCHED_FILES: &str = "workspace/didChangeWatchedFiles";
 
 fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
     /// This function only exists so we can use the ? operator.
@@ -48,6 +50,14 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
     }
 }
 
+/// Some clients may say they support file watching, but they don't (or do it badly)
+/// For those we override the client capabilities and do the watching ourselves.
+// TODO: move to config at some point
+fn force_server_file_watcher(client_info: &ClientInfo) -> bool {
+    // https://github.com/helix-editor/helix/discussions/11903
+    client_info.name == "helix"
+}
+
 static HANDLERS: &'static [RequestHandlerFn] = &[
     request::HoverRequest::handle_request,
     request::DocumentSymbolRequest::handle_request,
@@ -68,28 +78,29 @@ enum RequestHandlerResult {
 }
 
 enum NotificationHandlerResult {
-    Success(Option<Notification>),
+    Success,
     Failure(ResponseError),
     NotInterested(Notification),
 }
 
-type RequestHandlerFn = fn(Request, &mut ServerState) -> RequestHandlerResult;
-type NotificationHandlerFn = fn(Notification, &mut ServerState) -> NotificationHandlerResult;
+type RequestHandlerFn =
+    fn(Request, &crossbeam::channel::Sender<state::Request>) -> RequestHandlerResult;
+type NotificationHandlerFn =
+    fn(Notification, &crossbeam::channel::Sender<state::Request>) -> NotificationHandlerResult;
 
 pub fn run_lsp() -> AppResult<()> {
     // Note that  we must have our logging only write out to stderr.
 
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
-    let (connection, io_threads) = Connection::stdio();
+    let (client_connection, client_io_threads) = Connection::stdio();
 
     // Init
-
-    let (init_id, params) = match connection.initialize_start() {
+    let (init_id, params) = match client_connection.initialize_start() {
         Ok(it) => it,
         Err(e) => {
             if e.channel_is_disconnected() {
-                io_threads.join()?;
+                client_io_threads.join()?;
             }
             return Err(e.into());
         }
@@ -123,93 +134,130 @@ pub fn run_lsp() -> AppResult<()> {
         serde_json::to_string_pretty(&init_result).unwrap()
     );
 
-    if let Err(e) = connection.initialize_finish(init_id, init_result) {
+    let server_command_channel = crossbeam::channel::unbounded();
+    let server_state_handle = state::run(State::new(wide_encoding), server_command_channel.1)?;
+
+    if let Err(e) = client_connection.initialize_finish(init_id, init_result) {
         if e.channel_is_disconnected() {
-            io_threads.join()?;
+            client_io_threads.join()?;
         }
         return Err(e.into());
     };
 
-    let can_watch_files = init_params
+    let client_can_watch_files = init_params
         .capabilities
         .workspace
         .and_then(|it| it.did_change_watched_files)
         .and_then(|it| it.dynamic_registration)
         .unwrap_or(false);
 
-    if can_watch_files {
-        let ink_files = lsp_types::FileSystemWatcher {
-            glob_pattern: GlobPattern::String(INK_GLOB.into()),
-            kind: None,
+    let force = init_params
+        .client_info
+        .as_ref()
+        .map(force_server_file_watcher)
+        .unwrap_or(false);
+
+    let root = std::path::Path::new(".");
+
+    for walk_result in walkdir::WalkDir::new(root) {
+        let path = match walk_result {
+            Ok(ref it) => it.path(),
+            Err(e) => {
+                eprintln!("file read error: {e}");
+                continue;
+            }
         };
-        let options = lsp_types::DidChangeWatchedFilesRegistrationOptions {
-            watchers: vec![ink_files],
-        };
-        let registration = Registration {
-            id: "ink-files-watcher".into(),
-            method: "workspace/didChangeWatchedFiles".into(),
-            register_options: Some(serde_json::to_value(&options).unwrap()),
-        };
-        let dyn_reg_id: RequestId = 0.into();
-        let request = Request {
-            id: dyn_reg_id.clone(),
-            method: request::RegisterCapability::METHOD.into(),
-            params: serde_json::to_value(RegistrationParams {
-                registrations: vec![registration],
-            })
-            .unwrap(),
-        };
-        eprintln!(
-            "dynamic registration request: {}",
-            serde_json::to_string_pretty(&request).unwrap()
-        );
-        let msg = Message::Request(request);
-        connection.sender.send(msg).expect(
+        use std::str::FromStr;
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "ink") {
+            let path = std::path::absolute(path).expect("file should have a proper path");
+            let path = path.to_str().expect("we should get proper file paths");
+            let uri = Uri::from_str(&format!("file://{path}")).unwrap();
+            let command = match fs::read_to_string(path) {
+                Ok(text) => state::Command::EditDocument(uri, vec![(None, text)]),
+                Err(err) => {
+                    eprintln!("file read error: {err:?}");
+                    continue;
+                }
+            };
+            let send_result = server_command_channel.0.send((command, None));
+            if let Err(e) = send_result {
+                eprintln!("send error: {e:?}");
+            }
+        }
+    }
+    let file_watcher = if client_can_watch_files && !force {
+        register_file_change_notification(&client_connection).expect(
             "If this doesn't work, it means sending doesn't work at all. No need to go on.",
         );
+        None
+    } else {
+        Some(start_file_watcher(root, server_command_channel.0.clone()))
+    };
+
+    while let Ok(msg) = client_connection.receiver.recv() {
+        if let Message::Request(ref req) = msg {
+            if client_connection.handle_shutdown(req)? {
+                continue;
+            }
+        }
+        let handled = handle_message(msg, &server_command_channel.0);
+        if let Some(reply) = handled {
+            let _ = client_connection.sender.send(reply);
+        }
     }
 
-    let mut state = ServerState::new(wide_encoding);
+    // Shut down gracefully.
+    if file_watcher.is_some() {
+        eprintln!("shutting down file watcher");
+        drop(file_watcher);
+    }
+    eprintln!("shutting down client connection");
+    client_io_threads.join()?;
+    eprintln!("shutting down server state");
+    server_state_handle.join().expect("come on man");
 
-    for msg in &connection.receiver {
-        // eprintln!("got msg: {}", serde_json::to_string_pretty(&msg).unwrap());
-        match msg {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    return Ok(());
-                }
-                // eprintln!("got request: {req:?}");
-                match handle_request(req, &mut state).into() {
-                    Ok(response) => connection.sender.send(Message::Response(response))?,
-                    Err(req) => eprintln!("unhandled request {req:?}"),
+    Ok(())
+}
+
+fn handle_message(
+    msg: lsp_server::Message,
+    sender: &crossbeam::channel::Sender<state::Request>,
+) -> Option<lsp_server::Message> {
+    match msg {
+        Message::Request(req) => {
+            // eprintln!("got request: {req:?}");
+            match handle_request(req, sender).into() {
+                Ok(response) => Some(Message::Response(response)),
+                Err(req) => {
+                    eprintln!("unhandled request {req:?}");
+                    None
                 }
             }
-            Message::Response(resp) => {
-                eprintln!("got response: {resp:?}");
-            }
-            Message::Notification(not) => {
-                // eprintln!("got notification: {not:?}");
-                match handle_notification(not, &mut state) {
-                    Ok(None) => {}
-                    Ok(Some(response)) => {
-                        connection.sender.send(Message::Notification(response))?;
-                    }
-                    Err(not) => eprintln!("unhandled notification {not:?}"),
+        }
+        Message::Response(resp) => {
+            eprintln!("got response: {resp:?}");
+            None
+        }
+        Message::Notification(not) => {
+            // eprintln!("got notification: {not:?}");
+            match handle_notification(not, sender) {
+                Ok(()) => None,
+                Err(not) => {
+                    eprintln!("unhandled notification {not:?}");
+                    None
                 }
             }
         }
     }
-    io_threads.join()?;
-
-    // Shut down gracefully.
-    eprintln!("shutting down server");
-    Ok(())
 }
 
-fn handle_request(mut request: Request, state: &mut ServerState) -> Result<Response, Request> {
+fn handle_request(
+    mut request: Request,
+    sender: &crossbeam::channel::Sender<state::Request>,
+) -> Result<Response, Request> {
     for handler in HANDLERS {
         use RequestHandlerResult::*;
-        match handler(request, state) {
+        match handler(request, sender) {
             NotInterested(it) => request = it, // let the next handler try
             Success(id, succ) => {
                 return Ok(Response {
@@ -232,21 +280,18 @@ fn handle_request(mut request: Request, state: &mut ServerState) -> Result<Respo
 
 fn handle_notification(
     mut notification: Notification,
-    state: &mut ServerState,
-) -> Result<Option<Notification>, Notification> {
+    sender: &crossbeam::channel::Sender<state::Request>,
+) -> Result<(), Notification> {
     for handler in NOTIFICATION_HANDLERS {
         use NotificationHandlerResult::*;
-        match handler(notification, state) {
+        match handler(notification, sender) {
             NotInterested(it) => notification = it, // let the next handler try
-            Success(reply) => {
-                return Ok(reply);
+            Success => {
+                return Ok(());
             }
             Failure(err) => {
-                return Ok(Some(lsp_server::Notification::new(
-                    <lsp_types::notification::LogMessage as notification::Notification>::METHOD
-                        .to_owned(),
-                    err,
-                )));
+                eprintln!("{err:?}");
+                return Ok(());
             }
         }
     }
@@ -259,13 +304,16 @@ where
 {
     fn execute(
         params: Self::Params,
-        state: &mut ServerState,
+        sender: &crossbeam::channel::Sender<state::Request>,
     ) -> Result<Self::Result, ResponseError>;
 
-    fn handle_request(req: Request, state: &mut ServerState) -> RequestHandlerResult {
+    fn handle_request(
+        req: Request,
+        sender: &crossbeam::channel::Sender<state::Request>,
+    ) -> RequestHandlerResult {
         use RequestHandlerResult::*;
         match req.extract(Self::METHOD) {
-            Ok((id, params)) => match Self::execute(params, state) {
+            Ok((id, params)) => match Self::execute(params, sender) {
                 Ok(result) => {
                     let result = serde_json::to_value(&result).unwrap();
                     Success(id, result)
@@ -284,21 +332,109 @@ where
 {
     fn execute(
         params: Self::Params,
-        state: &mut ServerState,
-    ) -> Result<Option<Notification>, ResponseError>;
+        sender: &crossbeam::channel::Sender<state::Request>,
+    ) -> Result<(), ResponseError>;
 
     fn handle_notification(
         notification: lsp_server::Notification,
-        state: &mut ServerState,
+        sender: &crossbeam::channel::Sender<state::Request>,
     ) -> NotificationHandlerResult {
         use NotificationHandlerResult::*;
         match notification.extract(Self::METHOD) {
-            Ok(params) => match Self::execute(params, state) {
-                Ok(reply) => Success(reply),
+            Ok(params) => match Self::execute(params, sender) {
+                Ok(()) => Success,
                 Err(err) => Failure(err),
             },
             Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"), // maybe we should skip malformed json gracefully?
             Err(ExtractError::MethodMismatch(req)) => NotInterested(req),
         }
     }
+}
+
+fn register_file_change_notification(
+    client_connection: &Connection,
+) -> Result<(), crossbeam::channel::SendError<Message>> {
+    let ink_files = lsp_types::FileSystemWatcher {
+        glob_pattern: GlobPattern::String(INK_GLOB.into()),
+        kind: None,
+    };
+    let watch_files = Registration {
+        id: "ink-files-watcher".into(),
+        method: DID_CHANGE_WATCHED_FILES.into(),
+        register_options: Some(
+            serde_json::to_value(lsp_types::DidChangeWatchedFilesRegistrationOptions {
+                watchers: vec![ink_files],
+            })
+            .unwrap(),
+        ),
+    };
+    let request = Request {
+        id: 0.into(),
+        method: request::RegisterCapability::METHOD.into(),
+        params: serde_json::to_value(RegistrationParams {
+            registrations: vec![watch_files],
+        })
+        .unwrap(),
+    };
+    eprintln!(
+        "dynamic registration request: {}",
+        serde_json::to_string_pretty(&request).unwrap()
+    );
+    client_connection.sender.send(Message::Request(request))
+}
+
+fn start_file_watcher(
+    root: &std::path::Path,
+    sender: crossbeam::channel::Sender<state::Request>,
+) -> impl notify::Watcher {
+    use notify::Watcher as _;
+    use std::str::FromStr;
+
+    #[derive(Debug)]
+    enum WatchEventKind {
+        Edit,
+        Forget,
+    }
+
+    let mut watcher = notify::recommended_watcher(move |res| match res {
+        Ok(notify::Event { kind, paths, .. }) => {
+            let kind = match kind {
+                notify::EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
+                    WatchEventKind::Edit
+                }
+                notify::EventKind::Remove(notify::event::RemoveKind::File) => {
+                    WatchEventKind::Forget
+                }
+                _ => return,
+            };
+            let inks = paths
+                .iter()
+                .filter(|it| it.extension().is_some_and(|ext| ext == "ink"));
+            for path in inks {
+                let path = std::path::absolute(path).expect("file should have a proper path");
+                let path = path.to_str().expect("we should get proper file paths");
+                let uri = Uri::from_str(&format!("file://{path}")).unwrap();
+                let command = match kind {
+                    WatchEventKind::Edit => match fs::read_to_string(path) {
+                        Ok(text) => state::Command::EditDocument(uri, vec![(None, text)]),
+                        Err(err) => {
+                            eprintln!("file read error: {err:?}");
+                            continue;
+                        }
+                    },
+                    WatchEventKind::Forget => state::Command::ForgetDocument(uri),
+                };
+                let send_result = sender.send((command, None));
+                if let Err(e) = send_result {
+                    eprintln!("send error: {e:?}");
+                }
+            }
+        }
+        Err(e) => eprintln!("watch error: {:?}", e),
+    })
+    .expect("creating a watcher must work");
+    watcher
+        .watch(root, notify::RecursiveMode::Recursive)
+        .expect("setting up a file watcher must work");
+    watcher
 }

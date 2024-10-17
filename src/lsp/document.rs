@@ -7,7 +7,7 @@ pub(crate) struct InkDocument {
     tree: tree_sitter::Tree,
     enc: Option<WideEncoding>,
     lines: line_index::LineIndex,
-    text: String,
+    pub(crate) text: String,
 }
 
 pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);

@@ -1,49 +1,72 @@
-use std::collections::{hash_map::Entry, HashMap};
-
+use super::document::{DocumentEdit, InkDocument};
+use crate::AppResult;
+use crossbeam::channel::Receiver;
 use line_index::WideEncoding;
 use lsp_types::Uri;
+use std::collections::HashMap;
 
-use super::document::{DocumentEdit, InkDocument};
+pub type Request = (Command, Option<crossbeam::channel::Sender<Response>>);
 
-pub(crate) struct ServerState {
+/// Make something happen to the state
+#[derive(Debug)]
+pub(crate) enum Command {
+    /// Change the content of this document (including on initial load)
+    EditDocument(Uri, Vec<DocumentEdit>),
+    /// Forget everything about this document
+    ForgetDocument(Uri),
+}
+
+pub(crate) enum Response {
+    Ok,
+    Error(String),
+}
+
+pub(crate) struct State {
     wide_encoding: Option<WideEncoding>,
     documents: HashMap<Uri, InkDocument>,
 }
 
-impl ServerState {
+impl State {
     pub fn new(wide_encoding: Option<WideEncoding>) -> Self {
         Self {
             documents: HashMap::new(),
             wide_encoding,
         }
     }
+
+    fn handle(&mut self, cmd: Command) -> Response {
+        match cmd {
+            Command::EditDocument(uri, edits) => {
+                let entry = self
+                    .documents
+                    .entry(uri)
+                    .or_insert(InkDocument::new(String::new(), self.wide_encoding));
+                entry.edit(edits);
+                Response::Ok
+            }
+            Command::ForgetDocument(uri) => match self.documents.remove(&uri) {
+                Some(_) => Response::Ok,
+                None => Response::Error(format!("Document {} not known", uri.path())),
+            },
+        }
+    }
 }
 
-/// Document handling
-impl ServerState {
-    pub fn open_document(&mut self, uri: Uri, text: String) -> Result<(), String> {
-        match self.documents.entry(uri) {
-            Entry::Vacant(vacant) => {
-                vacant.insert(InkDocument::new(text, self.wide_encoding));
-                Ok(())
+pub(crate) fn run(
+    mut state: State,
+    receiver: Receiver<Request>,
+) -> AppResult<std::thread::JoinHandle<()>> {
+    let handle = std::thread::Builder::new()
+        .name("lsp-state".to_owned())
+        .spawn(move || {
+            for (command, reply_to) in receiver {
+                let response = state.handle(command);
+                if let Some(responder) = reply_to {
+                    if let Err(e) = responder.send(response) {
+                        eprintln!("couldn't send reply: {e}");
+                    }
+                }
             }
-            Entry::Occupied(old) => Err(format!("Document '{}' already open", old.key().as_str())),
-        }
-    }
-
-    pub fn close_document(&mut self, uri: Uri) -> Result<(), String> {
-        match self.documents.remove(&uri) {
-            Some(_) => Ok(()),
-            None => Err(format!("Document '{}' wasn't open", uri.as_str())),
-        }
-    }
-
-    pub fn edit_document(&mut self, uri: Uri, edits: Vec<DocumentEdit>) -> Result<(), String> {
-        let doc = self
-            .documents
-            .get_mut(&uri)
-            .ok_or_else(|| format!("Document not open '{}'", uri.as_str()))?;
-        doc.edit(edits);
-        Ok(())
-    }
+        })?;
+    Ok(handle)
 }
