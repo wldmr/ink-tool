@@ -14,6 +14,49 @@ mod request_handlers;
 mod state;
 mod tree;
 
+macro_rules! try_request_handlers {
+    ($request:ident, $sender:ident => $($handler:ident),+$(,)?) => {
+        $(
+        let $request = match $handler::handle_request($request, $sender) {
+            RequestHandlerResult::NotInterested(it) => it, // let the next handler try
+            RequestHandlerResult::Success(id, succ) => {
+                return Ok(Response {
+                    id,
+                    result: Some(succ),
+                    error: None,
+                })
+            }
+            RequestHandlerResult::Failure(id, fail) => {
+                return Ok(Response {
+                    id,
+                    result: None,
+                    error: Some(fail),
+                })
+            }
+        };
+        )+
+        Err($request)
+    };
+}
+
+macro_rules! try_notification_handlers {
+    ($notification:ident, $sender:ident => $($handler:ident),+$(,)?) => {
+        $(
+        let $notification = match $handler::handle_notification($notification, $sender) {
+            NotificationHandlerResult::NotInterested(it) => it, // let the next handler try
+            NotificationHandlerResult::Success => {
+                return Ok(());
+            }
+            NotificationHandlerResult::Failure(err) => {
+                eprintln!("{err:?}");
+                return Ok(());
+            }
+        };
+        )+
+        Err($notification)
+    };
+}
+
 // *** Config Area: Define Server behaviors here ***
 
 const INK_GLOB: &str = "**/*.ink";
@@ -58,16 +101,29 @@ fn force_server_file_watcher(client_info: &ClientInfo) -> bool {
     client_info.name == "helix"
 }
 
-static HANDLERS: &'static [RequestHandlerFn] = &[
-    request::HoverRequest::handle_request,
-    request::DocumentSymbolRequest::handle_request,
-];
+// Add request and notification handlers here
+fn handle_request(
+    request: Request,
+    sender: &crossbeam::channel::Sender<state::Request>,
+) -> Result<Response, Request> {
+    use request::*;
+    try_request_handlers! { request, sender =>
+        HoverRequest,
+        DocumentSymbolRequest,
+    }
+}
 
-static NOTIFICATION_HANDLERS: &'static [NotificationHandlerFn] = &[
-    notification::DidOpenTextDocument::handle_notification,
-    notification::DidCloseTextDocument::handle_notification,
-    notification::DidChangeTextDocument::handle_notification,
-];
+fn handle_notification(
+    notification: Notification,
+    sender: &crossbeam::channel::Sender<state::Request>,
+) -> Result<(), Notification> {
+    use notification::*;
+    try_notification_handlers! { notification, sender =>
+        DidOpenTextDocument,
+        DidCloseTextDocument,
+        DidChangeTextDocument,
+    }
+}
 
 // *** End Config Area ***
 
@@ -82,11 +138,6 @@ enum NotificationHandlerResult {
     Failure(ResponseError),
     NotInterested(Notification),
 }
-
-type RequestHandlerFn =
-    fn(Request, &crossbeam::channel::Sender<state::Request>) -> RequestHandlerResult;
-type NotificationHandlerFn =
-    fn(Notification, &crossbeam::channel::Sender<state::Request>) -> NotificationHandlerResult;
 
 pub fn run_lsp() -> AppResult<()> {
     // Note that  we must have our logging only write out to stderr.
@@ -249,53 +300,6 @@ fn handle_message(
             }
         }
     }
-}
-
-fn handle_request(
-    mut request: Request,
-    sender: &crossbeam::channel::Sender<state::Request>,
-) -> Result<Response, Request> {
-    for handler in HANDLERS {
-        use RequestHandlerResult::*;
-        match handler(request, sender) {
-            NotInterested(it) => request = it, // let the next handler try
-            Success(id, succ) => {
-                return Ok(Response {
-                    id,
-                    result: Some(succ),
-                    error: None,
-                })
-            }
-            Failure(id, fail) => {
-                return Ok(Response {
-                    id,
-                    result: None,
-                    error: Some(fail),
-                })
-            }
-        }
-    }
-    Err(request)
-}
-
-fn handle_notification(
-    mut notification: Notification,
-    sender: &crossbeam::channel::Sender<state::Request>,
-) -> Result<(), Notification> {
-    for handler in NOTIFICATION_HANDLERS {
-        use NotificationHandlerResult::*;
-        match handler(notification, sender) {
-            NotInterested(it) => notification = it, // let the next handler try
-            Success => {
-                return Ok(());
-            }
-            Failure(err) => {
-                eprintln!("{err:?}");
-                return Ok(());
-            }
-        }
-    }
-    Err(notification)
 }
 
 trait RequestHandler: lsp_types::request::Request
