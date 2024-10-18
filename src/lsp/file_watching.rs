@@ -11,29 +11,17 @@ use lsp_types::{
 use std::str::FromStr;
 
 pub(crate) fn read_initial_files(root: &std::path::Path, state: &SharedState) -> AppResult<()> {
-    for walk_result in walkdir::WalkDir::new(root) {
-        let path = match walk_result {
-            Ok(ref it) => it.path(),
-            Err(e) => {
-                eprintln!("file read error: {e}");
-                continue;
-            }
-        };
-
+    // We'll liberally `?` out of any error. Failing to read initial would leave the server in a weird state.
+    for dir_entry in walkdir::WalkDir::new(root) {
+        let dir_entry = dir_entry?;
+        let path = dir_entry.path();
+        let mut state = state.lock()?;
         if path.is_file() && path.extension().is_some_and(|ext| ext == "ink") {
-            let path = std::path::absolute(path).expect("file should have a proper path");
-            let path = path.to_str().expect("we should get proper file paths");
-            let uri = Uri::from_str(&format!("file://{path}")).unwrap();
-            match std::fs::read_to_string(path) {
-                Ok(text) => {
-                    let mut state = state.lock()?;
-                    state.edit(uri, vec![(None, text)])?;
-                }
-                Err(err) => {
-                    eprintln!("file read error: {err:?}");
-                    continue;
-                }
-            }
+            let path = std::path::absolute(path)?;
+            let path = path.to_str().ok_or("path wasn't a proper UTF-8 string")?;
+            let uri = Uri::from_str(&format!("file://{path}"))?;
+            let text = std::fs::read_to_string(path)?;
+            state.edit(uri, vec![(None, text)])?;
         }
     }
     Ok(())
@@ -59,12 +47,11 @@ pub(crate) fn register_file_change_notification(client_connection: &Connection) 
         method: request::RegisterCapability::METHOD.into(),
         params: serde_json::to_value(RegistrationParams {
             registrations: vec![watch_files],
-        })
-        .unwrap(),
+        })?,
     };
     eprintln!(
         "dynamic registration request: {}",
-        serde_json::to_string_pretty(&request).unwrap()
+        serde_json::to_string_pretty(&request)?
     );
     client_connection.sender.send(Message::Request(request))?;
     Ok(())
@@ -97,19 +84,25 @@ pub(crate) fn start_file_watcher(
             let inks = paths
                 .iter()
                 .filter(|it| it.extension().is_some_and(|ext| ext == "ink"));
+            let mut state = state
+                .lock()
+                .expect("we should be able to get a lock on the state");
             for path in inks {
                 let path = std::path::absolute(path).expect("file should have a proper path");
                 let path = path.to_str().expect("we should get proper file paths");
                 let uri = Uri::from_str(&format!("file://{path}")).unwrap();
                 match kind {
                     WatchEventKind::Edit => {
-                        if let Err(err) = update_from_disk(path, uri, &state) {
+                        let result = std::fs::read_to_string(path)
+                            .map_err(|e| e.to_string())
+                            .and_then(|text| state.edit(uri, vec![(None, text)]));
+                        if let Err(err) = result {
                             eprintln!("document update error: {err:?}");
                             continue;
                         }
                     }
                     WatchEventKind::Forget => {
-                        if let Err(err) = forget(uri, &state) {
+                        if let Err(err) = state.forget(uri) {
                             eprintln!("document remove error: {err:?}");
                             continue;
                         }
@@ -121,19 +114,4 @@ pub(crate) fn start_file_watcher(
     })?;
     watcher.watch(root, notify::RecursiveMode::Recursive)?;
     Ok(watcher)
-}
-
-fn update_from_disk(
-    path: impl AsRef<std::path::Path>,
-    uri: Uri,
-    state: &SharedState,
-) -> AppResult<()> {
-    let text = std::fs::read_to_string(path)?;
-    let mut state = state.lock()?;
-    state.edit(uri, vec![(None, text)]).map_err(Into::into)
-}
-
-fn forget(uri: Uri, state: &SharedState) -> AppResult<()> {
-    let mut state = state.lock()?;
-    state.forget(uri).map_err(Into::into)
 }
