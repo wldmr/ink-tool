@@ -10,13 +10,17 @@ mod document;
 mod file_watching;
 mod notification_handlers;
 mod request_handlers;
+mod shared;
 mod state;
 mod tree;
 
+// For that extra bit of convenience
+pub(crate) type SharedState = shared::SharedValue<state::State>;
+
 macro_rules! try_request_handlers {
-    ($request:ident, $sender:ident => $($handler:ident),+$(,)?) => {
+    ($request:ident, $state:ident => $($handler:ident),+$(,)?) => {
         $(
-        let $request = match $handler::handle_request($request, $sender) {
+        let $request = match $handler::handle_request($request, $state) {
             RequestHandlerResult::NotInterested(it) => it, // let the next handler try
             RequestHandlerResult::Success(id, succ) => {
                 return Ok(Response {
@@ -39,9 +43,9 @@ macro_rules! try_request_handlers {
 }
 
 macro_rules! try_notification_handlers {
-    ($notification:ident, $sender:ident => $($handler:ident),+$(,)?) => {
+    ($notification:ident, $state:ident => $($handler:ident),+$(,)?) => {
         $(
-        let $notification = match $handler::handle_notification($notification, $sender) {
+        let $notification = match $handler::handle_notification($notification, $state) {
             NotificationHandlerResult::NotInterested(it) => it, // let the next handler try
             NotificationHandlerResult::Success => {
                 return Ok(());
@@ -101,12 +105,9 @@ fn force_server_file_watcher(client_info: &ClientInfo) -> bool {
 }
 
 // Add request and notification handlers here
-fn handle_request(
-    request: Request,
-    sender: &crossbeam::channel::Sender<state::Request>,
-) -> Result<Response, Request> {
+fn handle_request(request: Request, state: &SharedState) -> Result<Response, Request> {
     use request::*;
-    try_request_handlers! { request, sender =>
+    try_request_handlers! { request, state =>
         HoverRequest,
         DocumentSymbolRequest,
     }
@@ -114,10 +115,10 @@ fn handle_request(
 
 fn handle_notification(
     notification: Notification,
-    sender: &crossbeam::channel::Sender<state::Request>,
+    state: &SharedState,
 ) -> Result<(), Notification> {
     use notification::*;
-    try_notification_handlers! { notification, sender =>
+    try_notification_handlers! { notification, state =>
         DidOpenTextDocument,
         DidCloseTextDocument,
         DidChangeTextDocument,
@@ -184,8 +185,7 @@ pub fn run_lsp() -> AppResult<()> {
         serde_json::to_string_pretty(&init_result).unwrap()
     );
 
-    let server_command_channel = crossbeam::channel::unbounded();
-    let server_state_handle = state::run(State::new(wide_encoding), server_command_channel.1)?;
+    let state = shared::SharedValue::new(State::new(wide_encoding));
 
     if let Err(e) = client_connection.initialize_finish(init_id, init_result) {
         if e.channel_is_disconnected() {
@@ -196,7 +196,7 @@ pub fn run_lsp() -> AppResult<()> {
 
     let workspace_root = std::path::Path::new(".");
 
-    file_watching::read_initial_files(workspace_root, &server_command_channel.0);
+    file_watching::read_initial_files(workspace_root, &state)?;
 
     let client_can_watch_files = init_params
         .capabilities
@@ -217,7 +217,7 @@ pub fn run_lsp() -> AppResult<()> {
     } else {
         Some(file_watching::start_file_watcher(
             workspace_root,
-            server_command_channel.0.clone(),
+            state.clone(),
         ))
     };
 
@@ -228,7 +228,7 @@ pub fn run_lsp() -> AppResult<()> {
                 continue;
             }
         }
-        let handled = handle_message(msg, &server_command_channel.0);
+        let handled = handle_message(msg, &state);
         if let Some(reply) = handled {
             let _ = client_connection.sender.send(reply);
         }
@@ -242,19 +242,19 @@ pub fn run_lsp() -> AppResult<()> {
     eprintln!("shutting down client connection");
     client_io_threads.join()?;
     eprintln!("shutting down server state");
-    server_state_handle.join().expect("come on man");
+    // server_state_handle.join().expect("come on man");
 
     Ok(())
 }
 
 pub(crate) fn handle_message(
     msg: lsp_server::Message,
-    sender: &crossbeam::channel::Sender<state::Request>,
+    state: &SharedState,
 ) -> Option<lsp_server::Message> {
     match msg {
         Message::Request(req) => {
             // eprintln!("got request: {req:?}");
-            match handle_request(req, sender).into() {
+            match handle_request(req, state).into() {
                 Ok(response) => Some(Message::Response(response)),
                 Err(req) => {
                     eprintln!("unhandled request {req:?}");
@@ -268,7 +268,7 @@ pub(crate) fn handle_message(
         }
         Message::Notification(not) => {
             // eprintln!("got notification: {not:?}");
-            match handle_notification(not, sender) {
+            match handle_notification(not, state) {
                 Ok(()) => None,
                 Err(not) => {
                     eprintln!("unhandled notification {not:?}");
@@ -283,18 +283,12 @@ trait RequestHandler: lsp_types::request::Request
 where
     Self::Params: std::fmt::Debug,
 {
-    fn execute(
-        params: Self::Params,
-        sender: &crossbeam::channel::Sender<state::Request>,
-    ) -> Result<Self::Result, ResponseError>;
+    fn execute(params: Self::Params, state: &SharedState) -> Result<Self::Result, ResponseError>;
 
-    fn handle_request(
-        req: Request,
-        sender: &crossbeam::channel::Sender<state::Request>,
-    ) -> RequestHandlerResult {
+    fn handle_request(req: Request, state: &SharedState) -> RequestHandlerResult {
         use RequestHandlerResult::*;
         match req.extract(Self::METHOD) {
-            Ok((id, params)) => match Self::execute(params, sender) {
+            Ok((id, params)) => match Self::execute(params, state) {
                 Ok(result) => {
                     let result = serde_json::to_value(&result).unwrap();
                     Success(id, result)
@@ -311,18 +305,15 @@ trait NotificationHandler: lsp_types::notification::Notification
 where
     Self::Params: std::fmt::Debug,
 {
-    fn execute(
-        params: Self::Params,
-        sender: &crossbeam::channel::Sender<state::Request>,
-    ) -> Result<(), ResponseError>;
+    fn execute(params: Self::Params, state: &SharedState) -> Result<(), ResponseError>;
 
     fn handle_notification(
         notification: lsp_server::Notification,
-        sender: &crossbeam::channel::Sender<state::Request>,
+        state: &SharedState,
     ) -> NotificationHandlerResult {
         use NotificationHandlerResult::*;
         match notification.extract(Self::METHOD) {
-            Ok(params) => match Self::execute(params, sender) {
+            Ok(params) => match Self::execute(params, state) {
                 Ok(()) => Success,
                 Err(err) => Failure(err),
             },

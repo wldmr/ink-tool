@@ -1,5 +1,8 @@
-use super::state;
-use crate::lsp::{DID_CHANGE_WATCHED_FILES, INK_GLOB};
+use super::SharedState;
+use crate::{
+    lsp::{DID_CHANGE_WATCHED_FILES, INK_GLOB},
+    AppResult,
+};
 use lsp_server::{Connection, Message, Request};
 use lsp_types::{
     request::{self, Request as _},
@@ -7,10 +10,7 @@ use lsp_types::{
 };
 use std::str::FromStr;
 
-pub(crate) fn read_initial_files(
-    root: &std::path::Path,
-    sender: &crossbeam::channel::Sender<state::Request>,
-) {
+pub(crate) fn read_initial_files(root: &std::path::Path, state: &SharedState) -> AppResult<()> {
     for walk_result in walkdir::WalkDir::new(root) {
         let path = match walk_result {
             Ok(ref it) => it.path(),
@@ -24,23 +24,22 @@ pub(crate) fn read_initial_files(
             let path = std::path::absolute(path).expect("file should have a proper path");
             let path = path.to_str().expect("we should get proper file paths");
             let uri = Uri::from_str(&format!("file://{path}")).unwrap();
-            let command = match std::fs::read_to_string(path) {
-                Ok(text) => state::Command::EditDocument(uri, vec![(None, text)]),
+            match std::fs::read_to_string(path) {
+                Ok(text) => {
+                    let mut state = state.lock()?;
+                    state.edit(uri, vec![(None, text)])?;
+                }
                 Err(err) => {
                     eprintln!("file read error: {err:?}");
                     continue;
                 }
-            };
-            let send_result = sender.send((command, None));
-            if let Err(e) = send_result {
-                eprintln!("send error: {e:?}");
             }
         }
     }
+    Ok(())
 }
-pub(crate) fn register_file_change_notification(
-    client_connection: &Connection,
-) -> Result<(), crossbeam::channel::SendError<Message>> {
+
+pub(crate) fn register_file_change_notification(client_connection: &Connection) -> AppResult<()> {
     let ink_files = lsp_types::FileSystemWatcher {
         glob_pattern: GlobPattern::String(INK_GLOB.into()),
         kind: None,
@@ -67,13 +66,14 @@ pub(crate) fn register_file_change_notification(
         "dynamic registration request: {}",
         serde_json::to_string_pretty(&request).unwrap()
     );
-    client_connection.sender.send(Message::Request(request))
+    client_connection.sender.send(Message::Request(request))?;
+    Ok(())
 }
 
 pub(crate) fn start_file_watcher(
     root: &std::path::Path,
-    sender: crossbeam::channel::Sender<state::Request>,
-) -> impl notify::Watcher {
+    state: super::SharedState,
+) -> AppResult<impl notify::Watcher> {
     use notify::Watcher as _;
     use std::str::FromStr;
 
@@ -101,27 +101,39 @@ pub(crate) fn start_file_watcher(
                 let path = std::path::absolute(path).expect("file should have a proper path");
                 let path = path.to_str().expect("we should get proper file paths");
                 let uri = Uri::from_str(&format!("file://{path}")).unwrap();
-                let command = match kind {
-                    WatchEventKind::Edit => match std::fs::read_to_string(path) {
-                        Ok(text) => state::Command::EditDocument(uri, vec![(None, text)]),
-                        Err(err) => {
-                            eprintln!("file read error: {err:?}");
+                match kind {
+                    WatchEventKind::Edit => {
+                        if let Err(err) = update_from_disk(path, uri, &state) {
+                            eprintln!("document update error: {err:?}");
                             continue;
                         }
-                    },
-                    WatchEventKind::Forget => state::Command::ForgetDocument(uri),
+                    }
+                    WatchEventKind::Forget => {
+                        if let Err(err) = forget(uri, &state) {
+                            eprintln!("document remove error: {err:?}");
+                            continue;
+                        }
+                    }
                 };
-                let send_result = sender.send((command, None));
-                if let Err(e) = send_result {
-                    eprintln!("send error: {e:?}");
-                }
             }
         }
         Err(e) => eprintln!("watch error: {:?}", e),
-    })
-    .expect("creating a watcher must work");
-    watcher
-        .watch(root, notify::RecursiveMode::Recursive)
-        .expect("setting up a file watcher must work");
-    watcher
+    })?;
+    watcher.watch(root, notify::RecursiveMode::Recursive)?;
+    Ok(watcher)
+}
+
+fn update_from_disk(
+    path: impl AsRef<std::path::Path>,
+    uri: Uri,
+    state: &SharedState,
+) -> AppResult<()> {
+    let text = std::fs::read_to_string(path)?;
+    let mut state = state.lock()?;
+    state.edit(uri, vec![(None, text)]).map_err(Into::into)
+}
+
+fn forget(uri: Uri, state: &SharedState) -> AppResult<()> {
+    let mut state = state.lock()?;
+    state.forget(uri).map_err(Into::into)
 }
