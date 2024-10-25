@@ -8,7 +8,7 @@ use lsp_types::{
     request::{self, Request as _},
     GlobPattern, Registration, RegistrationParams, Uri,
 };
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 pub(crate) fn read_initial_files(root: &std::path::Path, state: &SharedState) -> AppResult<()> {
     // We'll liberally `?` out of any error. Failing to read initial would leave the server in a weird state.
@@ -27,17 +27,23 @@ pub(crate) fn read_initial_files(root: &std::path::Path, state: &SharedState) ->
     Ok(())
 }
 
-pub(crate) fn register_file_change_notification(client_connection: &Connection) -> AppResult<()> {
-    let ink_files = lsp_types::FileSystemWatcher {
-        glob_pattern: GlobPattern::String(INK_GLOB.into()),
-        kind: None,
+pub(crate) fn register_file_change_notification(
+    client_connection: &Connection,
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> AppResult<()> {
+    let ink_files = |mut path: PathBuf| -> lsp_types::FileSystemWatcher {
+        path.push(INK_GLOB);
+        lsp_types::FileSystemWatcher {
+            glob_pattern: GlobPattern::String(path.to_string_lossy().into_owned()),
+            kind: None,
+        }
     };
     let watch_files = Registration {
         id: "ink-files-watcher".into(),
         method: DID_CHANGE_WATCHED_FILES.into(),
         register_options: Some(
             serde_json::to_value(lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                watchers: vec![ink_files],
+                watchers: paths.into_iter().map(ink_files).collect(),
             })
             .unwrap(),
         ),
@@ -58,8 +64,8 @@ pub(crate) fn register_file_change_notification(client_connection: &Connection) 
 }
 
 pub(crate) fn start_file_watcher(
-    root: &std::path::Path,
     state: super::SharedState,
+    roots: impl IntoIterator<Item = PathBuf>,
 ) -> AppResult<impl notify::Watcher> {
     use notify::Watcher as _;
     use std::str::FromStr;
@@ -112,6 +118,8 @@ pub(crate) fn start_file_watcher(
         }
         Err(e) => eprintln!("watch error: {:?}", e),
     })?;
-    watcher.watch(root, notify::RecursiveMode::Recursive)?;
+    for path in roots {
+        watcher.watch(&path, notify::RecursiveMode::Recursive)?;
+    }
     Ok(watcher)
 }

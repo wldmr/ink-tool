@@ -194,9 +194,37 @@ pub fn run_lsp() -> AppResult<()> {
         return Err(e.into());
     };
 
-    let workspace_root = std::path::Path::new(".");
+    let mut workspace_folders: Vec<_> = init_params
+        .workspace_folders
+        .unwrap_or_default()
+        .iter()
+        .map(|it| it.uri.path().as_str().to_owned())
+        .collect();
+    if workspace_folders.is_empty() {
+        #[allow(deprecated)] // just a fallback
+        if let Some(workpace_root) = init_params.root_uri {
+            workspace_folders.push(workpace_root.path().as_str().to_owned());
+        }
+    }
+    if workspace_folders.is_empty() {
+        #[allow(deprecated)] // just a fallback
+        if let Some(workpace_root) = init_params.root_path {
+            workspace_folders.push(workpace_root);
+        }
+    }
+    if workspace_folders.is_empty() {
+        workspace_folders.push(".".to_owned());
+    }
 
-    file_watching::read_initial_files(workspace_root, &state)?;
+    let workspace_folders: Vec<_> = workspace_folders
+        .into_iter()
+        .map(|it| Path::new(&it).to_path_buf())
+        .collect();
+
+    eprintln!("Workspace Folders: {workspace_folders:?}");
+    for path in workspace_folders.iter() {
+        file_watching::read_initial_files(&path, &state)?;
+    }
 
     let client_can_watch_files = init_params
         .capabilities
