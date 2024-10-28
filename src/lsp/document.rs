@@ -1,13 +1,20 @@
-use line_index::{LineCol, LineIndex, WideEncoding};
+mod symbols;
 
-use super::tree::ink_parser;
+use crate::ink_syntax::Visitor;
+use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
+use lsp_types::DocumentSymbolResponse;
+use symbols::DocumentSymbols;
+use tree_sitter::Parser;
+
+// IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
+// Everthing else works in terms of LSP types.
 
 pub(crate) struct InkDocument {
-    parser: tree_sitter::Parser,
     tree: tree_sitter::Tree,
+    text: String,
+    parser: tree_sitter::Parser,
     enc: Option<WideEncoding>,
     lines: line_index::LineIndex,
-    pub(crate) text: String,
 }
 
 pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
@@ -15,10 +22,13 @@ pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
 /// Public API
 impl InkDocument {
     pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
-        let mut parser = ink_parser();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_ink::LANGUAGE.into())
+            .expect("setting the language mustn't fail");
         let tree = parser
             .parse(&text, None)
-            .expect("parsing should always work");
+            .expect("can only return None with timeout, cancellation flag or missing language");
         let lines = LineIndex::new(&text);
         Self {
             parser,
@@ -32,7 +42,7 @@ impl InkDocument {
     pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) {
         // eprintln!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
-            let edit = range.map(|range| self.edit_range(range, &new_text));
+            let edit = range.map(|range| self.input_edit(range, &new_text));
             let modified_tree = if let Some(edit) = edit {
                 self.text
                     .replace_range(edit.start_byte..edit.old_end_byte, &new_text);
@@ -50,16 +60,21 @@ impl InkDocument {
         }
         // eprintln!("document now is {}", self.text);
     }
+
+    pub(crate) fn symbols(&self, qualified_symbol_names: bool) -> Option<DocumentSymbolResponse> {
+        DocumentSymbols::new(self, qualified_symbol_names)
+            .traverse(&mut self.tree.walk())
+            .and_then(|it| it.sym)
+            .and_then(|it| it.children)
+            .map(DocumentSymbolResponse::Nested)
+    }
 }
 
 /// Private Helpers
 impl InkDocument {
-    fn edit_range(&self, range: lsp_types::Range, new_text: &str) -> tree_sitter::InputEdit {
-        let start = self.to_line_col(range.start);
-        let end = self.to_line_col(range.end);
-
-        let start_byte = self.to_byte(start);
-        let old_end_byte = self.to_byte(end);
+    fn input_edit(&self, range: lsp_types::Range, new_text: &str) -> tree_sitter::InputEdit {
+        let start_byte = self.to_byte(range.start);
+        let old_end_byte = self.to_byte(range.end);
         let new_end_byte = start_byte + new_text.bytes().len();
 
         tree_sitter::InputEdit {
@@ -78,25 +93,48 @@ impl InkDocument {
         }
     }
 
-    fn to_line_col(&self, pos: lsp_types::Position) -> LineCol {
-        if let Some(enc) = self.enc {
-            let wide = line_index::WideLineCol {
-                line: pos.line,
-                col: pos.character,
-            };
+    fn to_byte(&self, pos: lsp_types::Position) -> usize {
+        let lsp_types::Position {
+            line,
+            character: col,
+        } = pos;
+        let pos = if let Some(enc) = self.enc {
             self.lines
-                .to_utf8(enc, wide)
+                .to_utf8(enc, WideLineCol { line, col })
                 .expect("Conversion from wide to UTF-8 mustn't fail")
         } else {
-            LineCol {
-                line: pos.line,
-                col: pos.character,
+            LineCol { line, col }
+        };
+        self.lines
+            .offset(pos)
+            .expect("LineCol must correspond to an offset")
+            .into()
+    }
+
+    fn lsp_position(&self, point: tree_sitter::Point) -> lsp_types::Position {
+        let native = LineCol {
+            line: point.row as u32,
+            col: point.column as u32,
+        };
+
+        if let Some(enc) = self.enc {
+            let wide = self.lines.to_wide(enc, native).unwrap();
+            lsp_types::Position {
+                line: wide.line,
+                character: wide.col,
+            }
+        } else {
+            lsp_types::Position {
+                line: native.line,
+                character: native.col,
             }
         }
     }
 
-    fn to_byte(&self, pos: LineCol) -> usize {
-        self.lines.offset(pos).expect("mustn't fail, dammit").into()
+    fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
+        let start = self.lsp_position(node.start_point);
+        let end = self.lsp_position(node.end_point);
+        lsp_types::Range { start, end }
     }
 }
 

@@ -1,3 +1,5 @@
+use std::{ops::Not, path::Path};
+
 use crate::AppResult;
 use line_index::WideEncoding;
 use lsp_server::{
@@ -12,7 +14,6 @@ mod notification_handlers;
 mod request_handlers;
 mod shared;
 mod state;
-mod tree;
 
 // For that extra bit of convenience
 pub(crate) type SharedState = shared::SharedValue<state::State>;
@@ -99,6 +100,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
 /// Some clients may say they support file watching, but they don't (or do it badly)
 /// For those we override the client capabilities and do the watching ourselves.
 // TODO: move to config at some point
+// IDEA: Perhaps just provide a config to force server side watching directly
 fn force_server_file_watcher(client_info: &ClientInfo) -> bool {
     // https://github.com/helix-editor/helix/discussions/11903
     client_info.name == "helix"
@@ -185,7 +187,15 @@ pub fn run_lsp() -> AppResult<()> {
         serde_json::to_string_pretty(&init_result).unwrap()
     );
 
-    let state = shared::SharedValue::new(State::new(wide_encoding));
+    let qualified_names = init_params
+        .capabilities
+        .text_document
+        .and_then(|it| it.document_symbol)
+        .and_then(|it| it.hierarchical_document_symbol_support)
+        .unwrap_or(false)
+        .not();
+
+    let state = shared::SharedValue::new(State::new(wide_encoding, qualified_names));
 
     if let Err(e) = client_connection.initialize_finish(init_id, init_result) {
         if e.channel_is_disconnected() {
@@ -232,20 +242,23 @@ pub fn run_lsp() -> AppResult<()> {
         .and_then(|it| it.did_change_watched_files)
         .and_then(|it| it.dynamic_registration)
         .unwrap_or(false);
-    let force = init_params
+    let force_server_side_watching = init_params
         .client_info
         .as_ref()
         .map(force_server_file_watcher)
         .unwrap_or(false);
-    let file_watcher = if client_can_watch_files && !force {
-        file_watching::register_file_change_notification(&client_connection).expect(
-            "If this doesn't work, it means sending doesn't work at all. No need to go on.",
-        );
+    let file_watcher = if client_can_watch_files && !force_server_side_watching {
+        eprintln!("relying on client for file watching");
+        file_watching::register_file_change_notification(&client_connection, workspace_folders)
+            .expect(
+                "If this doesn't work, it means sending doesn't work at all. No need to go on.",
+            );
         None
     } else {
+        eprintln!("relying on server for file watching");
         Some(file_watching::start_file_watcher(
-            workspace_root,
             state.clone(),
+            workspace_folders,
         ))
     };
 
@@ -270,7 +283,6 @@ pub fn run_lsp() -> AppResult<()> {
     eprintln!("shutting down client connection");
     client_io_threads.join()?;
     eprintln!("shutting down server state");
-    // server_state_handle.join().expect("come on man");
 
     Ok(())
 }
@@ -348,5 +360,14 @@ where
             Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"), // maybe we should skip malformed json gracefully?
             Err(ExtractError::MethodMismatch(req)) => NotInterested(req),
         }
+    }
+}
+
+/// Convenience function to create response errors
+pub(crate) fn response_error(code: lsp_server::ErrorCode, message: impl ToString) -> ResponseError {
+    ResponseError {
+        code: code as i32,
+        message: message.to_string(),
+        data: None,
     }
 }

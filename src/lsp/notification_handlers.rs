@@ -1,4 +1,4 @@
-use super::{NotificationHandler, SharedState};
+use super::{response_error, NotificationHandler, SharedState};
 use lsp_server::ResponseError;
 
 impl NotificationHandler for lsp_types::notification::DidOpenTextDocument {
@@ -8,7 +8,7 @@ impl NotificationHandler for lsp_types::notification::DidOpenTextDocument {
         let mut state = state.lock()?;
         state
             .edit(uri, edit)
-            .map_err(|e| error(lsp_server::ErrorCode::InternalError, e.to_string()))
+            .map_err(|e| response_error(lsp_server::ErrorCode::InternalError, e.to_string()))
     }
 }
 
@@ -29,14 +29,6 @@ impl NotificationHandler for lsp_types::notification::DidChangeTextDocument {
         let mut state = state.lock()?;
         state
             .edit(params.text_document.uri, edits)
-            .map_err(|e| error(lsp_server::ErrorCode::InternalError, e.to_string()))
-    }
-}
-
-fn error(code: lsp_server::ErrorCode, message: impl Into<String>) -> ResponseError {
-    ResponseError {
-        code: code as i32,
-        message: message.into(),
-        data: None,
+            .map_err(|e| response_error(lsp_server::ErrorCode::InternalError, e.to_string()))
     }
 }
