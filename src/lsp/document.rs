@@ -1,10 +1,11 @@
 mod symbols;
 
-use crate::ink_syntax::Visitor;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use lsp_types::DocumentSymbolResponse;
-use symbols::DocumentSymbols;
+use lsp_types::{DocumentSymbol, WorkspaceSymbol};
+use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
 use tree_sitter::Parser;
+
+use crate::ink_syntax::Visitor as _;
 
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
 // Everthing else works in terms of LSP types.
@@ -61,12 +62,21 @@ impl InkDocument {
         // eprintln!("document now is {}", self.text);
     }
 
-    pub(crate) fn symbols(&self, qualified_symbol_names: bool) -> Option<DocumentSymbolResponse> {
+    pub(crate) fn symbols(&self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
         DocumentSymbols::new(self, qualified_symbol_names)
             .traverse(&mut self.tree.walk())
             .and_then(|it| it.sym)
-            .and_then(|it| it.children)
-            .map(DocumentSymbolResponse::Nested)
+    }
+
+    pub(crate) fn workspace_symbols(
+        &self,
+        uri: &lsp_types::Uri,
+        query: &str,
+        qualified_symbol_names: bool,
+    ) -> Option<Vec<WorkspaceSymbol>> {
+        let mut symbls = WorkspaceSymbols::new(self, uri, query, qualified_symbol_names);
+        symbls.traverse(&mut self.tree.walk());
+        Some(symbls.sym)
     }
 }
 

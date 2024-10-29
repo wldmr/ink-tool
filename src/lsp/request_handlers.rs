@@ -23,9 +23,25 @@ impl RequestHandler for lsp_types::request::DocumentSymbolRequest {
         params: Self::Params,
         state: &SharedState,
     ) -> Result<Option<lsp_types::DocumentSymbolResponse>, ResponseError> {
-        state
+        let maybe_toplevel = state
             .lock()?
             .document_symbols(&params.text_document.uri)
-            .map_err(|msg| response_error(lsp_server::ErrorCode::RequestFailed, msg))
+            .map_err(|msg| response_error(lsp_server::ErrorCode::RequestFailed, msg))?;
+        Ok(maybe_toplevel
+            .and_then(|it| it.children)
+            .map(DocumentSymbolResponse::Nested))
+    }
+}
+
+impl RequestHandler for lsp_types::request::WorkspaceSymbolRequest {
+    fn execute(
+        params: Self::Params,
+        state: &SharedState,
+    ) -> Result<Option<lsp_types::WorkspaceSymbolResponse>, ResponseError> {
+        let maybe_symbols = state
+            .lock()?
+            .workspace_symbols(params.query)
+            .map_err(|msg| response_error(lsp_server::ErrorCode::RequestFailed, msg))?;
+        Ok(maybe_symbols.map(WorkspaceSymbolResponse::Nested))
     }
 }
