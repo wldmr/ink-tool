@@ -22,7 +22,7 @@ impl State {
         let entry = self
             .documents
             .entry(uri)
-            .or_insert(InkDocument::new(String::new(), self.wide_encoding));
+            .or_insert_with(|| InkDocument::new(String::new(), self.wide_encoding));
         entry.edit(edits);
         Ok(())
     }
@@ -35,21 +35,27 @@ impl State {
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
-    pub fn document_symbols(&self, uri: &Uri) -> Result<Option<DocumentSymbol>, String> {
-        if let Some(doc) = self.documents.get(uri) {
+    pub fn document_symbols(&mut self, uri: &Uri) -> Result<Option<DocumentSymbol>, String> {
+        if let Some(doc) = self.documents.get_mut(uri) {
             Ok(doc.symbols(self.qualified_names))
         } else {
             Err(format!("Unknown document '{}'", uri.path().as_str()))
         }
     }
 
-    pub fn workspace_symbols(&self, query: String) -> Result<Option<Vec<WorkspaceSymbol>>, String> {
+    pub fn workspace_symbols(
+        &mut self,
+        query: String,
+    ) -> Result<Option<Vec<WorkspaceSymbol>>, String> {
         let mut symbols = Vec::new();
-        for (uri, doc) in &self.documents {
+        for (uri, doc) in &mut self.documents {
             // eprintln!("ws symbols for uri: {}", uri.path().as_str());
-            if let Some(more) = doc.workspace_symbols(uri, &query, self.qualified_names) {
+            if let Some(more) = doc.workspace_symbols(uri, self.qualified_names) {
                 // eprintln!("found symbols: {more:?}");
-                symbols.extend(more.into_iter());
+                symbols.extend(
+                    more.into_iter()
+                        .filter(|sym| query.is_empty() || sym.name.contains(&query)),
+                );
             }
         }
         Ok(Some(symbols))

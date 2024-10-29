@@ -16,6 +16,8 @@ pub(crate) struct InkDocument {
     parser: tree_sitter::Parser,
     enc: Option<WideEncoding>,
     lines: line_index::LineIndex,
+    doc_symbols_cache: Option<DocumentSymbol>,
+    ws_symbols_cache: Option<Vec<WorkspaceSymbol>>,
 }
 
 pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
@@ -37,6 +39,8 @@ impl InkDocument {
             lines,
             enc,
             text,
+            doc_symbols_cache: None,
+            ws_symbols_cache: None,
         }
     }
 
@@ -59,24 +63,32 @@ impl InkDocument {
                 .expect("parsing must work");
             self.lines = LineIndex::new(&self.text);
         }
+        self.doc_symbols_cache = None;
+        self.ws_symbols_cache = None;
         // eprintln!("document now is {}", self.text);
     }
 
-    pub(crate) fn symbols(&self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
-        DocumentSymbols::new(self, qualified_symbol_names)
-            .traverse(&mut self.tree.walk())
-            .and_then(|it| it.sym)
+    pub(crate) fn symbols(&mut self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
+        if self.doc_symbols_cache.is_none() {
+            let new = DocumentSymbols::new(&self, qualified_symbol_names)
+                .traverse(&mut self.tree.walk())
+                .and_then(|it| it.sym);
+            self.doc_symbols_cache = new;
+        }
+        self.doc_symbols_cache.clone()
     }
 
     pub(crate) fn workspace_symbols(
-        &self,
+        &mut self,
         uri: &lsp_types::Uri,
-        query: &str,
         qualified_symbol_names: bool,
     ) -> Option<Vec<WorkspaceSymbol>> {
-        let mut symbls = WorkspaceSymbols::new(self, uri, query, qualified_symbol_names);
-        symbls.traverse(&mut self.tree.walk());
-        Some(symbls.sym)
+        if self.ws_symbols_cache.is_none() {
+            let mut symbls = WorkspaceSymbols::new(self, uri, qualified_symbol_names);
+            symbls.traverse(&mut self.tree.walk());
+            self.ws_symbols_cache = Some(symbls.sym);
+        }
+        self.ws_symbols_cache.clone()
     }
 }
 

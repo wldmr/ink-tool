@@ -12,7 +12,6 @@ use crate::lsp::document::InkDocument;
 pub(crate) struct WorkspaceSymbols<'a> {
     uri: &'a Uri,
     doc: &'a InkDocument,
-    query: &'a str,
     qualified_names: bool,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
@@ -20,16 +19,10 @@ pub(crate) struct WorkspaceSymbols<'a> {
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    pub(crate) fn new(
-        doc: &'a InkDocument,
-        uri: &'a Uri,
-        query: &'a str,
-        qualified_names: bool,
-    ) -> Self {
+    pub(crate) fn new(doc: &'a InkDocument, uri: &'a Uri, qualified_names: bool) -> Self {
         Self {
             uri,
             doc,
-            query,
             qualified_names,
             knot: None,
             stitch: None,
@@ -63,16 +56,14 @@ impl<'a> WorkspaceSymbols<'a> {
         name: impl AsRef<str> + Into<String>, // so we only allocate when necessary
         location: OneOf<Location, WorkspaceLocation>,
     ) {
-        if self.query.is_empty() || name.as_ref().contains(self.query) {
-            self.sym.push(WorkspaceSymbol {
-                name: name.into(),
-                kind,
-                tags: None,
-                container_name: None,
-                location,
-                data: None,
-            });
-        }
+        self.sym.push(WorkspaceSymbol {
+            name: name.into(),
+            kind,
+            tags: None,
+            container_name: None,
+            location,
+            data: None,
+        });
     }
 }
 
@@ -82,10 +73,12 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
         use VisitInstruction::*;
         match node {
             // recurse into these without creating a new level
-            AllNamed::Choice(_)
+            AllNamed::ChoiceBlock(_)
             | AllNamed::Code(_)
             | AllNamed::Content(_)
-            | AllNamed::Gather(_) => Descend,
+            | AllNamed::GatherBlock(_)
+            | AllNamed::KnotBlock(_)
+            | AllNamed::StitchBlock(_) => Descend,
 
             // children of these don't have interesting symbols, so don't recurse
             AllNamed::AltArm(_)
@@ -117,11 +110,10 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             | AllNamed::Glue(_)
             | AllNamed::Identifier(_)
             | AllNamed::Include(_)
-            | AllNamed::Knot(_)
             | AllNamed::Label(_)
             | AllNamed::LineComment(_)
-            | AllNamed::ListValueDefs(_)
             | AllNamed::ListValueDef(_)
+            | AllNamed::ListValueDefs(_)
             | AllNamed::ListValues(_)
             | AllNamed::Logic(_)
             | AllNamed::MultilineAlternatives(_)
@@ -136,7 +128,6 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             | AllNamed::QualifiedName(_)
             | AllNamed::Redirect(_)
             | AllNamed::Return(_)
-            | AllNamed::Stitch(_)
             | AllNamed::String(_)
             | AllNamed::Tag(_)
             | AllNamed::Temp(_)
@@ -157,78 +148,59 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 Descend
             }
 
-            AllNamed::KnotBlock(block) => {
-                let Ok(knot) = block.header() else {
-                    return Descend;
-                };
+            AllNamed::Knot(knot) => {
                 let kind = if knot.function().is_some() {
                     SymbolKind::FUNCTION
                 } else {
                     SymbolKind::CLASS
                 };
-                let local_name = &self.doc.text[knot.name().unwrap().byte_range()];
+                let name_node = knot.name().unwrap();
+                let local_name = &self.doc.text[name_node.byte_range()];
                 self.add_sym(
                     kind,
                     self.global_name(local_name),
-                    self.location(block.range()),
+                    self.location(name_node.range()),
                 );
                 self.knot = Some(local_name);
                 self.stitch = None;
                 Descend
             }
 
-            AllNamed::StitchBlock(block) => {
-                let Ok(stitch) = block.header() else {
-                    return Descend;
-                };
-                let local_name = &self.doc.text[(&stitch.name().unwrap()).byte_range()];
+            AllNamed::Stitch(stitch) => {
+                let name_node = stitch.name().unwrap();
+                let local_name = &self.doc.text[name_node.byte_range()];
                 self.add_sym(
                     SymbolKind::CLASS,
                     self.global_name(local_name),
-                    self.location(block.range()),
+                    self.location(name_node.range()),
                 );
                 self.stitch = Some(local_name);
                 Descend
             }
 
-            AllNamed::External(external) => {
-                if let Ok(name_node) = external.name() {
+            AllNamed::Choice(choice) => {
+                if let Some(Ok(label)) = choice.label() {
+                    let name_node = label.name().unwrap();
+                    let local_name = &self.doc.text[name_node.byte_range()];
                     self.add_sym(
-                        SymbolKind::INTERFACE,
-                        &self.doc.text[name_node.byte_range()],
-                        self.location(external.range()),
+                        SymbolKind::KEY,
+                        self.global_name(local_name),
+                        self.location(name_node.range()),
                     );
                 }
                 Ignore
             }
 
-            AllNamed::ChoiceBlock(block) => {
-                if let Ok(choice) = block.header() {
-                    if let Some(Ok(label)) = choice.label() {
-                        let name_node = label.name().unwrap();
-                        let local_name = &self.doc.text[name_node.byte_range()];
-                        self.add_sym(
-                            SymbolKind::KEY,
-                            self.global_name(local_name),
-                            self.location(block.range()),
-                        );
-                    }
+            AllNamed::Gather(gather) => {
+                if let Some(Ok(label)) = gather.label() {
+                    let name_node = label.name().unwrap();
+                    self.add_sym(
+                        SymbolKind::KEY,
+                        self.global_name(&self.doc.text[name_node.byte_range()]),
+                        self.location(name_node.range()),
+                    );
                 }
-                Descend
-            }
-
-            AllNamed::GatherBlock(block) => {
-                if let Ok(gather) = block.header() {
-                    if let Some(Ok(label)) = gather.label() {
-                        let name_node = label.name().unwrap();
-                        self.add_sym(
-                            SymbolKind::KEY,
-                            self.global_name(&self.doc.text[name_node.byte_range()]),
-                            self.location(block.range()),
-                        );
-                    }
-                }
-                Descend
+                Ignore
             }
 
             AllNamed::Global(global) => {
@@ -240,7 +212,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 self.add_sym(
                     kind,
                     &self.doc.text[name_node.byte_range()],
-                    self.location(global.range()),
+                    self.location(name_node.range()),
                 );
                 Ignore
             }
@@ -264,6 +236,17 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                             self.location(identifier.range()),
                         );
                     }
+                }
+                Ignore
+            }
+
+            AllNamed::External(external) => {
+                if let Ok(name_node) = external.name() {
+                    self.add_sym(
+                        SymbolKind::INTERFACE,
+                        &self.doc.text[name_node.byte_range()],
+                        self.location(name_node.range()),
+                    );
                 }
                 Ignore
             }
