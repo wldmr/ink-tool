@@ -84,6 +84,7 @@ pub(crate) struct DocumentSymbols<'a> {
     pub(crate) qualified_names: bool,
     pub(crate) knot: Option<&'a str>,
     pub(crate) stitch: Option<&'a str>,
+    pub(crate) list: Option<&'a str>,
     pub(crate) sym: Option<DocumentSymbol>,
 }
 
@@ -94,6 +95,7 @@ impl<'a> DocumentSymbols<'a> {
             qualified_names,
             knot: None,
             stitch: None,
+            list: None,
             sym: None,
         }
     }
@@ -103,17 +105,30 @@ impl<'a> DocumentSymbols<'a> {
             qualified_names: self.qualified_names,
             knot: self.knot,
             stitch: self.stitch,
+            list: self.list,
             sym: Some(sym),
         }
     }
 
-    pub(crate) fn name(&self, local_name: &str) -> String {
+    pub(crate) fn address_name(&self, local_name: &str) -> String {
         if self.qualified_names {
             match (self.knot, self.stitch) {
                 (None, None) => format!("{local_name}"),
                 (None, Some(stitch)) => format!("{stitch}.{local_name}"),
                 (Some(knot), None) => format!("{knot}.{local_name}"),
                 (Some(knot), Some(stitch)) => format!("{knot}.{stitch}.{local_name}"),
+            }
+        } else {
+            local_name.to_string()
+        }
+    }
+
+    pub(crate) fn list_element_name(&self, local_name: &str) -> String {
+        if self.qualified_names {
+            if let Some(list) = self.list {
+                format!("{list}.{local_name}")
+            } else {
+                local_name.to_string()
             }
         } else {
             local_name.to_string()
@@ -129,7 +144,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
             AllNamed::Choice(_)
             | AllNamed::Code(_)
             | AllNamed::Content(_)
-            | AllNamed::Gather(_) => Descend,
+            | AllNamed::Gather(_)
+            | AllNamed::ListValueDefs(_) => Descend,
 
             // children of these don't have interesting symbols, so don't recurse
             AllNamed::AltArm(_)
@@ -164,8 +180,6 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
             | AllNamed::Knot(_)
             | AllNamed::Label(_)
             | AllNamed::LineComment(_)
-            | AllNamed::ListValueDefs(_)
-            | AllNamed::ListValueDef(_)
             | AllNamed::ListValues(_)
             | AllNamed::Logic(_)
             | AllNamed::MultilineAlternatives(_)
@@ -210,12 +224,12 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 } else {
                     SymbolKind::CLASS
                 };
-                let local_name = &self.doc.text[(&knot.name().unwrap()).byte_range()];
+                let local_name = &self.doc.text[(&knot.name()).byte_range()];
                 let mut sym = SymbolBuilder::new(kind)
-                    .name(self.name(local_name))
+                    .name(self.address_name(local_name))
                     .range(self.doc.lsp_range(&block.range()))
                     .build();
-                if let Some(Ok(params)) = knot.params() {
+                if let Some(params) = knot.params() {
                     sym.detail = Some(self.doc.text[params.byte_range()].to_owned());
                 }
                 let mut new = self.new_sym(sym);
@@ -230,12 +244,12 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 } else {
                     return Descend;
                 };
-                let local_name = &self.doc.text[(&stitch.name().unwrap()).byte_range()];
+                let local_name = &self.doc.text[(&stitch.name()).byte_range()];
                 let mut sym = SymbolBuilder::new(SymbolKind::CLASS)
-                    .name(self.name(local_name))
+                    .name(self.address_name(local_name))
                     .range(self.doc.lsp_range(&block.range()))
                     .build();
-                if let Some(Ok(params)) = stitch.params() {
+                if let Some(params) = stitch.params() {
                     sym.detail = Some(self.doc.text[params.byte_range()].to_owned());
                 }
                 let mut new = self.new_sym(sym);
@@ -261,9 +275,9 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
             AllNamed::ChoiceBlock(block) => {
                 if let Ok(choice) = block.header() {
                     if let Some(Ok(label)) = choice.label() {
-                        let name_node = label.name().unwrap();
+                        let name_node = label.name();
                         let mut sym = SymbolBuilder::new(SymbolKind::KEY)
-                            .name(self.name(&self.doc.text[name_node.byte_range()]))
+                            .name(self.address_name(&self.doc.text[name_node.byte_range()]))
                             .range(self.doc.lsp_range(&block.range()))
                             .build();
                         sym.detail = choice
@@ -280,9 +294,9 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
             AllNamed::GatherBlock(block) => {
                 if let Ok(gather) = block.header() {
                     if let Some(Ok(label)) = gather.label() {
-                        let name_node = label.name().unwrap();
+                        let name_node = label.name();
                         let mut sym = SymbolBuilder::new(SymbolKind::KEY)
-                            .name(self.name(&self.doc.text[name_node.byte_range()]))
+                            .name(self.address_name(&self.doc.text[name_node.byte_range()]))
                             .range(self.doc.lsp_range(&block.range()))
                             .build();
                         sym.detail = gather
@@ -300,11 +314,12 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
             }
 
             AllNamed::Global(global) => {
-                let kind = match global.keyword().unwrap() {
-                    GlobalKeyword::Const(_) => SymbolKind::CONSTANT,
-                    GlobalKeyword::Var(_) => SymbolKind::VARIABLE,
+                let kind = match global.keyword() {
+                    Ok(GlobalKeyword::Const(_)) => SymbolKind::CONSTANT,
+                    Ok(GlobalKeyword::Var(_)) => SymbolKind::VARIABLE,
+                    Err(_) => SymbolKind::NULL,
                 };
-                let name_node = &global.name().unwrap();
+                let name_node = &global.name();
                 let sym = SymbolBuilder::new(kind)
                     .name(&self.doc.text[name_node.byte_range()])
                     .range(self.doc.lsp_range(&global.range()))
@@ -314,28 +329,44 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
             }
 
             AllNamed::List(list) => {
-                let name_node = list.name().unwrap();
-                let mut sym = SymbolBuilder::new(SymbolKind::ENUM)
-                    .name(&self.doc.text[name_node.byte_range()])
-                    .range(self.doc.lsp_range(&list.range()))
+                let name_node = list.name();
+                let name = &self.doc.text[name_node.byte_range()];
+                let mut sym = self.new_sym(
+                    SymbolBuilder::new(SymbolKind::ENUM)
+                        .name(name)
+                        .range(self.doc.lsp_range(&list.range()))
+                        .selection_range(self.doc.lsp_range(&name_node.range()))
+                        .build(),
+                );
+                sym.list = Some(name);
+                DescendWith(sym)
+            }
+
+            AllNamed::ListValueDef(def) => {
+                let name_node = def.name();
+                let local_name = &self.doc.text[name_node.byte_range()];
+                let mut sym = SymbolBuilder::new(SymbolKind::ENUM_MEMBER)
+                    .name(self.list_element_name(local_name))
+                    .range(self.doc.lsp_range(&def.range()))
                     .selection_range(self.doc.lsp_range(&name_node.range()))
                     .build();
-                sym.detail = list.values().ok().map(|defs| {
-                    defs.values(&mut defs.walk())
-                        .flat_map(|def| def.ok())
-                        .filter_map(|def| def.name().ok())
-                        .map(|identifier| identifier.byte_range())
-                        .map(|range| self.doc.text[range].to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                });
+                sym.detail = match (def.value(), def.lparen()) {
+                    (None, None) => None,
+                    (None, Some(_)) => Some("()".to_string()),
+                    (Some(value), None) => {
+                        Some(format!("= {}", &self.doc.text[value.byte_range()]))
+                    }
+                    (Some(value), Some(_)) => {
+                        Some(format!("(= {})", &self.doc.text[value.byte_range()]))
+                    }
+                };
                 Return(self.new_sym(sym))
             }
 
             AllNamed::Temp(temp) => {
-                let name_node = &temp.name().unwrap();
+                let name_node = &temp.name();
                 let sym = SymbolBuilder::new(SymbolKind::VARIABLE)
-                    .name(self.name(&self.doc.text[name_node.byte_range()]))
+                    .name(self.address_name(&self.doc.text[name_node.byte_range()]))
                     .range(self.doc.lsp_range(&temp.range()))
                     .selection_range(self.doc.lsp_range(&name_node.range()))
                     .build();

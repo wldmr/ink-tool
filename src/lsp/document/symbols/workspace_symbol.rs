@@ -12,34 +12,28 @@ use crate::lsp::document::InkDocument;
 pub(crate) struct WorkspaceSymbols<'a> {
     uri: &'a Uri,
     doc: &'a InkDocument,
-    qualified_names: bool,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
     pub(crate) sym: Vec<WorkspaceSymbol>,
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    pub(crate) fn new(doc: &'a InkDocument, uri: &'a Uri, qualified_names: bool) -> Self {
+    pub(crate) fn new(doc: &'a InkDocument, uri: &'a Uri) -> Self {
         Self {
             uri,
             doc,
-            qualified_names,
             knot: None,
             stitch: None,
             sym: Vec::new(),
         }
     }
 
-    pub fn global_name(&self, local_name: &str) -> String {
-        if self.qualified_names {
-            match (self.knot, self.stitch) {
-                (None, None) => format!("{local_name}"),
-                (None, Some(stitch)) => format!("{stitch}.{local_name}"),
-                (Some(knot), None) => format!("{knot}.{local_name}"),
-                (Some(knot), Some(stitch)) => format!("{knot}.{stitch}.{local_name}"),
-            }
-        } else {
-            local_name.to_string()
+    pub fn namespace(&self) -> Option<String> {
+        match (self.knot, self.stitch) {
+            (None, None) => None,
+            (None, Some(stitch)) => Some(format!("{stitch}")),
+            (Some(knot), None) => Some(format!("{knot}")),
+            (Some(knot), Some(stitch)) => Some(format!("{knot}.{stitch}")),
         }
     }
 
@@ -53,14 +47,15 @@ impl<'a> WorkspaceSymbols<'a> {
     fn add_sym(
         &mut self,
         kind: SymbolKind,
-        name: impl AsRef<str> + Into<String>, // so we only allocate when necessary
+        name: impl Into<String>,
+        container_name: Option<String>,
         location: OneOf<Location, WorkspaceLocation>,
     ) {
         self.sym.push(WorkspaceSymbol {
             name: name.into(),
             kind,
             tags: None,
-            container_name: None,
+            container_name,
             location,
             data: None,
         });
@@ -144,7 +139,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     .expect("there should be a filename")
                     .to_string_lossy()
                     .to_string();
-                self.add_sym(SymbolKind::FILE, name, self.location(ink.range()));
+                self.add_sym(SymbolKind::FILE, name, None, self.location(ink.range()));
                 Descend
             }
 
@@ -156,11 +151,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 };
                 let name_node = knot.name().unwrap();
                 let local_name = &self.doc.text[name_node.byte_range()];
-                self.add_sym(
-                    kind,
-                    self.global_name(local_name),
-                    self.location(name_node.range()),
-                );
+                self.add_sym(kind, local_name, None, self.location(name_node.range()));
                 self.knot = Some(local_name);
                 self.stitch = None;
                 Descend
@@ -171,7 +162,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 let local_name = &self.doc.text[name_node.byte_range()];
                 self.add_sym(
                     SymbolKind::CLASS,
-                    self.global_name(local_name),
+                    local_name,
+                    self.namespace(),
                     self.location(name_node.range()),
                 );
                 self.stitch = Some(local_name);
@@ -184,7 +176,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     let local_name = &self.doc.text[name_node.byte_range()];
                     self.add_sym(
                         SymbolKind::KEY,
-                        self.global_name(local_name),
+                        local_name,
+                        self.namespace(),
                         self.location(name_node.range()),
                     );
                 }
@@ -196,7 +189,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     let name_node = label.name().unwrap();
                     self.add_sym(
                         SymbolKind::KEY,
-                        self.global_name(&self.doc.text[name_node.byte_range()]),
+                        &self.doc.text[name_node.byte_range()],
+                        self.namespace(),
                         self.location(name_node.range()),
                     );
                 }
@@ -212,6 +206,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 self.add_sym(
                     kind,
                     &self.doc.text[name_node.byte_range()],
+                    None,
                     self.location(name_node.range()),
                 );
                 Ignore
@@ -220,7 +215,12 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             AllNamed::List(list) => {
                 let name_node = list.name().unwrap();
                 let list_name = &self.doc.text[name_node.byte_range()];
-                self.add_sym(SymbolKind::ENUM, list_name, self.location(list.range()));
+                self.add_sym(
+                    SymbolKind::ENUM,
+                    list_name,
+                    None,
+                    self.location(list.range()),
+                );
                 if let Ok(defs) = list.values() {
                     let mut cursor = defs.walk(); // don't like this, should be able to do this without another cursor
                     let list_values = defs
@@ -232,7 +232,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                         let value_name = &self.doc.text[identifier.byte_range()];
                         self.add_sym(
                             SymbolKind::ENUM_MEMBER,
-                            format!("{list_name}.{value_name}"),
+                            value_name,
+                            Some(list_name.to_string()),
                             self.location(identifier.range()),
                         );
                     }
@@ -245,6 +246,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     self.add_sym(
                         SymbolKind::INTERFACE,
                         &self.doc.text[name_node.byte_range()],
+                        None,
                         self.location(name_node.range()),
                     );
                 }

@@ -38,10 +38,7 @@ impl RequestHandler for lsp_types::request::WorkspaceSymbolRequest {
         params: Self::Params,
         state: &SharedState,
     ) -> Result<Option<lsp_types::WorkspaceSymbolResponse>, ResponseError> {
-        let maybe_symbols = state
-            .lock()?
-            .workspace_symbols(params.query)
-            .map_err(|msg| response_error(lsp_server::ErrorCode::RequestFailed, msg))?;
-        Ok(maybe_symbols.map(WorkspaceSymbolResponse::Nested))
+        let symbols = state.lock()?.workspace_symbols(params.query);
+        Ok(Some(WorkspaceSymbolResponse::Nested(symbols)))
     }
 }

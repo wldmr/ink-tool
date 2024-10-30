@@ -81,12 +81,11 @@ impl InkDocument {
     pub(crate) fn workspace_symbols(
         &mut self,
         uri: &lsp_types::Uri,
-        qualified_symbol_names: bool,
     ) -> Option<Vec<WorkspaceSymbol>> {
         if self.ws_symbols_cache.is_none() {
-            let mut symbls = WorkspaceSymbols::new(self, uri, qualified_symbol_names);
-            symbls.traverse(&mut self.tree.walk());
-            self.ws_symbols_cache = Some(symbls.sym);
+            let mut symbols = WorkspaceSymbols::new(self, uri);
+            symbols.traverse(&mut self.tree.walk());
+            self.ws_symbols_cache = Some(symbols.sym);
         }
         self.ws_symbols_cache.clone()
     }

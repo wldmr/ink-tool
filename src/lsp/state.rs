@@ -43,21 +43,19 @@ impl State {
         }
     }
 
-    pub fn workspace_symbols(
-        &mut self,
-        query: String,
-    ) -> Result<Option<Vec<WorkspaceSymbol>>, String> {
-        let mut symbols = Vec::new();
-        for (uri, doc) in &mut self.documents {
-            // eprintln!("ws symbols for uri: {}", uri.path().as_str());
-            if let Some(more) = doc.workspace_symbols(uri, self.qualified_names) {
-                // eprintln!("found symbols: {more:?}");
-                symbols.extend(
-                    more.into_iter()
-                        .filter(|sym| query.is_empty() || sym.name.contains(&query)),
-                );
-            }
+    pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
+        let symbols = self
+            .documents
+            .iter_mut()
+            .filter_map(|(uri, doc)| doc.workspace_symbols(uri))
+            .flatten();
+        if query.is_empty() {
+            symbols.collect()
+        } else {
+            let query = query.to_lowercase();
+            symbols
+                .filter(|sym| sym.name.to_lowercase().contains(&query))
+                .collect()
         }
-        Ok(Some(symbols))
     }
 }
