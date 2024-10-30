@@ -364,12 +364,3 @@ where
         }
     }
 }
-
-/// Convenience function to create response errors
-pub(crate) fn response_error(code: lsp_server::ErrorCode, message: impl ToString) -> ResponseError {
-    ResponseError {
-        code: code as i32,
-        message: message.to_string(),
-        data: None,
-    }
-}

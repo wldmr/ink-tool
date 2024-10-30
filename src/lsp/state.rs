@@ -9,6 +9,10 @@ pub(crate) struct State {
     qualified_names: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Document not found: `{}`", .0.path())]
+pub(crate) struct DocumentNotFound(pub(crate) Uri);
+
 impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
         Self {
@@ -18,13 +22,12 @@ impl State {
         }
     }
 
-    pub fn edit(&mut self, uri: Uri, edits: Vec<DocumentEdit>) -> Result<(), String> {
+    pub fn edit(&mut self, uri: Uri, edits: Vec<DocumentEdit>) {
         let entry = self
             .documents
             .entry(uri)
             .or_insert_with(|| InkDocument::new(String::new(), self.wide_encoding));
         entry.edit(edits);
-        Ok(())
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), String> {
@@ -35,11 +38,14 @@ impl State {
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
-    pub fn document_symbols(&mut self, uri: &Uri) -> Result<Option<DocumentSymbol>, String> {
-        if let Some(doc) = self.documents.get_mut(uri) {
+    pub fn document_symbols(
+        &mut self,
+        uri: Uri,
+    ) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
+        if let Some(doc) = self.documents.get_mut(&uri) {
             Ok(doc.symbols(self.qualified_names))
         } else {
-            Err(format!("Unknown document '{}'", uri.path().as_str()))
+            Err(DocumentNotFound(uri))
         }
     }
 

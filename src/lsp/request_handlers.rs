@@ -1,14 +1,24 @@
-use super::response_error;
+use super::state::DocumentNotFound;
 use super::RequestHandler;
 use super::SharedState;
 use lsp_server::ResponseError;
 use lsp_types::*;
 
-impl RequestHandler for lsp_types::request::HoverRequest {
+impl From<DocumentNotFound> for ResponseError {
+    fn from(value: DocumentNotFound) -> Self {
+        Self {
+            code: lsp_server::ErrorCode::RequestFailed as i32,
+            message: value.to_string(),
+            data: serde_json::to_value(value.0.as_str()).ok(),
+        }
+    }
+}
+
+impl RequestHandler for request::HoverRequest {
     fn execute(
         _params: Self::Params,
         _state: &SharedState,
-    ) -> Result<Option<lsp_types::Hover>, ResponseError> {
+    ) -> Result<Option<Hover>, ResponseError> {
         Ok(Some(Hover {
             contents: HoverContents::Scalar(MarkedString::String(
                 "You are indeed hovering".to_owned(),
@@ -18,26 +28,25 @@ impl RequestHandler for lsp_types::request::HoverRequest {
     }
 }
 
-impl RequestHandler for lsp_types::request::DocumentSymbolRequest {
+impl RequestHandler for request::DocumentSymbolRequest {
     fn execute(
         params: Self::Params,
         state: &SharedState,
-    ) -> Result<Option<lsp_types::DocumentSymbolResponse>, ResponseError> {
-        let maybe_toplevel = state
+    ) -> Result<Option<DocumentSymbolResponse>, ResponseError> {
+        let response = state
             .lock()?
-            .document_symbols(&params.text_document.uri)
-            .map_err(|msg| response_error(lsp_server::ErrorCode::RequestFailed, msg))?;
-        Ok(maybe_toplevel
+            .document_symbols(params.text_document.uri)?
             .and_then(|it| it.children)
-            .map(DocumentSymbolResponse::Nested))
+            .map(DocumentSymbolResponse::Nested);
+        Ok(response)
     }
 }
 
-impl RequestHandler for lsp_types::request::WorkspaceSymbolRequest {
+impl RequestHandler for request::WorkspaceSymbolRequest {
     fn execute(
         params: Self::Params,
         state: &SharedState,
-    ) -> Result<Option<lsp_types::WorkspaceSymbolResponse>, ResponseError> {
+    ) -> Result<Option<WorkspaceSymbolResponse>, ResponseError> {
         let symbols = state.lock()?.workspace_symbols(params.query);
         Ok(Some(WorkspaceSymbolResponse::Nested(symbols)))
     }
