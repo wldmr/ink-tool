@@ -14,11 +14,10 @@ impl From<DocumentNotFound> for ResponseError {
     }
 }
 
+type Response<T> = Result<T, ResponseError>;
+
 impl RequestHandler for request::HoverRequest {
-    fn execute(
-        _params: Self::Params,
-        _state: &SharedState,
-    ) -> Result<Option<Hover>, ResponseError> {
+    fn execute(_params: Self::Params, _state: &SharedState) -> Response<Self::Result> {
         Ok(Some(Hover {
             contents: HoverContents::Scalar(MarkedString::String(
                 "You are indeed hovering".to_owned(),
@@ -29,10 +28,7 @@ impl RequestHandler for request::HoverRequest {
 }
 
 impl RequestHandler for request::DocumentSymbolRequest {
-    fn execute(
-        params: Self::Params,
-        state: &SharedState,
-    ) -> Result<Option<DocumentSymbolResponse>, ResponseError> {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         let response = state
             .lock()?
             .document_symbols(params.text_document.uri)?
@@ -43,11 +39,18 @@ impl RequestHandler for request::DocumentSymbolRequest {
 }
 
 impl RequestHandler for request::WorkspaceSymbolRequest {
-    fn execute(
-        params: Self::Params,
-        state: &SharedState,
-    ) -> Result<Option<WorkspaceSymbolResponse>, ResponseError> {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         let symbols = state.lock()?.workspace_symbols(params.query);
         Ok(Some(WorkspaceSymbolResponse::Nested(symbols)))
+    }
+}
+
+impl RequestHandler for request::Completion{
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        let completions = state.lock()?.completions(
+            params.text_document_position.text_document.uri,
+            params.text_document_position.position,
+        )?;
+        Ok(completions.map(CompletionResponse::Array))
     }
 }

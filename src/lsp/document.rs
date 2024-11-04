@@ -1,11 +1,21 @@
+mod locations;
 mod symbols;
 
+use super::location::Location;
+use crate::ink_syntax::{
+    types::{symbols::SubGt, Divert},
+    Visitor as _,
+};
+use crate::{
+    ink_syntax::types::{symbols::SubGtSubGt, Identifier},
+    lsp::location::{self, LocationThat},
+};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use lsp_types::{DocumentSymbol, WorkspaceSymbol};
+use locations::Locations;
+use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
 use tree_sitter::Parser;
-
-use crate::ink_syntax::Visitor as _;
+use type_sitter_lib::Node;
 
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
 // Everthing else works in terms of LSP types.
@@ -65,7 +75,6 @@ impl InkDocument {
         }
         self.doc_symbols_cache = None;
         self.ws_symbols_cache = None;
-        // eprintln!("document now is {}", self.text);
     }
 
     pub(crate) fn symbols(&mut self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
@@ -88,6 +97,41 @@ impl InkDocument {
             self.ws_symbols_cache = Some(symbols.sym);
         }
         self.ws_symbols_cache.clone()
+    }
+
+    pub fn possible_completions(&mut self, position: Position) -> Option<location::LocationThat> {
+        let right = self.to_byte(position);
+        let mut left = right;
+        let root = self.tree.root_node();
+        while left > 0 && right - left < 50 {
+            let node = root.descendant_for_byte_range(left, right)?;
+            eprintln!("node at original offset: {node}");
+            if node.is_error() {
+                eprintln!("errors are hard. later");
+            } else if let Ok(divert) = Divert::try_from_raw(node) {
+                let search_term = self.text[divert.target().byte_range()].to_string();
+                return Some(
+                    LocationThat::is_divert_target() & LocationThat::MatchesName(search_term),
+                );
+            } else if let Ok(_) = SubGt::try_from_raw(node) {
+                return Some(LocationThat::is_divert_target());
+            } else if let Ok(_) = SubGtSubGt::try_from_raw(node) {
+                return Some(LocationThat::is_divert_target());
+            } else if let Ok(ident) = Identifier::try_from_raw(node) {
+                let search_term = self.text[ident.byte_range()].to_string();
+                return Some(
+                    LocationThat::is_identifier() & LocationThat::MatchesName(search_term),
+                );
+            }
+            left -= 1;
+        }
+        None
+    }
+
+    pub(crate) fn locations(&self, uri: &Uri) -> impl Iterator<Item = Location> {
+        let mut locations = Locations::new(uri, &self);
+        locations.traverse(&mut self.tree.root_node().walk());
+        locations.locs.into_iter()
     }
 }
 

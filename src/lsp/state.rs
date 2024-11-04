@@ -1,6 +1,11 @@
-use super::document::{DocumentEdit, InkDocument};
+use super::{
+    document::{DocumentEdit, InkDocument},
+    location::{self, rank_match, Location},
+};
 use line_index::WideEncoding;
-use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
+use lsp_types::{
+    CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
+};
 use std::collections::HashMap;
 
 pub(crate) struct State {
@@ -30,10 +35,10 @@ impl State {
         entry.edit(edits);
     }
 
-    pub fn forget(&mut self, uri: Uri) -> Result<(), String> {
+    pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
         match self.documents.remove(&uri) {
             Some(_) => Ok(()),
-            None => Err(format!("Document {} not known", uri.path())),
+            None => Err(DocumentNotFound(uri)),
         }
     }
 
@@ -42,10 +47,9 @@ impl State {
         &mut self,
         uri: Uri,
     ) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        if let Some(doc) = self.documents.get_mut(&uri) {
-            Ok(doc.symbols(self.qualified_names))
-        } else {
-            Err(DocumentNotFound(uri))
+        match self.documents.get_mut(&uri) {
+            Some(doc) => Ok(doc.symbols(self.qualified_names)),
+            None => Err(DocumentNotFound(uri)),
         }
     }
 
@@ -62,6 +66,81 @@ impl State {
             symbols
                 .filter(|sym| sym.name.to_lowercase().contains(&query))
                 .collect()
+        }
+    }
+    pub fn completions(
+        &mut self,
+        uri: Uri,
+        position: Position,
+    ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
+        match self.documents.get_mut(&uri) {
+            Some(doc) => {
+                let Some(specification) = doc.possible_completions(position) else {
+                    return Ok(None);
+                };
+                // eprintln!("find {specification}");
+                let completions = self.find_locations(specification).map(Into::into).collect();
+                Ok(Some(completions))
+            }
+            None => Err(DocumentNotFound(uri)),
+        }
+    }
+
+    fn find_locations(
+        &self,
+        spec: location::LocationThat,
+    ) -> impl Iterator<Item = location::Location> {
+        let uris: Vec<&Uri> = (&spec)
+            .try_into()
+            .unwrap_or_else(|_| self.documents.keys().collect());
+        let mut locs = Vec::new();
+        for uri in uris {
+            let doc = self
+                .documents
+                .get(&uri)
+                .expect("we mustn't get uris that we don't know");
+            let doc_locs = doc
+                .locations(&uri)
+                .map(|loc| (rank_match(&spec, &loc), loc))
+                .filter(|(rank, _)| *rank > 0);
+            locs.extend(doc_locs);
+        }
+        locs.sort_unstable_by_key(|(rank, _)| *rank);
+        locs.into_iter().map(|(_, location)| location)
+    }
+}
+
+impl From<Location> for CompletionItem {
+    fn from(value: Location) -> Self {
+        let file = value.file.path().as_str();
+        Self {
+            label: value.name,
+            detail: match value.namespace {
+                Some(ns) => Some(format!("{}: {ns}", file)),
+                None => Some(file.to_string()),
+            },
+            kind: Some(match value.kind {
+                location::LocationKind::Knot => CompletionItemKind::CLASS,
+                location::LocationKind::Stitch => CompletionItemKind::METHOD,
+                location::LocationKind::Label => CompletionItemKind::FIELD,
+                location::LocationKind::Variable => CompletionItemKind::VARIABLE,
+                location::LocationKind::Function => CompletionItemKind::FUNCTION,
+            }),
+            label_details: None,
+            documentation: None,
+            deprecated: None,
+            preselect: None,
+            sort_text: None,
+            filter_text: None,
+            insert_text: None,
+            insert_text_format: None,
+            insert_text_mode: None,
+            text_edit: None,
+            additional_text_edits: None,
+            command: None,
+            commit_characters: None,
+            data: None,
+            tags: None,
         }
     }
 }
