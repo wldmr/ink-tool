@@ -341,8 +341,8 @@ mod tests {
         let (doc, caret) = doc_with_caret(txt);
         let actual = doc
             .possible_completions(caret)
-            .map(|(r, s)| (Compact(r), location::specification::normalized(s)));
-        let expected = expected.map(|(r, s)| (Compact(r), location::specification::normalized(s)));
+            .map(|(r, s)| (Compact(r), location::specification::simplified(s)));
+        let expected = expected.map(|(r, s)| (Compact(r), location::specification::simplified(s)));
         pretty_assertions::assert_eq!(actual, expected, "Ink source:\n```\n{txt}\n```");
     }
 

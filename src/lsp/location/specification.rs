@@ -1,8 +1,8 @@
 use super::{Location, LocationKind};
-use itertools::Itertools as _;
+use itertools::Itertools;
 use lsp_types::Uri;
 use std::{
-    ops::{BitAnd, BitOr, Deref as _},
+    ops::{BitAnd, BitOr},
     str::FromStr as _,
 };
 
@@ -15,8 +15,8 @@ use std::{
 )]
 pub(crate) enum LocationThat {
     // IDEA: The And/Or part, including Display/Debug/BitAnd/etc might work well as a little library (`Specify<LocationThat>`)
-    And(Box<Self>, Box<Self>),
-    Or(Box<Self>, Box<Self>),
+    And(Vec<Self>),
+    Or(Vec<Self>),
     // IDEA: Not(Box<Self>)
     IsInFile(String),
     IsLocation(LocationKind),
@@ -27,28 +27,18 @@ pub(crate) enum LocationThat {
 
 impl std::fmt::Display for LocationThat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        macro_rules! parens_if {
-            ($expr:expr, $pat:pat) => {
-                if matches!($expr, $pat) {
-                    format!("({})", $expr)
-                } else {
-                    format!("{}", $expr)
-                }
-            };
-        }
-
         use LocationThat::*;
         match self {
-            And(a, b) => {
-                let a = parens_if!(**a, Or(_, _));
-                let b = parens_if!(**b, Or(_, _));
-                write!(f, "{a} & {b}")
-            }
-            Or(a, b) => {
-                let a = parens_if!(**a, And(_, _));
-                let b = parens_if!(**b, And(_, _));
-                write!(f, "{a} | {b}")
-            }
+            And(items) => match items.len() {
+                0 => panic!("Empty And!"),
+                1 => items[0].fmt(f),
+                _ => write!(f, "({})", items.iter().join(" & ")),
+            },
+            Or(items) => match items.len() {
+                0 => panic!("Empty Or!"),
+                1 => items[0].fmt(f),
+                _ => write!(f, "({})", items.iter().join(" | ")),
+            },
             IsInFile(file) => write!(f, "file={}", file),
             IsLocation(kind) => match kind {
                 LocationKind::Knot => f.write_str("knot"),
@@ -78,7 +68,20 @@ impl std::ops::BitAnd for LocationThat {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        Self::And(Box::new(self), Box::new(rhs))
+        use LocationThat::*;
+        // Coalesce adjacent `And`s. This makes keeping the expressions tidy a little easier.
+        let items = match (self, rhs) {
+            (And(mut items), And(others)) => {
+                items.extend(others.into_iter());
+                items
+            }
+            (And(mut items), other) | (other, And(mut items)) => {
+                items.push(other);
+                items
+            }
+            (l, r) => vec![l, r],
+        };
+        And(items)
     }
 }
 
@@ -94,7 +97,19 @@ impl std::ops::BitOr for LocationThat {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        Self::Or(Box::new(self), Box::new(rhs))
+        use LocationThat::*;
+        let items = match (self, rhs) {
+            (Or(mut items), Or(others)) => {
+                items.extend(others.into_iter());
+                items
+            }
+            (Or(mut items), other) | (other, Or(mut items)) => {
+                items.push(other);
+                items
+            }
+            (l, r) => vec![l, r],
+        };
+        Or(items)
     }
 }
 
@@ -138,38 +153,27 @@ impl LocationThat {
     }
 }
 
-/// Normalize a specification. Mostly used for comparing two specs.
-// IDEA: Could we also improve performance with this?
-pub(crate) fn normalized(spec: LocationThat) -> LocationThat {
-    /// Normalize & sort items at the same level and join them into a result. Local helper to reduce boilerplate.
-    fn normalize_join(
-        items: impl IntoIterator<Item = LocationThat>,
-        joiner: fn(LocationThat, LocationThat) -> LocationThat,
-    ) -> LocationThat {
-        items
+/// Simplify a specification. Mostly used for comparing two specs.
+// NOTE: This isn't proper normalization (neither DNF nor CNF), it just sorts and deduplicates the existing structure.
+// Together with our ad-hoc merging during construction this seems to work well enough for now.
+// I suspect that'll change once we introduce negation.
+pub(crate) fn simplified(spec: LocationThat) -> LocationThat {
+    match spec {
+        // Same pattern for And and Or: Sort and deduplicate like items.
+        LocationThat::And(items) => items
             .into_iter()
-            .map(normalized)
+            .map(simplified)
             .sorted_unstable()
             .dedup()
-            .reduce(joiner)
-            .unwrap()
-    }
-
-    use LocationThat::*;
-    match spec {
-        // Same pattern for And and Or: Distribute normalization through like items.
-        And(l, r) => match (*l, *r) {
-            (And(a, b), And(c, d)) => normalize_join([*a, *b, *c, *d], BitAnd::bitand),
-            (And(a, b), c) => normalize_join([*a, *b, c], BitAnd::bitand),
-            (a, And(b, c)) => normalize_join([a, *b, *c], BitAnd::bitand),
-            (l, r) => normalize_join([l, r], BitAnd::bitand),
-        },
-        Or(l, r) => match (*l, *r) {
-            (Or(a, b), Or(c, d)) => normalize_join([*a, *b, *c, *d], BitOr::bitor),
-            (Or(a, b), c) => normalize_join([*a, *b, c], BitOr::bitor),
-            (a, Or(b, c)) => normalize_join([a, *b, *c], BitOr::bitor),
-            (l, r) => normalize_join([l, r], BitOr::bitor),
-        },
+            .reduce(BitAnd::bitand)
+            .expect("`And` should not be empty"),
+        LocationThat::Or(items) => items
+            .into_iter()
+            .map(simplified)
+            .sorted_unstable()
+            .dedup()
+            .reduce(BitOr::bitor)
+            .expect("`Or` should not be empty"),
         _ => spec,
     }
 }
@@ -177,14 +181,12 @@ pub(crate) fn normalized(spec: LocationThat) -> LocationThat {
 /// All the URIs in `spec`, if any.
 pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<Uri>> {
     match spec {
-        LocationThat::And(a, b) | LocationThat::Or(a, b) => {
-            if let Some(mut a) = extract_uris(a.deref()) {
-                if let Some(b) = extract_uris(b.deref()) {
-                    a.extend(b.into_iter());
-                }
-                Some(a)
+        LocationThat::And(items) | LocationThat::Or(items) => {
+            let merged: Vec<Uri> = items.iter().filter_map(extract_uris).flatten().collect();
+            if merged.is_empty() {
+                None
             } else {
-                extract_uris(b.deref())
+                Some(merged)
             }
         }
         LocationThat::IsInFile(path) => Some(vec![Uri::from_str(&path).unwrap()]),
@@ -199,18 +201,16 @@ pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<Uri>> {
 /// How well `loc` matches `spec`. Higher numbers are better, zero means no match.
 pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
     match spec {
-        LocationThat::And(a, b) => {
-            let a = rank_match(a, loc);
-            if a == 0 {
-                return 0;
-            }
-            let b = rank_match(b, loc);
-            if b == 0 {
-                return 0;
-            }
-            a + b
-        }
-        LocationThat::Or(a, b) => rank_match(a, loc).max(rank_match(b, loc)),
+        LocationThat::And(items) => items
+            .into_iter()
+            .map(|spec| rank_match(spec, loc))
+            .min()
+            .unwrap_or(0),
+        LocationThat::Or(items) => items
+            .into_iter()
+            .map(|spec| rank_match(spec, loc))
+            .max()
+            .unwrap_or(0),
         LocationThat::IsInFile(uri) if uri == loc.file.as_str() => 1,
         LocationThat::IsLocation(kind) if loc.kind == *kind => 1,
         LocationThat::MatchesName(query) if loc.qualified_name().contains(query) => query.len(),
@@ -220,7 +220,7 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
 }
 
 #[cfg(test)]
-/// derive_quickcheck_arbitrary::Arbitrary seems to overflow the stack because of the recursive values
+// Need to implement it manually, because derive_quickcheck_arbitrary::Arbitrary seems to overflow the stack due to recursion.
 impl quickcheck::Arbitrary for LocationThat {
     fn arbitrary(g: &mut quickcheck::Gen) -> Self {
         use strum::VariantArray as _;
@@ -232,14 +232,16 @@ impl quickcheck::Arbitrary for LocationThat {
             LocationThatDiscriminants::Or => {
                 LocationThat::arbitrary(g) | LocationThat::arbitrary(g)
             }
-            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile("f".to_string()),
+            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(String::arbitrary(g)),
             LocationThatDiscriminants::IsLocation => {
                 LocationThat::IsLocation(LocationKind::arbitrary(g))
             }
             LocationThatDiscriminants::HasParameters => LocationThat::HasParameters,
-            LocationThatDiscriminants::MatchesName => LocationThat::MatchesName("n".to_string()),
+            LocationThatDiscriminants::MatchesName => {
+                LocationThat::MatchesName(String::arbitrary(g))
+            }
             LocationThatDiscriminants::VisibleInNamespace => {
-                LocationThat::VisibleInNamespace("s".to_string())
+                LocationThat::VisibleInNamespace(String::arbitrary(g))
             }
         }
     }
@@ -247,26 +249,16 @@ impl quickcheck::Arbitrary for LocationThat {
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
         use LocationThat::*;
         match self {
-            And(a, b) => {
-                // start with just a or b
-                let mut vec = vec![(**a).clone(), (**b).clone()];
-                // then try And(a', b') where a' and 'b are shrunken versions
-                let shrunken = (**a)
+            And(items) => Box::new(
+                items
                     .shrink()
-                    .cartesian_product((**b).shrink().collect_vec().into_iter())
-                    .map(|(a, b)| a & b);
-                vec.extend(shrunken);
-                Box::new(vec.into_iter())
-            }
-            Or(a, b) => {
-                let mut vec = vec![(**a).clone(), (**b).clone()];
-                let shrunken = (**a)
+                    .flat_map(|each| each.into_iter().reduce(BitAnd::bitand)),
+            ),
+            Or(items) => Box::new(
+                items
                     .shrink()
-                    .cartesian_product((**b).shrink().collect_vec().into_iter())
-                    .map(|(a, b)| a | b);
-                vec.extend(shrunken);
-                Box::new(vec.into_iter())
-            }
+                    .flat_map(|each| each.into_iter().reduce(BitOr::bitor)),
+            ),
             IsInFile(file) => Box::new(file.shrink().map(IsInFile)),
             MatchesName(name) => Box::new(name.shrink().map(MatchesName)),
             VisibleInNamespace(ns) => Box::new(ns.shrink().map(VisibleInNamespace)),
@@ -277,24 +269,50 @@ impl quickcheck::Arbitrary for LocationThat {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    mod normalization {
-        use crate::lsp::location::specification::{normalized, LocationThat};
-        use quickcheck::quickcheck;
+    mod simplification {
+        use crate::lsp::location::specification::{simplified, LocationThat};
+        use quickcheck::{quickcheck, TestResult};
+
+        macro_rules! check_eq {
+            ($a:expr, $b:expr) => {
+                if $a == $b {
+                    quickcheck::TestResult::passed()
+                } else {
+                    quickcheck::TestResult::error(format!(
+                        "Expected\n{}\n  to equal\n{}\n  but found that\n{:?}\n  is not equal to\n{:?}",
+                        stringify!($a).replace(".clone()", ""),
+                        stringify!($b).replace(".clone()", ""),
+                        $a, $b
+                    ))
+                }
+            };
+        }
 
         quickcheck! {
-            fn order_doesnt_matter_and(a: LocationThat, b: LocationThat) -> bool {
-                normalized(a.clone() & b.clone()) == normalized(b & a)
+            fn order_doesnt_matter_and(a: LocationThat, b: LocationThat) -> TestResult {
+                check_eq!(
+                    simplified(a.clone() & b.clone()),
+                    simplified(b.clone() & a.clone())
+                )
             }
-            fn order_doesnt_matter_or(a: LocationThat, b: LocationThat) -> bool {
-                normalized(a.clone() | b.clone()) == normalized(b | a)
+            fn order_doesnt_matter_or(a: LocationThat, b: LocationThat) -> TestResult {
+                check_eq!(
+                    simplified(a.clone() | b.clone()),
+                    simplified(b.clone() | a.clone())
+                )
             }
 
-            // BUG: These tend to fail; normalization is still a bit buggy.
-            fn duplication_is_removed_and(a: LocationThat) -> bool {
-                normalized(a.clone() & a.clone()) == normalized(a)
+            fn duplication_is_removed_and(a: LocationThat) -> TestResult {
+                check_eq!(
+                    simplified(a.clone() & a.clone()),
+                    simplified(a.clone() & a.clone())
+                )
             }
-            fn duplication_is_removed_or(a: LocationThat) -> bool {
-                normalized(a.clone() | a.clone()) == normalized(a)
+            fn duplication_is_removed_or(a: LocationThat) -> TestResult{
+                check_eq!(
+                    simplified(a.clone() | a.clone()),
+                    simplified(a.clone() | a.clone())
+                )
             }
 
         }
