@@ -3,7 +3,7 @@ mod symbols;
 
 use super::location::Location;
 use crate::ink_syntax::{
-    types::{DivertTarget, Redirect},
+    types::{Condition, DivertTarget, Eval, Expr, Redirect},
     Visitor as _,
 };
 use crate::lsp::location::{self, specification::LocationThat};
@@ -125,13 +125,17 @@ impl InkDocument {
                 eprintln!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
             } else if let Ok(target) = DivertTarget::try_from_raw(node) {
                 let target = Self::widen_to_full_name(target);
-                let parent_is_redirect = target
-                    .parent()
-                    .is_some_and(|it| Redirect::try_from_raw(*it.raw()).is_ok());
-                let mut result = if parent_is_redirect {
+                // Determine the parent. We only complete in very specific cases:
+                let parent = target.parent()?;
+                let mut result = if Redirect::try_from_raw(*parent.raw()).is_ok() {
                     LocationThat::is_divert_target()
-                } else {
+                } else if Expr::try_from_raw(*parent.raw()).is_ok()
+                    | Eval::try_from_raw(*parent.raw()).is_ok()
+                    | Condition::try_from_raw(*parent.raw()).is_ok()
+                {
                     LocationThat::is_named()
+                } else {
+                    return None;
                 };
                 if let DivertTarget::Call(call) = target {
                     result &= LocationThat::has_parameters();
@@ -337,6 +341,9 @@ mod tests {
     #[test_case("-> aa.b@b(some, param)", Some((range((0, 3), (0, 21)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::has_parameters())); "xbo")]
     #[test_case("->@\n== knot", None; "iqu")]
     #[test_case("->@\ntext", None; "aho")]
+    #[test_case("== text@", None; "no completion in knots")]
+    #[test_case("= text@", None; "no completion in stitches")]
+    #[test_case("* {text@}", Some((range((0, 3), (0, 7)), Loc::is_named() & Loc::matches_name("text"))); "we do complete in choice conditions")]
     fn completions(txt: &str, expected: Option<(lsp_types::Range, Loc)>) {
         let (doc, caret) = doc_with_caret(txt);
         let actual = doc
