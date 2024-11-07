@@ -45,7 +45,7 @@ impl RequestHandler for request::WorkspaceSymbolRequest {
     }
 }
 
-impl RequestHandler for request::Completion{
+impl RequestHandler for request::Completion {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         let completions = state.lock()?.completions(
             params.text_document_position.text_document.uri,

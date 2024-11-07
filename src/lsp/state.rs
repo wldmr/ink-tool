@@ -1,6 +1,10 @@
 use super::{
     document::{DocumentEdit, InkDocument},
-    location::{self, rank_match, Location},
+    location::{
+        self,
+        specification::{rank_match, LocationThat},
+        Location,
+    },
 };
 use line_index::WideEncoding;
 use lsp_types::{
@@ -75,24 +79,23 @@ impl State {
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
         match self.documents.get_mut(&uri) {
             Some(doc) => {
-                let Some(specification) = doc.possible_completions(position) else {
+                let Some((range, specification)) = doc.possible_completions(position) else {
                     return Ok(None);
                 };
                 // eprintln!("find {specification}");
-                let completions = self.find_locations(specification).map(Into::into).collect();
+                let completions = self
+                    .find_locations(specification)
+                    .map(|loc| to_completion_item(range, loc))
+                    .collect();
                 Ok(Some(completions))
             }
             None => Err(DocumentNotFound(uri)),
         }
     }
 
-    fn find_locations(
-        &self,
-        spec: location::LocationThat,
-    ) -> impl Iterator<Item = location::Location> {
-        let uris: Vec<&Uri> = (&spec)
-            .try_into()
-            .unwrap_or_else(|_| self.documents.keys().collect());
+    fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
+        let uris: Vec<Uri> = location::specification::extract_uris(&spec)
+            .unwrap_or_else(|| self.documents.keys().cloned().collect());
         let mut locs = Vec::new();
         for uri in uris {
             let doc = self
@@ -110,37 +113,110 @@ impl State {
     }
 }
 
-impl From<Location> for CompletionItem {
-    fn from(value: Location) -> Self {
-        let file = value.file.path().as_str();
-        Self {
-            label: value.name,
-            detail: match value.namespace {
-                Some(ns) => Some(format!("{}: {ns}", file)),
-                None => Some(file.to_string()),
-            },
-            kind: Some(match value.kind {
-                location::LocationKind::Knot => CompletionItemKind::CLASS,
-                location::LocationKind::Stitch => CompletionItemKind::METHOD,
-                location::LocationKind::Label => CompletionItemKind::FIELD,
-                location::LocationKind::Variable => CompletionItemKind::VARIABLE,
-                location::LocationKind::Function => CompletionItemKind::FUNCTION,
-            }),
-            label_details: None,
-            documentation: None,
-            deprecated: None,
-            preselect: None,
-            sort_text: None,
-            filter_text: None,
-            insert_text: None,
-            insert_text_format: None,
-            insert_text_mode: None,
-            text_edit: None,
-            additional_text_edits: None,
-            command: None,
-            commit_characters: None,
-            data: None,
-            tags: None,
+fn to_completion_item(_range: lsp_types::Range, loc: Location) -> CompletionItem {
+    let file = loc.file.path().as_str();
+    CompletionItem {
+        label: loc.name,
+        detail: match loc.namespace {
+            Some(ns) => Some(format!("{}: {ns}", file)),
+            None => Some(file.to_string()),
+        },
+        kind: Some(match loc.kind {
+            location::LocationKind::Knot => CompletionItemKind::CLASS,
+            location::LocationKind::Stitch => CompletionItemKind::METHOD,
+            location::LocationKind::Label => CompletionItemKind::FIELD,
+            location::LocationKind::Variable => CompletionItemKind::VARIABLE,
+            location::LocationKind::Function => CompletionItemKind::FUNCTION,
+        }),
+        label_details: None,
+        documentation: None,
+        deprecated: None,
+        preselect: None,
+        sort_text: None,
+        filter_text: None,
+        insert_text: None,
+        insert_text_format: None,
+        insert_text_mode: None,
+        text_edit: None,
+        additional_text_edits: None,
+        command: None,
+        commit_characters: None,
+        data: None,
+        tags: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uri(name: &str) -> Uri {
+        <Uri as std::str::FromStr>::from_str(&format!("file://tmp/{name}")).unwrap()
+    }
+
+    fn set_content(state: &mut State, uri: Uri, contents: impl Into<String>) {
+        state.edit(uri, vec![(None, contents.into())]);
+    }
+
+    fn text_with_caret(input: &str) -> (String, lsp_types::Position) {
+        let mut row = 0;
+        let mut col = 0;
+        for (idx, chr) in input.char_indices() {
+            match chr {
+                '@' => {
+                    let pos = Position::new(row, col);
+                    let mut output = input.to_string();
+                    output.remove(idx);
+                    return (output, pos);
+                }
+                '\n' => {
+                    row += 1;
+                    col = 0;
+                }
+                _ => {
+                    col += 1;
+                }
+            }
+        }
+        panic!("There should have been an '@' in there somewhere.");
+    }
+
+    mod completions {
+        use super::{set_content, uri};
+        use crate::lsp::state::{self, tests::text_with_caret};
+        use pretty_assertions::assert_eq;
+
+        #[test]
+        fn state() {
+            let mut state = state::State::new(None, true);
+            set_content(
+                &mut state,
+                uri("context.ink"),
+                "
+                VAR some_var = true
+
+                == one
+                text
+
+                == two
+                text
+            ",
+            );
+            let (contents, caret) = text_with_caret("{o@}");
+            set_content(&mut state, uri("test.ink"), contents);
+            let doc = state.documents.get(&uri("test.ink")).unwrap();
+            eprintln!(
+                "completions: {:?}",
+                doc.possible_completions(caret).unwrap()
+            );
+            let completions = state.completions(uri("test.ink"), caret).unwrap().unwrap();
+            assert_eq!(
+                completions
+                    .into_iter()
+                    .map(|it| it.label)
+                    .collect::<Vec<_>>(),
+                vec!["some_var", "one", "two"]
+            );
         }
     }
 }

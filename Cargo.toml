@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.18", features = ["derive"] }
+itertools = "0.13.0"
 jsonrpc = "0.18.0"
 line-index = "0.1.1"
 lsp-server = "0.7.7"
@@ -23,6 +24,8 @@ walkdir = "2.5.0"
 [dev-dependencies]
 pretty_assertions = "1.4.0"
 quickcheck = "1.0.3"
+strum = { version = "0.26.3", features = ["derive"] }
+test-case = "3.3.1"
 
 [build-dependencies]
 cc="*"

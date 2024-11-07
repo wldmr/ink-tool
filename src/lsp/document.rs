@@ -3,13 +3,10 @@ mod symbols;
 
 use super::location::Location;
 use crate::ink_syntax::{
-    types::{symbols::SubGt, Divert},
+    types::{DivertTarget, Redirect},
     Visitor as _,
 };
-use crate::{
-    ink_syntax::types::{symbols::SubGtSubGt, Identifier},
-    lsp::location::{self, LocationThat},
-};
+use crate::lsp::location::{self, specification::LocationThat};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use locations::Locations;
 use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
@@ -99,32 +96,54 @@ impl InkDocument {
         self.ws_symbols_cache.clone()
     }
 
-    pub fn possible_completions(&mut self, position: Position) -> Option<location::LocationThat> {
-        let right = self.to_byte(position);
-        let mut left = right;
+    pub fn possible_completions(
+        &self,
+        position: Position,
+    ) -> Option<(lsp_types::Range, location::specification::LocationThat)> {
+        let offset_at_cursor = self.to_byte(position);
         let root = self.tree.root_node();
-        while left > 0 && right - left < 50 {
-            let node = root.descendant_for_byte_range(left, right)?;
-            eprintln!("node at original offset: {node}");
-            if node.is_error() {
-                eprintln!("errors are hard. later");
-            } else if let Ok(divert) = Divert::try_from_raw(node) {
-                let search_term = self.text[divert.target().byte_range()].to_string();
-                return Some(
-                    LocationThat::is_divert_target() & LocationThat::MatchesName(search_term),
-                );
-            } else if let Ok(_) = SubGt::try_from_raw(node) {
-                return Some(LocationThat::is_divert_target());
-            } else if let Ok(_) = SubGtSubGt::try_from_raw(node) {
-                return Some(LocationThat::is_divert_target());
-            } else if let Ok(ident) = Identifier::try_from_raw(node) {
-                let search_term = self.text[ident.byte_range()].to_string();
-                return Some(
-                    LocationThat::is_identifier() & LocationThat::MatchesName(search_term),
-                );
+
+        // simply walk to the left (whithin reason) until we hit something the tells us what to complete
+        for offset in (0..=offset_at_cursor).rev() {
+            // Some special behavior based on the character left of the search position:
+            match self.text.get(offset.saturating_sub(1)..offset) {
+                Some("\n") => break, // only look until the start of the line, at most
+                Some("") => break,   // we're at the beginning of the file; nothing to complete here
+                None => continue,    // we're inside a multibyte sequence
+                Some(_other) => {
+                    // eprintln!("The character left of offset {offset} is `{_other}`");
+                }
+            };
+
+            let node = root
+                .descendant_for_byte_range(offset, offset)
+                .expect("the offset must lie within the file, so there must be a node here");
+            eprintln!("found {node} at offset {offset}");
+
+            if node.is_error() || node.is_missing() {
+                let text = &self.text[node.byte_range()];
+                eprintln!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
+            } else if let Ok(target) = DivertTarget::try_from_raw(node) {
+                let target = Self::widen_to_full_name(target);
+                let parent_is_redirect = target
+                    .parent()
+                    .is_some_and(|it| Redirect::try_from_raw(*it.raw()).is_ok());
+                let mut result = if parent_is_redirect {
+                    LocationThat::is_divert_target()
+                } else {
+                    LocationThat::is_named()
+                };
+                if let DivertTarget::Call(call) = target {
+                    result &= LocationThat::HasParameters;
+                    result &= LocationThat::matches_name(&self.text[call.name().byte_range()]);
+                } else {
+                    result &= LocationThat::matches_name(&self.text[target.byte_range()]);
+                }
+                let range = self.lsp_range(&target.range());
+                return Some((range, result));
             }
-            left -= 1;
         }
+        // For-loop hasn't produced anything, so:
         None
     }
 
@@ -201,11 +220,27 @@ impl InkDocument {
         let end = self.lsp_position(node.end_point);
         lsp_types::Range { start, end }
     }
+
+    /// Walk up the parents of this node; return the largest node that can be a (potentially qualified) name of something.
+    fn widen_to_full_name<'t>(this: DivertTarget<'t>) -> DivertTarget<'t> {
+        let maybe_parent = this
+            .parent()
+            .map(|it| DivertTarget::try_from_raw(*it.raw()));
+        if let Some(Ok(parent)) = maybe_parent {
+            Self::widen_to_full_name(parent)
+        } else {
+            this
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
+    use test_case::test_case;
+
+    use crate::lsp::location;
 
     use super::{DocumentEdit, InkDocument};
 
@@ -257,34 +292,70 @@ mod tests {
     /// See these articles
     /// * https://fasterthanli.me/articles/the-bottom-emoji-breaks-rust-analyzer#caught-in-the-middle
     /// * https://hsivonen.fi/string-length/
-    mod wide_encodings {
-        use pretty_assertions::assert_str_eq;
-        use tests::edit;
+    #[test_case(None,                      4; "Width of emoji in UTF-8")]
+    #[test_case(Some(WideEncoding::Utf16), 2; "Width of emoji in UTF-16")]
+    #[test_case(Some(WideEncoding::Utf32), 1; "Width of emoji in UTF-32")]
+    fn wide_encodings(enc: Option<WideEncoding>, code_units: u32) {
+        let text = "🥺🥺".to_string();
+        let mut document = InkDocument::new(text, enc);
+        document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
+        pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
+    }
 
-        use super::super::*;
+    // The @ symbol signifies where the cursor is.
+    // Random test names for quick re-runs; ugly, but less cumbersome than descriptive or sequential names
+    // Many strange corner cases, but the upshot is: We only complete when the cursor is adjacent to identifier characters
+    // If we complete, then we narrow it down to divert targets if preceded by a redirect marker.
+    // IDEA: We could
+    use super::location::specification::LocationThat as Loc;
+    #[test_case("@{}", None; "bsj")]
+    #[test_case("{@}", None; "lkc")]
+    #[test_case("hi{@}", None; "gkf")]
+    #[test_case("hi@{}", None; "dpf")]
+    #[test_case("{ @}", None; "ixk")]
+    #[test_case("{ @ }", None; "ina")]
+    #[test_case("{}@", None; "fay")]
+    #[test_case("{@x}", Some((range((0, 1), (0, 2)), Loc::is_named() & Loc::matches_name("x"))); "rmo")]
+    #[test_case("{x@}", Some((range((0, 1), (0, 2)), Loc::is_named() & Loc::matches_name("x"))); "ivb")]
+    #[test_case("{a == @}", None; "pqf")]
+    #[test_case("{a + b@}", Some((range((0, 5), (0, 6)), Loc::is_named() & Loc::matches_name("b"))); "hea")]
+    #[test_case("{a@ == b}", Some((range((0, 1), (0, 2)), Loc::is_named() & Loc::matches_name("a"))); "qpd")]
+    #[test_case("-@>", None; "yug")]
+    #[test_case("->@", None; "qgi")]
+    #[test_case("-> @", None; "oak")]
+    #[test_case("-> @ab", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "pgf")]
+    #[test_case("-> ab@", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "uad")]
+    #[test_case("-> a@b", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "djg")]
+    #[test_case("<- @ab", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "izf")]
+    #[test_case("->-> ab@", Some((range((0, 5), (0, 7)), Loc::is_divert_target() & Loc::matches_name("ab"))); "tqz")]
+    #[test_case("-> @aa.bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "hpp")]
+    #[test_case("-> aa@.bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "mvz")]
+    #[test_case("-> aa.@bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "glq")]
+    #[test_case("-> aa.b@b", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "uon")]
+    #[test_case("-> aa.bb@", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "npt")]
+    #[test_case("-> aa.bb()@", Some((range((0, 3), (0, 10)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::HasParameters)); "sgs")]
+    #[test_case("-> aa.b@b(some, param)", Some((range((0, 3), (0, 21)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::HasParameters)); "xbo")]
+    #[test_case("->@\n== knot", None; "iqu")]
+    #[test_case("->@\ntext", None; "aho")]
+    fn completions(txt: &str, expected: Option<(lsp_types::Range, Loc)>) {
+        let (doc, caret) = doc_with_caret(txt);
+        let actual = doc
+            .possible_completions(caret)
+            .map(|(r, s)| (Compact(r), location::specification::normalized(s)));
+        let expected = expected.map(|(r, s)| (Compact(r), location::specification::normalized(s)));
+        pretty_assertions::assert_eq!(actual, expected, "Ink source:\n```\n{txt}\n```");
+    }
 
-        #[test]
-        fn utf8() {
-            let text = "🥺🥺".to_string();
-            let mut document = InkDocument::new(text, None);
-            document.edit(vec![edit((0, 4), (0, 4), " ")]);
-            assert_str_eq!(document.text, "🥺 🥺");
-        }
-
-        #[test]
-        fn utf16() {
-            let text = "🥺🥺".to_string();
-            let mut document = InkDocument::new(text, Some(WideEncoding::Utf16));
-            document.edit(vec![edit((0, 2), (0, 2), " ")]);
-            assert_str_eq!(document.text, "🥺 🥺");
-        }
-
-        #[test]
-        fn utf32() {
-            let text = "🥺🥺".to_string();
-            let mut document = InkDocument::new(text, Some(WideEncoding::Utf32));
-            document.edit(vec![edit((0, 1), (0, 1), " ")]);
-            assert_str_eq!(document.text, "🥺 🥺");
+    fn range(from: (u32, u32), to: (u32, u32)) -> lsp_types::Range {
+        lsp_types::Range {
+            start: lsp_types::Position {
+                line: from.0,
+                character: from.1,
+            },
+            end: lsp_types::Position {
+                line: to.0,
+                character: to.1,
+            },
         }
     }
 
@@ -302,5 +373,46 @@ mod tests {
             }),
             text.to_owned(),
         )
+    }
+
+    /// Creates a UTF-8 encoded document and an LSP `Position` based on where the first `@` symbol is.
+    /// Panics if there is no `@` symbol.
+    fn doc_with_caret(input: &str) -> (InkDocument, lsp_types::Position) {
+        let mut row = 0;
+        let mut col = 0;
+        // Generating positons this way only works for UTF-8!
+        // For other encodings we'd need to look at InkDocument internals, which we don't want.
+        for (idx, chr) in input.char_indices() {
+            match chr {
+                '@' => {
+                    let pos = lsp_types::Position::new(row, col);
+                    let mut output = input.to_string();
+                    output.remove(idx);
+                    return (InkDocument::new(output, None), pos);
+                }
+                '\n' => {
+                    row += 1;
+                    col = 0;
+                }
+                _ => {
+                    col += 1;
+                }
+            }
+        }
+        panic!("There should have been an '@' in there somewhere.");
+    }
+
+    /// Wrapper to enable a more compact debug representation for tests.
+    #[derive(PartialEq)]
+    struct Compact<T>(T);
+
+    impl std::fmt::Debug for Compact<lsp_types::Range> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "{}:{}-{}:{}",
+                self.0.start.line, self.0.start.character, self.0.end.line, self.0.end.character
+            )
+        }
     }
 }
