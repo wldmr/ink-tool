@@ -134,7 +134,7 @@ impl InkDocument {
                     LocationThat::is_named()
                 };
                 if let DivertTarget::Call(call) = target {
-                    result &= LocationThat::HasParameters;
+                    result &= LocationThat::has_parameters();
                     result &= LocationThat::matches_name(&self.text[call.name().byte_range()]);
                 } else {
                     result &= LocationThat::matches_name(&self.text[target.byte_range()]);
@@ -333,8 +333,8 @@ mod tests {
     #[test_case("-> aa.@bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "glq")]
     #[test_case("-> aa.b@b", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "uon")]
     #[test_case("-> aa.bb@", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "npt")]
-    #[test_case("-> aa.bb()@", Some((range((0, 3), (0, 10)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::HasParameters)); "sgs")]
-    #[test_case("-> aa.b@b(some, param)", Some((range((0, 3), (0, 21)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::HasParameters)); "xbo")]
+    #[test_case("-> aa.bb()@", Some((range((0, 3), (0, 10)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::has_parameters())); "sgs")]
+    #[test_case("-> aa.b@b(some, param)", Some((range((0, 3), (0, 21)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::has_parameters())); "xbo")]
     #[test_case("->@\n== knot", None; "iqu")]
     #[test_case("->@\ntext", None; "aho")]
     fn completions(txt: &str, expected: Option<(lsp_types::Range, Loc)>) {

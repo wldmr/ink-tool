@@ -116,7 +116,11 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                 } else {
                     LocationKind::Knot
                 };
-                let byte_range = knot.name().byte_range();
+                let mut byte_range = knot.name().byte_range();
+                if let Some(Ok(params)) = knot.params() {
+                    // dirty trick to get the params in there. We should do this better
+                    byte_range.end = params.end_byte();
+                }
                 let name = self.doc.text[byte_range.clone()].to_string();
                 let mut new_loc = self.new_loc(kind, name.clone(), byte_range);
                 new_loc.namespace = Some(name);
@@ -124,7 +128,11 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
             }
 
             AllNamed::Stitch(stitch) => {
-                let byte_range = stitch.name().byte_range();
+                let mut byte_range = stitch.name().byte_range();
+                if let Some(Ok(params)) = stitch.params() {
+                    // dirty trick to get the params in there. We should do this better
+                    byte_range.end = params.end_byte();
+                }
                 let name = self.doc.text[byte_range.clone()].to_string();
                 let mut new_loc = self.new_loc(LocationKind::Stitch, name.clone(), byte_range);
                 new_loc.namespace = if let Some(ref knot) = self.namespace {
@@ -136,7 +144,11 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
             }
 
             AllNamed::External(external) => {
-                let byte_range = external.name().byte_range();
+                let mut byte_range = external.name().byte_range();
+                if let Ok(params) = external.params() {
+                    // dirty trick to get the params in there. We should do this better
+                    byte_range.end = params.end_byte();
+                }
                 let name = self.doc.text[byte_range.clone()].to_string();
                 Return(self.new_loc(LocationKind::Function, name, byte_range))
             }

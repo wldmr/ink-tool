@@ -148,6 +148,10 @@ impl LocationThat {
         Self::is_divert_target() | Self::is_variable() | Self::is_function()
     }
 
+    pub(crate) fn has_parameters() -> LocationThat {
+        Self::HasParameters
+    }
+
     pub(crate) fn matches_name(s: impl Into<String>) -> LocationThat {
         Self::MatchesName(s.into())
     }
@@ -211,11 +215,17 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
             .map(|spec| rank_match(spec, loc))
             .max()
             .unwrap_or(0),
-        LocationThat::IsInFile(uri) if uri == loc.file.as_str() => 1,
-        LocationThat::IsLocation(kind) if loc.kind == *kind => 1,
-        LocationThat::MatchesName(query) if loc.qualified_name().contains(query) => query.len(),
+        LocationThat::IsInFile(uri) => usize::from(uri == loc.file.as_str()),
+        LocationThat::IsLocation(kind) => usize::from(loc.kind == *kind),
+        LocationThat::MatchesName(query) => {
+            if loc.qualified_name().contains(query) {
+                query.len()
+            } else {
+                0
+            }
+        }
         LocationThat::VisibleInNamespace(_) => todo!(),
-        _ => 0,
+        LocationThat::HasParameters => usize::from(loc.name.ends_with(")")), // OMG, so dirty.
     }
 }
 
