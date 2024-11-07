@@ -1,12 +1,10 @@
+use super::{Location, LocationKind};
+use itertools::Itertools as _;
+use lsp_types::Uri;
 use std::{
     ops::{BitAnd, BitOr, Deref as _},
     str::FromStr as _,
 };
-
-use super::{Location, LocationKind};
-
-use itertools::Itertools as _;
-use lsp_types::Uri;
 
 // Ord impls are used for normalization
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -21,13 +19,7 @@ pub(crate) enum LocationThat {
     Or(Box<Self>, Box<Self>),
     // IDEA: Not(Box<Self>)
     IsInFile(String),
-    IsKnot,
-    IsStitch,
-    IsLabel,
-    IsVariable,
-    /// We treat a function this as distinct from a knot
-    IsFunction,
-    /// Additional
+    IsLocation(LocationKind),
     HasParameters,
     MatchesName(String),
     VisibleInNamespace(String),
@@ -58,11 +50,13 @@ impl std::fmt::Display for LocationThat {
                 write!(f, "{a} | {b}")
             }
             IsInFile(file) => write!(f, "file={}", file),
-            IsKnot => f.write_str("knot"),
-            IsStitch => f.write_str("stitch"),
-            IsLabel => f.write_str("label"),
-            IsVariable => f.write_str("variable"),
-            IsFunction => f.write_str("function"),
+            IsLocation(kind) => match kind {
+                LocationKind::Knot => f.write_str("knot"),
+                LocationKind::Stitch => f.write_str("stitch"),
+                LocationKind::Label => f.write_str("label"),
+                LocationKind::Variable => f.write_str("variable"),
+                LocationKind::Function => f.write_str("function"),
+            },
             HasParameters => f.write_str("parameters"),
             MatchesName(query) => write!(f, "name~={query}"),
             VisibleInNamespace(ns) => write!(f, "namespace={ns}"),
@@ -90,7 +84,7 @@ impl std::ops::BitAnd for LocationThat {
 
 impl std::ops::BitAndAssign for LocationThat {
     fn bitand_assign(&mut self, rhs: Self) {
-        let mut self_placeholder = Self::IsKnot;
+        let mut self_placeholder = Self::is_knot();
         std::mem::swap(self, &mut self_placeholder);
         *self = self_placeholder & rhs
     }
@@ -106,7 +100,7 @@ impl std::ops::BitOr for LocationThat {
 
 impl std::ops::BitOrAssign for LocationThat {
     fn bitor_assign(&mut self, rhs: Self) {
-        let mut self_placeholder = Self::IsKnot;
+        let mut self_placeholder = Self::is_knot();
         std::mem::swap(self, &mut self_placeholder);
         *self = self_placeholder | rhs
     }
@@ -114,12 +108,29 @@ impl std::ops::BitOrAssign for LocationThat {
 
 /// Construction
 impl LocationThat {
+    pub(crate) fn is_knot() -> LocationThat {
+        Self::IsLocation(LocationKind::Knot)
+    }
+    pub(crate) fn is_function() -> LocationThat {
+        Self::IsLocation(LocationKind::Function)
+    }
+    pub(crate) fn is_stitch() -> LocationThat {
+        Self::IsLocation(LocationKind::Stitch)
+    }
+    pub(crate) fn is_label() -> LocationThat {
+        Self::IsLocation(LocationKind::Label)
+    }
+
+    pub(crate) fn is_variable() -> LocationThat {
+        Self::IsLocation(LocationKind::Variable)
+    }
+
     pub(crate) fn is_divert_target() -> LocationThat {
-        Self::IsKnot | Self::IsStitch | Self::IsLabel
+        Self::is_knot() | Self::is_stitch() | Self::is_label()
     }
 
     pub(crate) fn is_named() -> LocationThat {
-        Self::is_divert_target() | Self::IsVariable | Self::IsFunction
+        Self::is_divert_target() | Self::is_variable() | Self::is_function()
     }
 
     pub(crate) fn matches_name(s: impl Into<String>) -> LocationThat {
@@ -178,11 +189,7 @@ pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<Uri>> {
         }
         LocationThat::IsInFile(path) => Some(vec![Uri::from_str(&path).unwrap()]),
 
-        LocationThat::IsKnot
-        | LocationThat::IsStitch
-        | LocationThat::IsLabel
-        | LocationThat::IsVariable
-        | LocationThat::IsFunction
+        LocationThat::IsLocation(_)
         | LocationThat::HasParameters
         | LocationThat::MatchesName(_)
         | LocationThat::VisibleInNamespace(_) => None,
@@ -205,11 +212,7 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
         }
         LocationThat::Or(a, b) => rank_match(a, loc).max(rank_match(b, loc)),
         LocationThat::IsInFile(uri) if uri == loc.file.as_str() => 1,
-        LocationThat::IsKnot if loc.kind == LocationKind::Knot => 1,
-        LocationThat::IsFunction if loc.kind == LocationKind::Function => 1,
-        LocationThat::IsStitch if loc.kind == LocationKind::Stitch => 1,
-        LocationThat::IsLabel if loc.kind == LocationKind::Label => 1,
-        LocationThat::IsVariable if loc.kind == LocationKind::Variable => 1,
+        LocationThat::IsLocation(kind) if loc.kind == *kind => 1,
         LocationThat::MatchesName(query) if loc.qualified_name().contains(query) => query.len(),
         LocationThat::VisibleInNamespace(_) => todo!(),
         _ => 0,
@@ -217,73 +220,66 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    mod normalization {
-        use itertools::Itertools;
-        use quickcheck::{empty_shrinker, quickcheck, Arbitrary};
-
-        use crate::lsp::location::specification::{normalized, LocationThat};
-
-        impl Arbitrary for LocationThat {
-            fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-                use super::super::LocationThatDiscriminants;
-                use strum::VariantArray as _;
-                let kind = g.choose(LocationThatDiscriminants::VARIANTS).unwrap();
-                match kind {
-                    LocationThatDiscriminants::And => {
-                        LocationThat::arbitrary(g) & LocationThat::arbitrary(g)
-                    }
-                    LocationThatDiscriminants::Or => {
-                        LocationThat::arbitrary(g) | LocationThat::arbitrary(g)
-                    }
-                    LocationThatDiscriminants::IsInFile => LocationThat::IsInFile("f".to_string()),
-                    LocationThatDiscriminants::IsKnot => LocationThat::IsKnot,
-                    LocationThatDiscriminants::IsStitch => LocationThat::IsStitch,
-                    LocationThatDiscriminants::IsLabel => LocationThat::IsLabel,
-                    LocationThatDiscriminants::IsVariable => LocationThat::IsVariable,
-                    LocationThatDiscriminants::IsFunction => LocationThat::IsFunction,
-                    LocationThatDiscriminants::HasParameters => LocationThat::HasParameters,
-                    LocationThatDiscriminants::MatchesName => {
-                        LocationThat::MatchesName("n".to_string())
-                    }
-                    LocationThatDiscriminants::VisibleInNamespace => {
-                        LocationThat::VisibleInNamespace("s".to_string())
-                    }
-                }
+/// derive_quickcheck_arbitrary::Arbitrary seems to overflow the stack because of the recursive values
+impl quickcheck::Arbitrary for LocationThat {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+        use strum::VariantArray as _;
+        let kind = g.choose(LocationThatDiscriminants::VARIANTS).unwrap();
+        match kind {
+            LocationThatDiscriminants::And => {
+                LocationThat::arbitrary(g) & LocationThat::arbitrary(g)
             }
-
-            fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-                use LocationThat::*;
-                match self {
-                    And(a, b) => {
-                        // start with just a or b
-                        let mut vec = vec![(**a).clone(), (**b).clone()];
-                        // then try And(a', b') where a' and 'b are shrunken versions
-                        let shrunken = (**a)
-                            .shrink()
-                            .cartesian_product((**b).shrink().collect_vec().into_iter())
-                            .map(|(a, b)| a & b);
-                        vec.extend(shrunken);
-                        Box::new(vec.into_iter())
-                    }
-                    Or(a, b) => {
-                        let mut vec = vec![(**a).clone(), (**b).clone()];
-                        let shrunken = (**a)
-                            .shrink()
-                            .cartesian_product((**b).shrink().collect_vec().into_iter())
-                            .map(|(a, b)| a | b);
-                        vec.extend(shrunken);
-                        Box::new(vec.into_iter())
-                    }
-                    IsInFile(file) => Box::new(file.shrink().map(IsInFile)),
-                    MatchesName(name) => Box::new(name.shrink().map(MatchesName)),
-                    VisibleInNamespace(ns) => Box::new(ns.shrink().map(VisibleInNamespace)),
-                    IsKnot | IsStitch | IsLabel | IsVariable | IsFunction | HasParameters => {
-                        empty_shrinker()
-                    }
-                }
+            LocationThatDiscriminants::Or => {
+                LocationThat::arbitrary(g) | LocationThat::arbitrary(g)
+            }
+            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile("f".to_string()),
+            LocationThatDiscriminants::IsLocation => {
+                LocationThat::IsLocation(LocationKind::arbitrary(g))
+            }
+            LocationThatDiscriminants::HasParameters => LocationThat::HasParameters,
+            LocationThatDiscriminants::MatchesName => LocationThat::MatchesName("n".to_string()),
+            LocationThatDiscriminants::VisibleInNamespace => {
+                LocationThat::VisibleInNamespace("s".to_string())
             }
         }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        use LocationThat::*;
+        match self {
+            And(a, b) => {
+                // start with just a or b
+                let mut vec = vec![(**a).clone(), (**b).clone()];
+                // then try And(a', b') where a' and 'b are shrunken versions
+                let shrunken = (**a)
+                    .shrink()
+                    .cartesian_product((**b).shrink().collect_vec().into_iter())
+                    .map(|(a, b)| a & b);
+                vec.extend(shrunken);
+                Box::new(vec.into_iter())
+            }
+            Or(a, b) => {
+                let mut vec = vec![(**a).clone(), (**b).clone()];
+                let shrunken = (**a)
+                    .shrink()
+                    .cartesian_product((**b).shrink().collect_vec().into_iter())
+                    .map(|(a, b)| a | b);
+                vec.extend(shrunken);
+                Box::new(vec.into_iter())
+            }
+            IsInFile(file) => Box::new(file.shrink().map(IsInFile)),
+            MatchesName(name) => Box::new(name.shrink().map(MatchesName)),
+            VisibleInNamespace(ns) => Box::new(ns.shrink().map(VisibleInNamespace)),
+            IsLocation(_) | HasParameters => quickcheck::empty_shrinker(),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    mod normalization {
+        use crate::lsp::location::specification::{normalized, LocationThat};
+        use quickcheck::quickcheck;
 
         quickcheck! {
             fn order_doesnt_matter_and(a: LocationThat, b: LocationThat) -> bool {
