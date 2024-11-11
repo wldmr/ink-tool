@@ -1,10 +1,7 @@
 use super::{Location, LocationKind};
 use itertools::Itertools;
 use lsp_types::Uri;
-use std::{
-    ops::{BitAnd, BitOr},
-    str::FromStr as _,
-};
+use std::str::FromStr as _;
 
 // Ord impls are used for normalization
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -161,7 +158,10 @@ impl LocationThat {
 // NOTE: This isn't proper normalization (neither DNF nor CNF), it just sorts and deduplicates the existing structure.
 // Together with our ad-hoc merging during construction this seems to work well enough for now.
 // I suspect that'll change once we introduce negation.
+#[cfg(test)]
 pub(crate) fn simplified(spec: LocationThat) -> LocationThat {
+    use std::ops::{BitAnd, BitOr};
+
     match spec {
         // Same pattern for And and Or: Sort and deduplicate like items.
         LocationThat::And(items) => items
@@ -215,7 +215,7 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
             .map(|spec| rank_match(spec, loc))
             .max()
             .unwrap_or(0),
-        LocationThat::IsInFile(uri) => usize::from(uri == loc.file.as_str()),
+        LocationThat::IsInFile(uri) => usize::from(loc.path_as_str() == uri),
         LocationThat::IsLocation(kind) => usize::from(loc.kind == *kind),
         LocationThat::MatchesName(query) => {
             if loc.qualified_name().contains(query) {
@@ -257,6 +257,7 @@ impl quickcheck::Arbitrary for LocationThat {
     }
 
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        use std::ops::{BitAnd, BitOr};
         use LocationThat::*;
         match self {
             And(items) => Box::new(

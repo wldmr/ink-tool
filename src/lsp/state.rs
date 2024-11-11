@@ -5,6 +5,7 @@ use super::{
         specification::{rank_match, LocationThat},
         Location,
     },
+    locations::Locations,
 };
 use line_index::WideEncoding;
 use lsp_types::{
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 pub(crate) struct State {
     wide_encoding: Option<WideEncoding>,
     documents: HashMap<Uri, InkDocument>,
+    locations: Locations,
     qualified_names: bool,
 }
 
@@ -26,6 +28,7 @@ impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
         Self {
             documents: HashMap::new(),
+            locations: Locations::new(),
             wide_encoding,
             qualified_names,
         }
@@ -114,12 +117,11 @@ impl State {
 }
 
 fn to_completion_item(_range: lsp_types::Range, loc: Location) -> CompletionItem {
-    let file = loc.file.path().as_str();
     CompletionItem {
-        label: loc.name,
+        label: loc.name.clone(),
         detail: match loc.namespace {
-            Some(ns) => Some(format!("{}: {ns}", file)),
-            None => Some(file.to_string()),
+            Some(ref ns) => Some(format!("{}: {ns}", loc.path_as_str())),
+            None => Some(loc.path_as_str().to_owned()),
         },
         kind: Some(match loc.kind {
             location::LocationKind::Knot => CompletionItemKind::CLASS,

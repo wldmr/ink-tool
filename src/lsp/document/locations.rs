@@ -4,7 +4,6 @@ use crate::{
     lsp::location::{Location, LocationKind},
 };
 use lsp_types::Uri;
-use std::ops::Range;
 use type_sitter_lib::{IncorrectKindCause, Node};
 
 pub(crate) struct Locations<'a> {
@@ -24,13 +23,13 @@ impl<'a> Locations<'a> {
         }
     }
 
-    fn new_loc(&mut self, kind: LocationKind, name: String, byte_range: Range<usize>) -> Self {
+    fn new_loc(&mut self, kind: LocationKind, name: String, range: tree_sitter::Range) -> Self {
         self.locs.push(Location {
-            file: self.uri.clone(),
+            id: (self.uri, &self.doc.lsp_range(&range)).into(),
             name,
             namespace: self.namespace.clone(),
-            byte_range,
             kind,
+            link: Vec::new(),
         });
         Self {
             uri: self.uri,
@@ -122,7 +121,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                     byte_range.end = params.end_byte();
                 }
                 let name = self.doc.text[byte_range.clone()].to_string();
-                let mut new_loc = self.new_loc(kind, name.clone(), byte_range);
+                let mut new_loc = self.new_loc(kind, name.clone(), knot.name().range());
                 new_loc.namespace = Some(name);
                 Return(new_loc)
             }
@@ -134,7 +133,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                     byte_range.end = params.end_byte();
                 }
                 let name = self.doc.text[byte_range.clone()].to_string();
-                let mut new_loc = self.new_loc(LocationKind::Stitch, name.clone(), byte_range);
+                let mut new_loc =
+                    self.new_loc(LocationKind::Stitch, name.clone(), stitch.name().range());
                 new_loc.namespace = if let Some(ref knot) = self.namespace {
                     Some(format!("{knot}.{name}"))
                 } else {
@@ -150,19 +150,19 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                     byte_range.end = params.end_byte();
                 }
                 let name = self.doc.text[byte_range.clone()].to_string();
-                Return(self.new_loc(LocationKind::Function, name, byte_range))
+                Return(self.new_loc(LocationKind::Function, name, external.name().range()))
             }
 
             AllNamed::Label(label) => {
                 let byte_range = label.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_string();
-                Return(self.new_loc(LocationKind::Label, name, byte_range))
+                Return(self.new_loc(LocationKind::Label, name, label.name().range()))
             }
 
             AllNamed::Global(global) => {
                 let byte_range = global.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_owned();
-                let mut new_loc = self.new_loc(LocationKind::Variable, name, byte_range);
+                let mut new_loc = self.new_loc(LocationKind::Variable, name, global.name().range());
                 new_loc.namespace = None;
                 Return(new_loc)
             }
@@ -170,7 +170,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
             AllNamed::List(list) => {
                 let byte_range = list.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_owned();
-                let mut new_loc = self.new_loc(LocationKind::Variable, name.clone(), byte_range);
+                let mut new_loc =
+                    self.new_loc(LocationKind::Variable, name.clone(), list.name().range());
                 new_loc.namespace = Some(name);
                 DescendWith(new_loc)
             }
@@ -178,13 +179,13 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
             AllNamed::ListValueDef(def) => {
                 let byte_range = def.name().byte_range();
                 let name = self.doc.text[byte_range.clone().clone()].to_owned();
-                Return(self.new_loc(LocationKind::Variable, name, byte_range))
+                Return(self.new_loc(LocationKind::Variable, name, def.name().range()))
             }
 
             AllNamed::Temp(temp) => {
                 let byte_range = temp.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_owned();
-                Return(self.new_loc(LocationKind::Variable, name, byte_range))
+                Return(self.new_loc(LocationKind::Variable, name, temp.name().range()))
             }
         }
     }
