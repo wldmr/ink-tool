@@ -9,8 +9,8 @@ use std::{ops::Not, path::Path};
 
 mod document;
 mod file_watching;
+mod links;
 mod location;
-mod locations;
 mod notification_handlers;
 mod request_handlers;
 mod shared;

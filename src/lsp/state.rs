@@ -1,11 +1,11 @@
 use super::{
     document::{DocumentEdit, InkDocument},
+    links::Links,
     location::{
         self,
         specification::{rank_match, LocationThat},
         Location,
     },
-    locations::Locations,
 };
 use line_index::WideEncoding;
 use lsp_types::{
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 pub(crate) struct State {
     wide_encoding: Option<WideEncoding>,
     documents: HashMap<Uri, InkDocument>,
-    locations: Locations,
+    links: Links, // Sure would be nice for this to be reactive
     qualified_names: bool,
 }
 
@@ -28,18 +28,30 @@ impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
         Self {
             documents: HashMap::new(),
-            locations: Locations::new(),
+            links: Links::new(),
             wide_encoding,
             qualified_names,
         }
     }
 
     pub fn edit(&mut self, uri: Uri, edits: Vec<DocumentEdit>) {
-        let entry = self
+        if !self.documents.contains_key(&uri) {
+            self.documents.insert(
+                uri.clone(),
+                InkDocument::new(uri.clone(), String::new(), self.wide_encoding),
+            );
+        }
+        let doc = self
             .documents
-            .entry(uri)
-            .or_insert_with(|| InkDocument::new(String::new(), self.wide_encoding));
-        entry.edit(edits);
+            .get_mut(&uri)
+            .expect("we just made sure it exists");
+        let new_locations = doc.edit(edits);
+        for loc in &new_locations {
+            self.links.remove_any(&loc.id);
+        }
+        for _loc in new_locations {
+            // todo!()
+        }
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
@@ -63,8 +75,8 @@ impl State {
     pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
         let symbols = self
             .documents
-            .iter_mut()
-            .filter_map(|(uri, doc)| doc.workspace_symbols(uri))
+            .values_mut() // mut because of caching. feels weird, but at least it's honest.
+            .filter_map(InkDocument::workspace_symbols)
             .flatten();
         if query.is_empty() {
             symbols.collect()

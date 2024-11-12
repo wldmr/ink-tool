@@ -1,4 +1,5 @@
-use std::str::FromStr;
+use lsp_types::{Range, Uri};
+use std::{ops::RangeBounds, str::FromStr};
 
 pub mod specification;
 
@@ -9,51 +10,76 @@ pub(crate) struct Location {
     pub(crate) name: String,
     pub(crate) namespace: Option<String>,
     pub(crate) kind: LocationKind,
-    pub(crate) link: Vec<Link>,
 }
 
 impl Location {
+    pub(crate) fn id(&self) -> LocationId {
+        self.id.clone()
+    }
+
     pub(crate) fn path_as_str(&self) -> &str {
         &self.id.file.0
+    }
+
+    pub(crate) fn new(
+        uri: &Uri,
+        range: &Range,
+        name: String,
+        namespace: Option<String>,
+        kind: LocationKind,
+    ) -> Self {
+        Self {
+            id: LocationId::new(uri, range),
+            name,
+            namespace,
+            kind,
+        }
     }
 }
 
 // We mimic some basic LSP types to get around the orphan rule.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 // IDEA: Maybe don't store the whole path here and instead just make this an index. Pro: it would become Copy. Con: We could only say what the path is at the Workspace level.
 pub(crate) struct FileId(String);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct FileRange {
-    start: FilePos,
-    end: FilePos,
+    pub(crate) start: FilePos,
+    pub(crate) end: FilePos,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct FilePos {
     line: u32,
     character: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct LocationId {
     file: FileId,
-    position: FileRange,
+    range: FileRange,
 }
 
-#[derive(Debug, Clone)]
+impl LocationId {
+    pub(crate) fn new(uri: &Uri, range: &Range) -> Self {
+        Self {
+            file: uri.into(),
+            range: (*range).into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct Link {
-    /// Location that this link started from
-    from: LocationId,
-    /// Either a full resolved location or a string that describes the intended location.
-    to: Result<LocationId, String>,
-    kind: RelationKind,
+    pub(crate) source: LocationId,
+    pub(crate) target: LocationId,
+    pub(crate) kind: LinkKind,
 }
 
 impl Location {
@@ -65,7 +91,7 @@ impl Location {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) enum LocationKind {
     Knot,
@@ -77,7 +103,7 @@ pub(crate) enum LocationKind {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
-pub(crate) enum RelationKind {
+pub(crate) enum LinkKind {
     ValueDefinedBy,
     TypeDefinedBy,
     RedirectTo,
@@ -102,8 +128,8 @@ impl From<FilePos> for lsp_types::Position {
         }
     }
 }
-impl From<lsp_types::Range> for FileRange {
-    fn from(value: lsp_types::Range) -> Self {
+impl From<Range> for FileRange {
+    fn from(value: Range) -> Self {
         Self {
             start: value.start.into(),
             end: value.end.into(),
@@ -111,7 +137,7 @@ impl From<lsp_types::Range> for FileRange {
     }
 }
 
-impl From<FileRange> for lsp_types::Range {
+impl From<FileRange> for Range {
     fn from(value: FileRange) -> Self {
         Self {
             start: value.start.into(),
@@ -120,23 +146,24 @@ impl From<FileRange> for lsp_types::Range {
     }
 }
 
-impl From<lsp_types::Uri> for FileId {
-    fn from(value: lsp_types::Uri) -> Self {
+impl From<&lsp_types::Uri> for FileId {
+    fn from(value: &lsp_types::Uri) -> Self {
         Self(value.as_str().to_string())
     }
 }
 
-impl From<FileId> for lsp_types::Uri {
-    fn from(value: FileId) -> Self {
+impl From<&FileId> for lsp_types::Uri {
+    fn from(value: &FileId) -> Self {
         lsp_types::Uri::from_str(&value.0).expect("This should have been created from a valid URI")
     }
 }
 
-impl From<(&lsp_types::Uri, &lsp_types::Range)> for LocationId {
-    fn from((uri, pos): (&lsp_types::Uri, &lsp_types::Range)) -> Self {
-        Self {
-            file: uri.clone().into(),
-            position: pos.clone().into(),
-        }
+impl RangeBounds<LocationId> for &Location {
+    fn start_bound(&self) -> std::ops::Bound<&LocationId> {
+        std::ops::Bound::Included(&self.id)
+    }
+
+    fn end_bound(&self) -> std::ops::Bound<&LocationId> {
+        std::ops::Bound::Excluded(&self.id)
     }
 }

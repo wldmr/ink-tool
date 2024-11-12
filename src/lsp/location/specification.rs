@@ -1,7 +1,6 @@
-use super::{Location, LocationKind};
+use super::{FileId, Location, LocationKind};
 use itertools::Itertools;
 use lsp_types::Uri;
-use std::str::FromStr as _;
 
 // Ord impls are used for normalization
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -15,7 +14,7 @@ pub(crate) enum LocationThat {
     And(Vec<Self>),
     Or(Vec<Self>),
     // IDEA: Not(Box<Self>)
-    IsInFile(String),
+    IsInFile(FileId),
     IsLocation(LocationKind),
     HasParameters,
     MatchesName(String),
@@ -36,7 +35,7 @@ impl std::fmt::Display for LocationThat {
                 1 => items[0].fmt(f),
                 _ => write!(f, "({})", items.iter().join(" | ")),
             },
-            IsInFile(file) => write!(f, "file={}", file),
+            IsInFile(file) => write!(f, "file={}", file.0),
             IsLocation(kind) => match kind {
                 LocationKind::Knot => f.write_str("knot"),
                 LocationKind::Stitch => f.write_str("stitch"),
@@ -120,6 +119,10 @@ impl std::ops::BitOrAssign for LocationThat {
 
 /// Construction
 impl LocationThat {
+    pub(crate) fn is_in_file(file: impl Into<FileId>) -> Self {
+        Self::IsInFile(file.into())
+    }
+
     pub(crate) fn is_knot() -> LocationThat {
         Self::IsLocation(LocationKind::Knot)
     }
@@ -193,7 +196,7 @@ pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<Uri>> {
                 Some(merged)
             }
         }
-        LocationThat::IsInFile(path) => Some(vec![Uri::from_str(&path).unwrap()]),
+        LocationThat::IsInFile(path) => Some(vec![path.into()]),
 
         LocationThat::IsLocation(_)
         | LocationThat::HasParameters
@@ -215,7 +218,7 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
             .map(|spec| rank_match(spec, loc))
             .max()
             .unwrap_or(0),
-        LocationThat::IsInFile(uri) => usize::from(loc.path_as_str() == uri),
+        LocationThat::IsInFile(uri) => usize::from(loc.id.file == *uri),
         LocationThat::IsLocation(kind) => usize::from(loc.kind == *kind),
         LocationThat::MatchesName(query) => {
             if loc.qualified_name().contains(query) {
@@ -227,6 +230,10 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
         LocationThat::VisibleInNamespace(_) => todo!(),
         LocationThat::HasParameters => usize::from(loc.name.ends_with(")")), // OMG, so dirty.
     }
+}
+
+pub(crate) fn matches(spec: &LocationThat, loc: &Location) -> bool {
+    rank_match(spec, loc) != 0
 }
 
 #[cfg(test)]
@@ -242,7 +249,7 @@ impl quickcheck::Arbitrary for LocationThat {
             LocationThatDiscriminants::Or => {
                 LocationThat::arbitrary(g) | LocationThat::arbitrary(g)
             }
-            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(String::arbitrary(g)),
+            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(FileId::arbitrary(g)),
             LocationThatDiscriminants::IsLocation => {
                 LocationThat::IsLocation(LocationKind::arbitrary(g))
             }
@@ -281,23 +288,11 @@ impl quickcheck::Arbitrary for LocationThat {
 #[cfg(test)]
 pub(crate) mod tests {
     mod simplification {
-        use crate::lsp::location::specification::{simplified, LocationThat};
+        use crate::{
+            lsp::location::specification::{simplified, LocationThat},
+            test_utils::check_eq,
+        };
         use quickcheck::{quickcheck, TestResult};
-
-        macro_rules! check_eq {
-            ($a:expr, $b:expr) => {
-                if $a == $b {
-                    quickcheck::TestResult::passed()
-                } else {
-                    quickcheck::TestResult::error(format!(
-                        "Expected\n{}\n  to equal\n{}\n  but found that\n{:?}\n  is not equal to\n{:?}",
-                        stringify!($a).replace(".clone()", ""),
-                        stringify!($b).replace(".clone()", ""),
-                        $a, $b
-                    ))
-                }
-            };
-        }
 
         quickcheck! {
             fn order_doesnt_matter_and(a: LocationThat, b: LocationThat) -> TestResult {

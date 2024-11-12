@@ -8,7 +8,7 @@ use crate::ink_syntax::{
 };
 use crate::lsp::location::{self, specification::LocationThat};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use locations::Locations;
+use locations::LocationVisitor;
 use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
 use tree_sitter::Parser;
@@ -18,6 +18,7 @@ use type_sitter_lib::Node;
 // Everthing else works in terms of LSP types.
 
 pub(crate) struct InkDocument {
+    uri: lsp_types::Uri,
     tree: tree_sitter::Tree,
     text: String,
     parser: tree_sitter::Parser,
@@ -31,7 +32,7 @@ pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
 
 /// Public API
 impl InkDocument {
-    pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
+    pub(crate) fn new(uri: lsp_types::Uri, text: String, enc: Option<WideEncoding>) -> Self {
         let mut parser = Parser::new();
         parser
             .set_language(&tree_sitter_ink::LANGUAGE.into())
@@ -41,6 +42,7 @@ impl InkDocument {
             .expect("can only return None with timeout, cancellation flag or missing language");
         let lines = LineIndex::new(&text);
         Self {
+            uri,
             parser,
             tree,
             lines,
@@ -51,7 +53,7 @@ impl InkDocument {
         }
     }
 
-    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) {
+    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) -> Vec<Location> {
         // eprintln!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
             let edit = range.map(|range| self.input_edit(range, &new_text));
@@ -70,8 +72,12 @@ impl InkDocument {
                 .expect("parsing must work");
             self.lines = LineIndex::new(&self.text);
         }
+        // let locations = Locations::new(, )
         self.doc_symbols_cache = None;
         self.ws_symbols_cache = None;
+        let mut visitor = LocationVisitor::new(&self.uri, self);
+        visitor.traverse(&mut self.tree.root_node().walk());
+        visitor.locs
     }
 
     pub(crate) fn symbols(&mut self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
@@ -84,12 +90,9 @@ impl InkDocument {
         self.doc_symbols_cache.clone()
     }
 
-    pub(crate) fn workspace_symbols(
-        &mut self,
-        uri: &lsp_types::Uri,
-    ) -> Option<Vec<WorkspaceSymbol>> {
+    pub(crate) fn workspace_symbols(&mut self) -> Option<Vec<WorkspaceSymbol>> {
         if self.ws_symbols_cache.is_none() {
-            let mut symbols = WorkspaceSymbols::new(self, uri);
+            let mut symbols = WorkspaceSymbols::new(self, &self.uri);
             symbols.traverse(&mut self.tree.walk());
             self.ws_symbols_cache = Some(symbols.sym);
         }
@@ -152,7 +155,7 @@ impl InkDocument {
     }
 
     pub(crate) fn locations(&self, uri: &Uri) -> impl Iterator<Item = Location> {
-        let mut locations = Locations::new(uri, &self);
+        let mut locations = locations::LocationVisitor::new(uri, &self);
         locations.traverse(&mut self.tree.root_node().walk());
         locations.locs.into_iter()
     }
@@ -241,7 +244,9 @@ impl InkDocument {
 #[cfg(test)]
 mod tests {
     use line_index::WideEncoding;
+    use lsp_types::Uri;
     use pretty_assertions::assert_str_eq;
+    use std::str::FromStr;
     use test_case::test_case;
 
     use crate::lsp::location;
@@ -253,7 +258,7 @@ mod tests {
     #[test]
     fn multiple_edits() {
         let text = "hello world\nhow's it hanging?".to_string();
-        let mut document = InkDocument::new(text, None);
+        let mut document = new_doc(text, None);
         document.edit(vec![
             edit((0, 0), (0, 1), "H"),      // Hello world
             edit((0, 1), (0, 5), "i"),      // Hi world
@@ -267,7 +272,7 @@ mod tests {
     #[test]
     fn giving_no_range_means_replace_all_text() {
         let text = "some text".to_string();
-        let mut document = InkDocument::new(text, None);
+        let mut document = new_doc(text, None);
         document.edit(vec![
             (
                 None,
@@ -284,7 +289,7 @@ mod tests {
         // We'll freely mix Windows and Unix newlines.
         // No \r, because I don't expect old Macs will use this language server.
         let text = "line one\r\nline two\nline three".to_string();
-        let mut document = InkDocument::new(text, None);
+        let mut document = new_doc(text, None);
         document.edit(vec![
             edit((0, 5), (0, 8), "1"),
             edit((1, 5), (1, 8), "2"),
@@ -301,7 +306,7 @@ mod tests {
     #[test_case(Some(WideEncoding::Utf32), 1; "Width of emoji in UTF-32")]
     fn wide_encodings(enc: Option<WideEncoding>, code_units: u32) {
         let text = "🥺🥺".to_string();
-        let mut document = InkDocument::new(text, enc);
+        let mut document = new_doc(text, enc);
         document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
     }
@@ -395,7 +400,7 @@ mod tests {
                     let pos = lsp_types::Position::new(row, col);
                     let mut output = input.to_string();
                     output.remove(idx);
-                    return (InkDocument::new(output, None), pos);
+                    return (new_doc(output, None), pos);
                 }
                 '\n' => {
                     row += 1;
@@ -421,5 +426,13 @@ mod tests {
                 self.0.start.line, self.0.start.character, self.0.end.line, self.0.end.character
             )
         }
+    }
+
+    fn new_doc(text: impl Into<String>, enc: Option<WideEncoding>) -> InkDocument {
+        InkDocument::new(
+            Uri::from_str("file:///tmp/test.ink").unwrap(),
+            text.into(),
+            enc,
+        )
     }
 }
