@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Links {
-    items: BTreeSet<Link>,
+    links: BTreeSet<Link>,
 }
 
 impl Links {
@@ -11,9 +11,9 @@ impl Links {
         Self::default()
     }
 
-    // Insert or update relation. Returns true if relation is new, false if relation has been updated.
-    pub(crate) fn put(&mut self, source: LocationId, kind: LinkKind, target: LocationId) -> bool {
-        self.items.insert(Link {
+    // Insert or update link. Returns true if link is new, false if link has been updated.
+    pub(crate) fn link(&mut self, source: LocationId, kind: LinkKind, target: LocationId) -> bool {
+        self.links.insert(Link {
             source,
             target,
             kind,
@@ -21,73 +21,36 @@ impl Links {
     }
 
     pub(crate) fn remove_any(&mut self, id: &LocationId) -> bool {
-        let len_orig = self.items.len();
-        self.items.retain(|it| it.source != *id && it.target != *id);
-        len_orig != self.items.len()
+        let len_orig = self.links.len();
+        self.links.retain(|it| it.source != *id && it.target != *id);
+        len_orig != self.links.len()
     }
 
-    pub(crate) fn keys(&self) -> BTreeSet<LocationId> {
+    pub(crate) fn locations(&self) -> BTreeSet<LocationId> {
         let mut locs: BTreeSet<LocationId> = BTreeSet::new();
-        for item in self.items.iter() {
-            locs.insert(item.source.clone());
-            locs.insert(item.target.clone());
+        for item in self.links.iter() {
+            if !locs.contains(&item.source) {
+                locs.insert(item.source.clone());
+            }
+            if !locs.contains(&item.target) {
+                locs.insert(item.target.clone());
+            }
         }
         locs
     }
 
     pub(crate) fn outgoing<'s: 'l, 'l>(&'s self, source: &'l LocationId) -> BTreeSet<&'l Link> {
-        self.items
+        self.links
             .iter()
             .filter(|it| it.source == *source)
             .collect()
     }
 
     pub(crate) fn incoming<'s: 'l, 'l>(&'s self, target: &'l LocationId) -> BTreeSet<&'l Link> {
-        self.items
+        self.links
             .iter()
             .filter(|it| it.target == *target)
             .collect()
-    }
-}
-
-#[cfg(test)]
-impl quickcheck::Arbitrary for Links {
-    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-        use itertools::Itertools as _;
-        let mut relations = Links::new();
-        let some_size = usize::arbitrary(g) % g.size();
-        for _ in 0..some_size {
-            let source = LocationId::arbitrary(g);
-            let target = if bool::arbitrary(g) {
-                LocationId::arbitrary(g)
-            } else {
-                // sometimes re-use an existing value
-                let random_key = g
-                    .choose(&relations.keys().into_iter().collect_vec())
-                    .cloned();
-                random_key.unwrap_or_else(|| LocationId::arbitrary(g))
-            };
-            let kind = LinkKind::arbitrary(g);
-            relations.put(source, kind, target);
-        }
-        relations
-    }
-
-    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-        use itertools::Itertools as _;
-        let half = self.keys().into_iter().collect_vec().len() / 2;
-
-        match half {
-            0 | 1 => quickcheck::empty_shrinker(),
-            _ => {
-                let mut front_fell_off = self.clone();
-                let front = self.keys().into_iter().take(half).collect_vec();
-                for key in front {
-                    front_fell_off.remove_any(&key);
-                }
-                Box::new(vec![front_fell_off].into_iter())
-            }
-        }
     }
 }
 
@@ -96,7 +59,7 @@ impl IntoIterator for Links {
     type IntoIter = <BTreeSet<Link> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.items.into_iter()
+        self.links.into_iter()
     }
 }
 
@@ -104,9 +67,47 @@ impl FromIterator<Link> for Links {
     fn from_iter<T: IntoIterator<Item = Link>>(iter: T) -> Self {
         let mut links = Links::new();
         for item in iter {
-            links.put(item.source, item.kind, item.target);
+            links.link(item.source, item.kind, item.target);
         }
         links
+    }
+}
+
+#[cfg(test)]
+mod arbitrary {
+    use super::Links;
+    use crate::lsp::location::{Link, LinkKind, LocationId};
+
+    impl quickcheck::Arbitrary for Links {
+        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+            let mut links = Links::new();
+            let some_size = usize::arbitrary(g) % g.size();
+            for _ in 0..some_size {
+                let locations: Vec<LocationId> = links.locations().into_iter().collect();
+                // sometimes re-use an existing value
+                let source = bool::arbitrary(g)
+                    .then(|| g.choose(&locations))
+                    .and_then(|it| it.cloned())
+                    .unwrap_or_else(|| LocationId::arbitrary(g));
+                let target = bool::arbitrary(g)
+                    .then(|| g.choose(&locations))
+                    .and_then(|it| it.cloned())
+                    .unwrap_or_else(|| LocationId::arbitrary(g));
+                let kind = LinkKind::arbitrary(g);
+                links.link(source, kind, target);
+            }
+            links
+        }
+
+        fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+            Box::new(
+                self.clone()
+                    .into_iter()
+                    .collect::<Vec<Link>>() // piggybacking on shrinking the vector of indivdual links
+                    .shrink()
+                    .map(Links::from_iter),
+            )
+        }
     }
 }
 
@@ -114,7 +115,6 @@ impl FromIterator<Link> for Links {
 mod tests {
     use super::*;
     use crate::test_utils::in_case;
-    use itertools::Itertools;
     use quickcheck::{quickcheck, TestResult};
 
     quickcheck! {
@@ -126,7 +126,7 @@ mod tests {
         fn all_incoming_equals_all_outgoing(links: Links) -> bool {
             let mut inc = BTreeSet::new();
             let mut out = BTreeSet::new();
-            let keys = links.keys();
+            let keys = links.locations();
             for key in keys {
                 inc.extend(links.incoming(&key).into_iter().cloned());
                 out.extend(links.outgoing(&key).into_iter().cloned());
@@ -134,63 +134,73 @@ mod tests {
             inc == out
         }
 
-        fn put_adds_forwards_link_to_outgoing(links: Links, a: LocationId, b: LocationId, kind: LinkKind) -> bool {
+        fn adding_links_is_idempotent(links: Links, a: LocationId, b: LocationId, kind: LinkKind) -> bool {
+            let mut links_1 = links;
+            links_1.link(a.clone(), kind.clone(), b.clone());
+
+            let mut links_2 = links_1.clone();
+            links_2.link(a.clone(), kind.clone(), b.clone());
+
+            links_1 == links_2
+        }
+
+        fn link_outgoing(links: Links, source: LocationId, target: LocationId, kind: LinkKind) -> bool {
             let mut links = links;
-            links.put(a.clone(), kind.clone(), b.clone());
-            links.outgoing(&a)
+            links.link(source.clone(), kind.clone(), target.clone());
+            links.outgoing(&source)
                  .into_iter()
-                 .filter(|it| it.target == b && it.kind == kind)
+                 .filter(|it| it.target == target && it.kind == kind)
                  .count() == 1
         }
 
-        fn put_adds_backwards_link_to_incoming(links: Links, a: LocationId, b: LocationId, kind: LinkKind) -> bool {
+        fn link_incoming(links: Links, source: LocationId, target: LocationId, kind: LinkKind) -> bool {
             let mut links = links;
-            links.put(a.clone(), kind.clone(), b.clone());
-            links.incoming(&b)
+            links.link(source.clone(), kind.clone(), target.clone());
+            links.incoming(&target)
                  .into_iter()
-                 .filter(|it| it.source == a && it.kind == kind)
+                 .filter(|it| it.source == source && it.kind == kind)
                  .count() == 1
         }
 
         fn outgoing_id_equals_source(links: Links, n: usize) -> TestResult {
-            in_case! { links.keys().len() > 0 =>
-                let probe = get_probe(&links, n);
-                links.outgoing(&probe.clone())
+            in_case! { links.locations().len() > 0 =>
+                let location = get_probe(&links, n);
+                links.outgoing(&location.clone())
                      .into_iter()
-                     .all(|link| link.source == probe)
+                     .all(|link| link.source == location)
             }
         }
 
         fn incoming_id_equals_target(links: Links, n: usize) -> TestResult {
-            in_case! { links.keys().len() > 0 =>
-                let probe = get_probe(&links, n);
-                links.incoming(&probe.clone())
+            in_case! { links.locations().len() > 0 =>
+                let location = get_probe(&links, n);
+                links.incoming(&location.clone())
                      .into_iter()
-                     .all(|link| link.target == probe)
+                     .all(|link| link.target == location)
             }
         }
 
         fn remove_any_removes_keys(links: Links, n: usize) -> TestResult {
-            in_case! { links.keys().len() > 0 =>
-                let probe = get_probe(&links, n);
-                let mut rels = links;
-                assert!(rels.remove_any(&probe));
-                rels.incoming(&probe).is_empty() && rels.outgoing(&probe).is_empty()
+            in_case! { links.locations().len() > 0 =>
+                let location = get_probe(&links, n);
+                let mut links = links;
+                assert!(links.remove_any(&location));
+                links.incoming(&location).is_empty() && links.outgoing(&location).is_empty()
             }
         }
 
         fn remove_any_removes_values(links: Links, n: usize) -> TestResult {
-            in_case! { links.keys().len() > 0 =>
-                let probe = get_probe(&links, n);
+            in_case! { links.locations().len() > 0 =>
+                let location = get_probe(&links, n);
                 let mut links = links;
-                assert!(links.remove_any(&probe));
-                links.into_iter().all(|link| link.source != probe && link.target != probe)
+                assert!(links.remove_any(&location));
+                links.into_iter().all(|link| link.source != location && link.target != location)
             }
         }
     }
 
     fn get_probe(links: &Links, n: usize) -> LocationId {
-        let keys = links.keys().into_iter().collect_vec();
+        let keys: Vec<LocationId> = links.locations().into_iter().collect();
         keys.get(n % keys.len()).unwrap().clone()
     }
 }
