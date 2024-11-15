@@ -3,7 +3,7 @@ use itertools::Itertools;
 use lsp_types::Uri;
 
 // Ord impls are used for normalization
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 #[cfg_attr(
     test,
     derive(strum::EnumDiscriminants),

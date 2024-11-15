@@ -1,9 +1,9 @@
 use super::location::{Link, LinkKind, LocationId};
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Links {
-    links: BTreeSet<Link>,
+    links: HashSet<Link>,
 }
 
 impl Links {
@@ -26,8 +26,8 @@ impl Links {
         len_orig != self.links.len()
     }
 
-    pub(crate) fn locations(&self) -> BTreeSet<LocationId> {
-        let mut locs: BTreeSet<LocationId> = BTreeSet::new();
+    pub(crate) fn locations(&self) -> HashSet<LocationId> {
+        let mut locs: HashSet<LocationId> = HashSet::new();
         for item in self.links.iter() {
             if !locs.contains(&item.source) {
                 locs.insert(item.source.clone());
@@ -39,14 +39,14 @@ impl Links {
         locs
     }
 
-    pub(crate) fn outgoing<'s: 'l, 'l>(&'s self, source: &'l LocationId) -> BTreeSet<&'l Link> {
+    pub(crate) fn outgoing<'s: 'l, 'l>(&'s self, source: &'l LocationId) -> HashSet<&'l Link> {
         self.links
             .iter()
             .filter(|it| it.source == *source)
             .collect()
     }
 
-    pub(crate) fn incoming<'s: 'l, 'l>(&'s self, target: &'l LocationId) -> BTreeSet<&'l Link> {
+    pub(crate) fn incoming<'s: 'l, 'l>(&'s self, target: &'l LocationId) -> HashSet<&'l Link> {
         self.links
             .iter()
             .filter(|it| it.target == *target)
@@ -56,7 +56,7 @@ impl Links {
 
 impl IntoIterator for Links {
     type Item = Link;
-    type IntoIter = <BTreeSet<Link> as IntoIterator>::IntoIter;
+    type IntoIter = <HashSet<Link> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.links.into_iter()
@@ -124,8 +124,8 @@ mod tests {
         }
 
         fn all_incoming_equals_all_outgoing(links: Links) -> bool {
-            let mut inc = BTreeSet::new();
-            let mut out = BTreeSet::new();
+            let mut inc = HashSet::new();
+            let mut out = HashSet::new();
             let keys = links.locations();
             for key in keys {
                 inc.extend(links.incoming(&key).into_iter().cloned());
