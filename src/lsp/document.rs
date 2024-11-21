@@ -1,7 +1,8 @@
 mod locations;
+mod scoped_names;
 mod symbols;
 
-use super::location::Location;
+use super::{location::Location, scopes::Scopes};
 use crate::ink_syntax::{
     types::{Condition, DivertTarget, Eval, Expr, Redirect},
     Visitor as _,
@@ -158,6 +159,11 @@ impl InkDocument {
         let mut locations = locations::LocationVisitor::new(uri, &self);
         locations.traverse(&mut self.tree.root_node().walk());
         locations.locs.into_iter()
+    }
+
+    pub(crate) fn update_scopes(&self, scopes: &mut Scopes) {
+        scoped_names::ScopedNamesVisitor::new(&self, scopes)
+            .traverse(&mut self.tree.root_node().walk());
     }
 }
 

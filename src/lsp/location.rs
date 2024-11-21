@@ -1,4 +1,4 @@
-use derive_more::Debug;
+use derive_more::{derive::Display, Debug};
 use lsp_types::{Range, Uri};
 use std::{ops::RangeBounds, str::FromStr};
 
@@ -23,8 +23,8 @@ impl Location {
     }
 
     pub(crate) fn new(
-        uri: &Uri,
-        range: &Range,
+        uri: Uri,
+        range: Range,
         name: String,
         namespace: Option<String>,
         kind: LocationKind,
@@ -61,7 +61,7 @@ pub(crate) struct FileRange {
 
 /// Subtracting two `FilePos`s creates a `FileRange`.
 impl FileRange {
-    fn new(a: impl Into<FilePos>, b: impl Into<FilePos>) -> Self {
+    pub(crate) fn new(a: impl Into<FilePos>, b: impl Into<FilePos>) -> Self {
         let a = a.into();
         let b = b.into();
         if a <= b {
@@ -71,32 +71,32 @@ impl FileRange {
         }
     }
 
-    fn contains(&self, other: &Self) -> bool {
+    pub(crate) fn contains(&self, other: &Self) -> bool {
         self.start <= other.start && other.end <= self.end
     }
 
     /// Is there a gap between the two ranges?
-    fn disjoint(&self, other: &Self) -> bool {
+    pub(crate) fn disjoint(&self, other: &Self) -> bool {
         self.is_strictly_before(other) || self.is_strictly_after(other)
     }
 
-    fn overlaps(&self, other: &Self) -> bool {
+    pub(crate) fn overlaps(&self, other: &Self) -> bool {
         !self.disjoint(other) && (!self.is_directly_before(other) || !self.is_directly_after(other))
     }
 
-    fn is_strictly_before(&self, other: &Self) -> bool {
+    pub(crate) fn is_strictly_before(&self, other: &Self) -> bool {
         self.end < other.start
     }
 
-    fn is_strictly_after(&self, other: &Self) -> bool {
+    pub(crate) fn is_strictly_after(&self, other: &Self) -> bool {
         self.start > other.end
     }
 
-    fn is_directly_before(&self, other: &Self) -> bool {
+    pub(crate) fn is_directly_before(&self, other: &Self) -> bool {
         self.end == other.start
     }
 
-    fn is_directly_after(&self, other: &Self) -> bool {
+    pub(crate) fn is_directly_after(&self, other: &Self) -> bool {
         self.start == other.end
     }
 }
@@ -108,18 +108,18 @@ pub(crate) struct FilePos {
     character: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[debug("{file:?}:{range:?}")]
+#[derive(Debug, Display, Clone, PartialEq, Eq, Hash)]
+#[display("{file:?}:{range:?}")]
 pub(crate) struct LocationId {
     file: FileId,
     range: FileRange,
 }
 
 impl LocationId {
-    pub(crate) fn new(uri: &Uri, range: &Range) -> Self {
+    pub(crate) fn new(uri: impl Into<FileId>, range: impl Into<FileRange>) -> Self {
         Self {
             file: uri.into(),
-            range: (*range).into(),
+            range: range.into(),
         }
     }
 
@@ -133,6 +133,10 @@ impl LocationId {
 
     pub(crate) fn contains(&self, other: &Self) -> bool {
         self.file == other.file && self.range.contains(&other.range)
+    }
+
+    pub(crate) fn is_in_file(&self, file: &FileId) -> bool {
+        self.file == *file
     }
 }
 
@@ -181,6 +185,7 @@ impl From<FilePos> for lsp_types::Position {
         }
     }
 }
+
 impl From<Range> for FileRange {
     fn from(value: Range) -> Self {
         Self {
@@ -199,8 +204,8 @@ impl From<FileRange> for Range {
     }
 }
 
-impl From<&lsp_types::Uri> for FileId {
-    fn from(value: &lsp_types::Uri) -> Self {
+impl From<lsp_types::Uri> for FileId {
+    fn from(value: lsp_types::Uri) -> Self {
         Self(value.as_str().to_string())
     }
 }

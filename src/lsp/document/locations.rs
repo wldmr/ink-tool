@@ -25,8 +25,8 @@ impl<'a> LocationVisitor<'a> {
 
     fn new_loc(&mut self, kind: LocationKind, name: String, range: tree_sitter::Range) -> Self {
         self.locs.push(Location::new(
-            self.uri,
-            &self.doc.lsp_range(&range),
+            self.uri.clone(),
+            self.doc.lsp_range(&range),
             name,
             self.namespace.clone(),
             kind,

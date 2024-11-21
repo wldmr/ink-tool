@@ -13,6 +13,7 @@ mod links;
 mod location;
 mod notification_handlers;
 mod request_handlers;
+mod scopes;
 mod shared;
 mod state;
 
