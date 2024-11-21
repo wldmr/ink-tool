@@ -1,6 +1,6 @@
 use crate::ink_syntax::{types::AllNamed, VisitInstruction, Visitor};
 use crate::lsp::document::InkDocument;
-use crate::lsp::location::{FileId, LocationId};
+use crate::lsp::location::{FileId, FileTextRange};
 use crate::lsp::scopes::{ScopeId, Scopes};
 use type_sitter_lib::{IncorrectKindCause, Node};
 
@@ -111,7 +111,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
             AllNamed::Knot(knot) => {
                 let name = &self.doc.text[knot.name().byte_range()];
                 let range = self.doc.lsp_range(&knot.name().range());
-                let id = LocationId::new(self.file.clone(), range);
+                let id = FileTextRange::new(self.file.clone(), range);
                 self.current_knot = Some(name.to_string());
                 self.current_stitch = None;
                 self.scopes.define_name(&self.current_scope, name, id);
@@ -132,7 +132,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
             AllNamed::Stitch(stitch) => {
                 let byte_range = stitch.name().byte_range();
                 let stitch_name = &self.doc.text[byte_range];
-                let id = LocationId::new(
+                let id = FileTextRange::new(
                     self.file.clone(),
                     self.doc.lsp_range(&stitch.name().range()),
                 );
@@ -152,7 +152,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
             AllNamed::External(external) => {
                 let byte_range = external.name().byte_range();
                 let name = self.doc.text[byte_range].to_string();
-                let id = LocationId::new(
+                let id = FileTextRange::new(
                     self.file.clone(),
                     self.doc.lsp_range(&external.name().range()),
                 );
@@ -163,8 +163,10 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
             AllNamed::Label(label) => {
                 let byte_range = label.name().byte_range();
                 let label_name = self.doc.text[byte_range.clone()].to_string();
-                let id =
-                    LocationId::new(self.file.clone(), self.doc.lsp_range(&label.name().range()));
+                let id = FileTextRange::new(
+                    self.file.clone(),
+                    self.doc.lsp_range(&label.name().range()),
+                );
                 // Generate all the names for this label.
                 // Reminder:
                 // - The cannonical name is `knot.label`, or `label` if toplevel.
@@ -207,7 +209,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
             AllNamed::Global(global) => {
                 let byte_range = global.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_string();
-                let id = LocationId::new(
+                let id = FileTextRange::new(
                     self.file.clone(),
                     self.doc.lsp_range(&global.name().range()),
                 );
@@ -219,7 +221,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
                 let byte_range = list.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_string();
                 let id =
-                    LocationId::new(self.file.clone(), self.doc.lsp_range(&list.name().range()));
+                    FileTextRange::new(self.file.clone(), self.doc.lsp_range(&list.name().range()));
                 self.scopes.define_name(&ScopeId::global(), &name, id);
                 self.current_list = Some(name);
                 Descend
@@ -229,7 +231,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
                 let byte_range = def.name().byte_range();
                 let value_name = &self.doc.text[byte_range.clone()];
                 let id =
-                    LocationId::new(self.file.clone(), self.doc.lsp_range(&def.name().range()));
+                    FileTextRange::new(self.file.clone(), self.doc.lsp_range(&def.name().range()));
                 let list_name = self
                     .current_list
                     .as_ref()
@@ -246,7 +248,7 @@ impl<'tree, 'scopes> Visitor<'tree, AllNamed<'tree>> for ScopedNamesVisitor<'tre
                 let byte_range = temp.name().byte_range();
                 let name = self.doc.text[byte_range.clone()].to_string();
                 let id =
-                    LocationId::new(self.file.clone(), self.doc.lsp_range(&temp.name().range()));
+                    FileTextRange::new(self.file.clone(), self.doc.lsp_range(&temp.name().range()));
                 self.scopes.define_temp(&self.current_scope, name, id);
                 Ignore
             }

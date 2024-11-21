@@ -1,4 +1,4 @@
-use super::location::{Link, LinkKind, LocationId};
+use super::location::{Link, LinkKind, FileTextRange};
 use std::collections::HashSet;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -12,7 +12,7 @@ impl Links {
     }
 
     // Insert or update link. Returns true if link is new, false if link has been updated.
-    pub(crate) fn link(&mut self, source: LocationId, kind: LinkKind, target: LocationId) -> bool {
+    pub(crate) fn link(&mut self, source: FileTextRange, kind: LinkKind, target: FileTextRange) -> bool {
         self.links.insert(Link {
             source,
             target,
@@ -20,14 +20,14 @@ impl Links {
         })
     }
 
-    pub(crate) fn remove_any(&mut self, id: &LocationId) -> bool {
+    pub(crate) fn remove_any(&mut self, id: &FileTextRange) -> bool {
         let len_orig = self.links.len();
         self.links.retain(|it| it.source != *id && it.target != *id);
         len_orig != self.links.len()
     }
 
-    pub(crate) fn locations(&self) -> HashSet<LocationId> {
-        let mut locs: HashSet<LocationId> = HashSet::new();
+    pub(crate) fn locations(&self) -> HashSet<FileTextRange> {
+        let mut locs: HashSet<FileTextRange> = HashSet::new();
         for item in self.links.iter() {
             if !locs.contains(&item.source) {
                 locs.insert(item.source.clone());
@@ -39,14 +39,14 @@ impl Links {
         locs
     }
 
-    pub(crate) fn outgoing<'s: 'l, 'l>(&'s self, source: &'l LocationId) -> HashSet<&'l Link> {
+    pub(crate) fn outgoing<'s: 'l, 'l>(&'s self, source: &'l FileTextRange) -> HashSet<&'l Link> {
         self.links
             .iter()
             .filter(|it| it.source == *source)
             .collect()
     }
 
-    pub(crate) fn incoming<'s: 'l, 'l>(&'s self, target: &'l LocationId) -> HashSet<&'l Link> {
+    pub(crate) fn incoming<'s: 'l, 'l>(&'s self, target: &'l FileTextRange) -> HashSet<&'l Link> {
         self.links
             .iter()
             .filter(|it| it.target == *target)
@@ -76,23 +76,23 @@ impl FromIterator<Link> for Links {
 #[cfg(test)]
 mod arbitrary {
     use super::Links;
-    use crate::lsp::location::{Link, LinkKind, LocationId};
+    use crate::lsp::location::{Link, LinkKind, FileTextRange};
 
     impl quickcheck::Arbitrary for Links {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             let mut links = Links::new();
             let some_size = usize::arbitrary(g) % g.size();
             for _ in 0..some_size {
-                let locations: Vec<LocationId> = links.locations().into_iter().collect();
+                let locations: Vec<FileTextRange> = links.locations().into_iter().collect();
                 // sometimes re-use an existing value
                 let source = bool::arbitrary(g)
                     .then(|| g.choose(&locations))
                     .and_then(|it| it.cloned())
-                    .unwrap_or_else(|| LocationId::arbitrary(g));
+                    .unwrap_or_else(|| FileTextRange::arbitrary(g));
                 let target = bool::arbitrary(g)
                     .then(|| g.choose(&locations))
                     .and_then(|it| it.cloned())
-                    .unwrap_or_else(|| LocationId::arbitrary(g));
+                    .unwrap_or_else(|| FileTextRange::arbitrary(g));
                 let kind = LinkKind::arbitrary(g);
                 links.link(source, kind, target);
             }
@@ -134,7 +134,7 @@ mod tests {
             inc == out
         }
 
-        fn adding_links_is_idempotent(links: Links, a: LocationId, b: LocationId, kind: LinkKind) -> bool {
+        fn adding_links_is_idempotent(links: Links, a: FileTextRange, b: FileTextRange, kind: LinkKind) -> bool {
             let mut links_1 = links;
             links_1.link(a.clone(), kind.clone(), b.clone());
 
@@ -144,7 +144,7 @@ mod tests {
             links_1 == links_2
         }
 
-        fn link_outgoing(links: Links, source: LocationId, target: LocationId, kind: LinkKind) -> bool {
+        fn link_outgoing(links: Links, source: FileTextRange, target: FileTextRange, kind: LinkKind) -> bool {
             let mut links = links;
             links.link(source.clone(), kind.clone(), target.clone());
             links.outgoing(&source)
@@ -153,7 +153,7 @@ mod tests {
                  .count() == 1
         }
 
-        fn link_incoming(links: Links, source: LocationId, target: LocationId, kind: LinkKind) -> bool {
+        fn link_incoming(links: Links, source: FileTextRange, target: FileTextRange, kind: LinkKind) -> bool {
             let mut links = links;
             links.link(source.clone(), kind.clone(), target.clone());
             links.incoming(&target)
@@ -199,8 +199,8 @@ mod tests {
         }
     }
 
-    fn get_probe(links: &Links, n: usize) -> LocationId {
-        let keys: Vec<LocationId> = links.locations().into_iter().collect();
+    fn get_probe(links: &Links, n: usize) -> FileTextRange {
+        let keys: Vec<FileTextRange> = links.locations().into_iter().collect();
         keys.get(n % keys.len()).unwrap().clone()
     }
 }

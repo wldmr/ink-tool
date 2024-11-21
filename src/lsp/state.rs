@@ -47,7 +47,7 @@ impl State {
             .expect("we just made sure it exists");
         let new_locations = doc.edit(edits);
         for loc in &new_locations {
-            self.links.remove_any(&loc.id);
+            self.links.remove_any(&loc.file_range);
         }
         for _loc in new_locations {
             // todo!()
@@ -118,7 +118,7 @@ impl State {
                 .get(&uri)
                 .expect("we mustn't get uris that we don't know");
             let doc_locs = doc
-                .locations(&uri)
+                .locations()
                 .map(|loc| (rank_match(&spec, &loc), loc))
                 .filter(|(rank, _)| *rank > 0);
             locs.extend(doc_locs);

@@ -218,7 +218,7 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
             .map(|spec| rank_match(spec, loc))
             .max()
             .unwrap_or(0),
-        LocationThat::IsInFile(uri) => usize::from(loc.id.file == *uri),
+        LocationThat::IsInFile(uri) => usize::from(loc.file_range.file == *uri),
         LocationThat::IsLocation(kind) => usize::from(loc.kind == *kind),
         LocationThat::MatchesName(query) => {
             if loc.qualified_name().contains(query) {

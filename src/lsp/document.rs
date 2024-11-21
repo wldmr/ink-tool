@@ -10,7 +10,7 @@ use crate::ink_syntax::{
 use crate::lsp::location::{self, specification::LocationThat};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use locations::LocationVisitor;
-use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
+use lsp_types::{DocumentSymbol, Position, WorkspaceSymbol};
 use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
 use tree_sitter::Parser;
 use type_sitter_lib::Node;
@@ -76,7 +76,7 @@ impl InkDocument {
         // let locations = Locations::new(, )
         self.doc_symbols_cache = None;
         self.ws_symbols_cache = None;
-        let mut visitor = LocationVisitor::new(&self.uri, self);
+        let mut visitor = LocationVisitor::new(self);
         visitor.traverse(&mut self.tree.root_node().walk());
         visitor.locs
     }
@@ -155,8 +155,8 @@ impl InkDocument {
         None
     }
 
-    pub(crate) fn locations(&self, uri: &Uri) -> impl Iterator<Item = Location> {
-        let mut locations = locations::LocationVisitor::new(uri, &self);
+    pub(crate) fn locations(&self) -> impl Iterator<Item = Location> {
+        let mut locations = locations::LocationVisitor::new(self);
         locations.traverse(&mut self.tree.root_node().walk());
         locations.locs.into_iter()
     }

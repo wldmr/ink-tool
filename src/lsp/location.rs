@@ -7,19 +7,19 @@ pub mod specification;
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct Location {
-    pub(crate) id: LocationId,
+    pub(crate) file_range: FileTextRange,
     pub(crate) name: String,
     pub(crate) namespace: Option<String>,
     pub(crate) kind: LocationKind,
 }
 
 impl Location {
-    pub(crate) fn id(&self) -> LocationId {
-        self.id.clone()
+    pub(crate) fn id(&self) -> FileTextRange {
+        self.file_range.clone()
     }
 
     pub(crate) fn path_as_str(&self) -> &str {
-        &self.id.file.0
+        &self.file_range.file.0
     }
 
     pub(crate) fn new(
@@ -30,7 +30,7 @@ impl Location {
         kind: LocationKind,
     ) -> Self {
         Self {
-            id: LocationId::new(uri, range),
+            file_range: FileTextRange::new(uri, range),
             name,
             namespace,
             kind,
@@ -54,14 +54,14 @@ pub(crate) struct FileId(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 #[debug("{start:?}..{end:?}")]
-pub(crate) struct FileRange {
-    start: FilePos,
-    end: FilePos,
+pub(crate) struct TextRange {
+    start: TextPos,
+    end: TextPos,
 }
 
 /// Subtracting two `FilePos`s creates a `FileRange`.
-impl FileRange {
-    pub(crate) fn new(a: impl Into<FilePos>, b: impl Into<FilePos>) -> Self {
+impl TextRange {
+    pub(crate) fn new(a: impl Into<TextPos>, b: impl Into<TextPos>) -> Self {
         let a = a.into();
         let b = b.into();
         if a <= b {
@@ -103,20 +103,20 @@ impl FileRange {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 #[debug("{line}|{character}")]
-pub(crate) struct FilePos {
+pub(crate) struct TextPos {
     line: u32,
     character: u32,
 }
 
 #[derive(Debug, Display, Clone, PartialEq, Eq, Hash)]
 #[display("{file:?}:{range:?}")]
-pub(crate) struct LocationId {
+pub(crate) struct FileTextRange {
     file: FileId,
-    range: FileRange,
+    range: TextRange,
 }
 
-impl LocationId {
-    pub(crate) fn new(uri: impl Into<FileId>, range: impl Into<FileRange>) -> Self {
+impl FileTextRange {
+    pub(crate) fn new(uri: impl Into<FileId>, range: impl Into<TextRange>) -> Self {
         Self {
             file: uri.into(),
             range: range.into(),
@@ -143,8 +143,8 @@ impl LocationId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct Link {
-    pub(crate) source: LocationId,
-    pub(crate) target: LocationId,
+    pub(crate) source: FileTextRange,
+    pub(crate) target: FileTextRange,
     pub(crate) kind: LinkKind,
 }
 
@@ -168,7 +168,7 @@ pub(crate) enum LinkKind {
 
 // *** Conversion to/from lsp_types
 
-impl From<lsp_types::Position> for FilePos {
+impl From<lsp_types::Position> for TextPos {
     fn from(value: lsp_types::Position) -> Self {
         Self {
             line: value.line,
@@ -177,8 +177,8 @@ impl From<lsp_types::Position> for FilePos {
     }
 }
 
-impl From<FilePos> for lsp_types::Position {
-    fn from(value: FilePos) -> Self {
+impl From<TextPos> for lsp_types::Position {
+    fn from(value: TextPos) -> Self {
         Self {
             line: value.line,
             character: value.character,
@@ -186,7 +186,7 @@ impl From<FilePos> for lsp_types::Position {
     }
 }
 
-impl From<Range> for FileRange {
+impl From<Range> for TextRange {
     fn from(value: Range) -> Self {
         Self {
             start: value.start.into(),
@@ -195,8 +195,8 @@ impl From<Range> for FileRange {
     }
 }
 
-impl From<FileRange> for Range {
-    fn from(value: FileRange) -> Self {
+impl From<TextRange> for Range {
+    fn from(value: TextRange) -> Self {
         Self {
             start: value.start.into(),
             end: value.end.into(),
@@ -216,13 +216,13 @@ impl From<&FileId> for lsp_types::Uri {
     }
 }
 
-impl RangeBounds<LocationId> for &Location {
-    fn start_bound(&self) -> std::ops::Bound<&LocationId> {
-        std::ops::Bound::Included(&self.id)
+impl RangeBounds<FileTextRange> for &Location {
+    fn start_bound(&self) -> std::ops::Bound<&FileTextRange> {
+        std::ops::Bound::Included(&self.file_range)
     }
 
-    fn end_bound(&self) -> std::ops::Bound<&LocationId> {
-        std::ops::Bound::Excluded(&self.id)
+    fn end_bound(&self) -> std::ops::Bound<&FileTextRange> {
+        std::ops::Bound::Excluded(&self.file_range)
     }
 }
 
@@ -230,74 +230,74 @@ impl RangeBounds<LocationId> for &Location {
 mod tests {
     mod file_range {
         use crate::{
-            lsp::location::{FilePos, FileRange},
+            lsp::location::{TextPos, TextRange},
             test_utils::in_case,
         };
         use quickcheck::{quickcheck, TestResult};
 
         quickcheck! {
-            fn creating_file_range_is_symmetric(a: FilePos, b: FilePos) -> bool {
-                FileRange::new(a, b) == FileRange::new(b, a)
+            fn creating_file_range_is_symmetric(a: TextPos, b: TextPos) -> bool {
+                TextRange::new(a, b) == TextRange::new(b, a)
             }
 
-            fn contains_is_asymmetric(a: FileRange, b: FileRange) -> TestResult {
+            fn contains_is_asymmetric(a: TextRange, b: TextRange) -> TestResult {
                 in_case! { a.contains(&b) => !b.contains(&a) }
             }
 
-            fn range_contains_itself(a: FileRange) -> bool {
+            fn range_contains_itself(a: TextRange) -> bool {
                 a.contains(&a)
             }
 
-            fn contains_implies_overlaps(a: FileRange, b: FileRange) -> TestResult {
+            fn contains_implies_overlaps(a: TextRange, b: TextRange) -> TestResult {
                 in_case! { a.contains(&b) => a.overlaps(&b) }
             }
 
-            fn overlaps_is_symmetric(a: FileRange, b: FileRange) -> TestResult {
+            fn overlaps_is_symmetric(a: TextRange, b: TextRange) -> TestResult {
                 in_case! { a.overlaps(&b) => b.overlaps(&a) }
             }
 
-            fn strictly_before_implies_no_overlap(a: FileRange, b: FileRange) -> TestResult {
+            fn strictly_before_implies_no_overlap(a: TextRange, b: TextRange) -> TestResult {
                 in_case! { a.is_strictly_before(&b) => !a.overlaps(&b) }
             }
 
-            fn strictly_after_implies_no_overlap(a: FileRange, b: FileRange) -> TestResult {
+            fn strictly_after_implies_no_overlap(a: TextRange, b: TextRange) -> TestResult {
                 in_case! { a.is_strictly_after(&b) => !a.overlaps(&b) }
             }
         }
     }
 
     mod location_id {
-        use crate::{lsp::location::LocationId, test_utils::in_case};
+        use crate::{lsp::location::FileTextRange, test_utils::in_case};
         use quickcheck::{quickcheck, TestResult};
 
         quickcheck! {
-            fn same_file_contains_matches_range(a: LocationId, b: LocationId) -> bool {
+            fn same_file_contains_matches_range(a: FileTextRange, b: FileTextRange) -> bool {
                 let mut b = b;
                 b.file = a.file.clone();
                 a.contains(&b) == a.range.contains(&b.range)
             }
 
-            fn same_file_overlaps_matches_range(a: LocationId, b: LocationId) -> bool {
+            fn same_file_overlaps_matches_range(a: FileTextRange, b: FileTextRange) -> bool {
                 let mut b = b;
                 b.file = a.file.clone();
                 a.overlaps(&b) == a.range.overlaps(&b.range)
             }
 
-            fn same_file_disjoint_matches_range(a: LocationId, b: LocationId) -> bool {
+            fn same_file_disjoint_matches_range(a: FileTextRange, b: FileTextRange) -> bool {
                 let mut b = b;
                 b.file = a.file.clone();
                 a.disjoint(&b) == a.range.disjoint(&b.range)
             }
 
-            fn different_file_implies_no_containment(a: LocationId, b: LocationId) -> TestResult {
+            fn different_file_implies_no_containment(a: FileTextRange, b: FileTextRange) -> TestResult {
                 in_case!(a.file != b.file => !a.contains(&b))
             }
 
-            fn different_file_implies_no_overlap(a: LocationId, b: LocationId) -> TestResult {
+            fn different_file_implies_no_overlap(a: FileTextRange, b: FileTextRange) -> TestResult {
                 in_case!(a.file != b.file => !a.overlaps(&b))
             }
 
-            fn different_file_implies_disjoint(a: LocationId, b: LocationId) -> TestResult {
+            fn different_file_implies_disjoint(a: FileTextRange, b: FileTextRange) -> TestResult {
                 in_case!(a.file != b.file => a.disjoint(&b))
             }
         }
@@ -306,10 +306,10 @@ mod tests {
 
 #[cfg(test)]
 pub(crate) mod arbitrary {
-    use super::{FileId, FilePos, FileRange, LocationId};
+    use super::{FileId, FileTextRange, TextPos, TextRange};
     use quickcheck::Arbitrary;
 
-    impl Arbitrary for FilePos {
+    impl Arbitrary for TextPos {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
                 line: u8::arbitrary(g) as u32, // smaller numbers for readability
@@ -328,9 +328,9 @@ pub(crate) mod arbitrary {
         }
     }
 
-    impl Arbitrary for FileRange {
+    impl Arbitrary for TextRange {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-            FileRange::new(FilePos::arbitrary(g), FilePos::arbitrary(g))
+            TextRange::new(TextPos::arbitrary(g), TextPos::arbitrary(g))
         }
 
         fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
@@ -354,11 +354,11 @@ pub(crate) mod arbitrary {
         }
     }
 
-    impl Arbitrary for LocationId {
+    impl Arbitrary for FileTextRange {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
                 file: FileId::arbitrary(g),
-                range: FileRange::arbitrary(g),
+                range: TextRange::arbitrary(g),
             }
         }
 

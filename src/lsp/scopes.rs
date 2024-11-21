@@ -1,4 +1,4 @@
-use super::location::{FileId, FilePos, FileRange, LocationId};
+use super::location::{FileId, FileTextRange, TextPos, TextRange};
 use derive_more::derive::{Display, Error};
 use std::collections::HashMap;
 
@@ -58,7 +58,7 @@ impl ScopeId {
     }
 
     /// Private! Local scopes can only be created from within this module.
-    fn local(location: LocationId) -> Self {
+    fn local(location: FileTextRange) -> Self {
         Self(ScopeIdInner::Local(location))
     }
 }
@@ -66,13 +66,13 @@ impl ScopeId {
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 enum ScopeIdInner {
     Global,
-    Local(LocationId),
+    Local(FileTextRange),
 }
 
 #[derive(Debug, Clone)]
 struct Names {
-    names: HashMap<String, LocationId>,
-    temps: HashMap<String, LocationId>,
+    names: HashMap<String, FileTextRange>,
+    temps: HashMap<String, FileTextRange>,
     parent: Option<ScopeId>,
 }
 
@@ -113,16 +113,16 @@ enum InkNameDefinition {
 }
 
 enum NameResolution {
-    Unique(LocationId),
-    Shadowable(LocationId),
-    Ambiguous(Vec<LocationId>),
-    Temp(LocationId),
+    Unique(FileTextRange),
+    Shadowable(FileTextRange),
+    Ambiguous(Vec<FileTextRange>),
+    Temp(FileTextRange),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Scopes {
     global: Names,
-    scopes: HashMap<LocationId, Names>,
+    scopes: HashMap<FileTextRange, Names>,
 }
 
 impl Scopes {
@@ -137,7 +137,7 @@ impl Scopes {
     pub(crate) fn define_scope(
         &mut self,
         file: impl Into<FileId>,
-        range: impl Into<FileRange>,
+        range: impl Into<TextRange>,
         parent: ScopeId,
     ) -> Result<ScopeId, ScopeDefError> {
         // Error if parent does not point to a valid scope
@@ -149,7 +149,7 @@ impl Scopes {
                 }
             }
         };
-        let id = LocationId::new(file, range);
+        let id = FileTextRange::new(file, range);
         for existing in self.scopes.keys() {
             if existing.overlaps(&id) {
                 return Err(ScopeDefError::OverlappingScope(OverlappingScope {
@@ -167,7 +167,7 @@ impl Scopes {
         &mut self,
         scope: &ScopeId,
         name: impl Into<String>,
-        target: impl Into<LocationId>,
+        target: impl Into<FileTextRange>,
     ) -> Result<(), ScopeDefError> {
         self.define_name_internal(scope, name, target, false)
     }
@@ -177,15 +177,19 @@ impl Scopes {
         &mut self,
         scope: &ScopeId,
         name: impl Into<String>,
-        target: impl Into<LocationId>,
+        target: impl Into<FileTextRange>,
     ) -> Result<(), ScopeDefError> {
         self.define_name_internal(scope, name, target, true)
     }
 
     /// From the vantage point of `cursor` in `file`, where does `name` point to?
-    pub(crate) fn visible_names(&self, file: FileId, cursor: FilePos) -> Vec<(&str, &LocationId)> {
-        let range = FileRange::new(cursor.clone(), cursor);
-        let location_probe = LocationId::new(file, range);
+    pub(crate) fn visible_names(
+        &self,
+        file: FileId,
+        cursor: TextPos,
+    ) -> Vec<(&str, &FileTextRange)> {
+        let range = TextRange::new(cursor.clone(), cursor);
+        let location_probe = FileTextRange::new(file, range);
         self.scopes
             .keys()
             .into_iter()
@@ -213,7 +217,7 @@ impl Scopes {
 
     /// Due to the bonkers namespacing in Ink, temporary variables are not visible from inner scopes.
     /// That's what the `include_temp` paramter governs: Call it with `true` to get the temporary variales of `scope`, but no others.
-    fn find_names(&self, scope: &ScopeId, include_temp: bool) -> Vec<(&str, &LocationId)> {
+    fn find_names(&self, scope: &ScopeId, include_temp: bool) -> Vec<(&str, &FileTextRange)> {
         let names = match scope.0 {
             ScopeIdInner::Global => &self.global,
             ScopeIdInner::Local(ref location) => {
@@ -238,7 +242,7 @@ impl Scopes {
         &mut self,
         scope: &ScopeId,
         name: impl Into<String>,
-        target: impl Into<LocationId>,
+        target: impl Into<FileTextRange>,
         temp: bool,
     ) -> Result<(), ScopeDefError> {
         let names = match scope.0 {
@@ -267,8 +271,8 @@ impl Scopes {
 #[derive(Debug, Display, Error)]
 #[display("Given scope {new} overlaps with existing scope {existing}")]
 struct OverlappingScope {
-    existing: LocationId,
-    new: LocationId,
+    existing: FileTextRange,
+    new: FileTextRange,
 }
 
 #[derive(Debug, Display, Error)]

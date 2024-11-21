@@ -3,20 +3,17 @@ use crate::{
     ink_syntax::{types::AllNamed, VisitInstruction, Visitor},
     lsp::location::{Location, LocationKind},
 };
-use lsp_types::Uri;
 use type_sitter_lib::{IncorrectKindCause, Node};
 
 pub(crate) struct LocationVisitor<'a> {
-    pub(crate) doc: &'a InkDocument,
-    pub(crate) uri: &'a Uri,
-    pub(crate) namespace: Option<String>,
+    doc: &'a InkDocument,
+    namespace: Option<String>,
     pub(crate) locs: Vec<Location>,
 }
 
 impl<'a> LocationVisitor<'a> {
-    pub(crate) fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
+    pub(crate) fn new(doc: &'a InkDocument) -> Self {
         Self {
-            uri,
             doc,
             namespace: None,
             locs: Vec::new(),
@@ -25,14 +22,13 @@ impl<'a> LocationVisitor<'a> {
 
     fn new_loc(&mut self, kind: LocationKind, name: String, range: tree_sitter::Range) -> Self {
         self.locs.push(Location::new(
-            self.uri.clone(),
+            self.doc.uri.clone(),
             self.doc.lsp_range(&range),
             name,
             self.namespace.clone(),
             kind,
         ));
         Self {
-            uri: self.uri,
             doc: self.doc,
             namespace: self.namespace.clone(),
             locs: Vec::new(),
