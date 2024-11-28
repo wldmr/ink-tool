@@ -1,3 +1,4 @@
+use derive_more::derive::{Display, Error};
 use lsp_server::ResponseError;
 use std::{
     ops::DerefMut,
@@ -13,9 +14,9 @@ impl<T> Clone for SharedValue<T> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub(crate) struct SharedValueError(String);
+#[derive(Debug, Display, Error)]
+#[display("{_0}")]
+pub(crate) struct SharedValueError(#[error(not(source))] String);
 
 impl<T> SharedValue<T> {
     pub(crate) fn new(t: T) -> Self {

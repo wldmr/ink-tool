@@ -7,6 +7,7 @@ use super::{
         Location,
     },
 };
+use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
@@ -20,9 +21,9 @@ pub(crate) struct State {
     qualified_names: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("Document not found: `{}`", .0.path())]
-pub(crate) struct DocumentNotFound(pub(crate) Uri);
+#[derive(Debug, Display, Error)]
+#[display("Document not found: `{}`", _0.path())]
+pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 
 impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
