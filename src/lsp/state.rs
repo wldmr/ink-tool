@@ -12,11 +12,25 @@ use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+};
+
+/// A way to identify Documents hat is Copy (instead of just clone, like Uri).
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+struct DocId(u64);
+impl From<&Uri> for DocId {
+    fn from(uri: &Uri) -> Self {
+        let mut hasher = std::hash::DefaultHasher::new();
+        (*uri).hash(&mut hasher);
+        DocId(hasher.finish())
+    }
+}
 
 pub(crate) struct State {
     wide_encoding: Option<WideEncoding>,
-    documents: HashMap<Uri, InkDocument>,
+    documents: HashMap<DocId, InkDocument>,
     links: Links, // Sure would be nice for this to be reactive
     qualified_names: bool,
 }
@@ -36,15 +50,16 @@ impl State {
     }
 
     pub fn edit(&mut self, uri: Uri, edits: Vec<DocumentEdit>) {
-        if !self.documents.contains_key(&uri) {
+        let doc_id = DocId::from(&uri);
+        if !self.documents.contains_key(&doc_id) {
             self.documents.insert(
-                uri.clone(),
+                doc_id,
                 InkDocument::new(uri.clone(), String::new(), self.wide_encoding),
             );
         }
         let doc = self
             .documents
-            .get_mut(&uri)
+            .get_mut(&doc_id)
             .expect("we just made sure it exists");
         let new_locations = doc.edit(edits);
         for loc in &new_locations {
@@ -56,7 +71,7 @@ impl State {
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        match self.documents.remove(&uri) {
+        match self.documents.remove(&DocId::from(&uri)) {
             Some(_) => Ok(()),
             None => Err(DocumentNotFound(uri)),
         }
@@ -67,7 +82,7 @@ impl State {
         &mut self,
         uri: Uri,
     ) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        match self.documents.get_mut(&uri) {
+        match self.documents.get_mut(&DocId::from(&uri)) {
             Some(doc) => Ok(doc.symbols(self.qualified_names)),
             None => Err(DocumentNotFound(uri)),
         }
@@ -93,7 +108,7 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        match self.documents.get_mut(&uri) {
+        match self.documents.get_mut(&DocId::from(&uri)) {
             Some(doc) => {
                 let Some((range, specification)) = doc.possible_completions(position) else {
                     return Ok(None);
@@ -110,7 +125,8 @@ impl State {
     }
 
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
-        let uris: Vec<Uri> = location::specification::extract_uris(&spec)
+        let uris: Vec<DocId> = location::specification::extract_uris(&spec)
+            .map(|uris| uris.iter().map(DocId::from).collect())
             .unwrap_or_else(|| self.documents.keys().cloned().collect());
         let mut locs = Vec::new();
         for uri in uris {
@@ -218,13 +234,14 @@ mod tests {
             ",
             );
             let (contents, caret) = text_with_caret("{o@}");
-            set_content(&mut state, uri("test.ink"), contents);
-            let doc = state.documents.get(&uri("test.ink")).unwrap();
+            let uri = uri("test.ink");
+            set_content(&mut state, uri.clone(), contents);
+            let doc = state.documents.get(&state::DocId::from(&uri)).unwrap();
             eprintln!(
                 "completions: {:?}",
                 doc.possible_completions(caret).unwrap()
             );
-            let completions = state.completions(uri("test.ink"), caret).unwrap().unwrap();
+            let completions = state.completions(uri, caret).unwrap().unwrap();
             assert_eq!(
                 completions
                     .into_iter()
