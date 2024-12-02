@@ -9,6 +9,7 @@ use std::{ops::Not, path::Path};
 
 mod document;
 mod file_watching;
+mod incremental;
 mod links;
 mod location;
 mod notification_handlers;
