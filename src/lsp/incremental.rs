@@ -157,10 +157,11 @@ fn hash<T: Hash>(t: &T) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
-    /// Direct translation of the example of the article.
+    /// Direct translation of the example in <https://medium.com/@eliah.lakhin/salsa-algorithm-explained-c5d6df1dd291>
     #[test]
-    fn example() {
+    fn example_spreadsheet() {
         #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
         #[rustfmt::skip]
         enum Keys { A, B, C, D }
@@ -183,5 +184,108 @@ mod tests {
 
         db.set_input(Keys::A, |_| 11);
         assert_eq!(db.value(Keys::D), 39);
+    }
+
+    /// Direct translation of the example in <https://lord.io/spreadsheets/>
+    /// Since this is a more elaborate example, we can whitebox-test which cells are actually touched for an update.
+    #[test]
+    fn example_burrito() {
+        #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+        enum Keys {
+            BurritoPrice,
+            BurritoPriceWithShip,
+            NumBurritos,
+            SalsaPerBurrito,
+            Total,
+            SalsaInOrder,
+        }
+
+        #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+        enum Values {
+            Dollars(u32),
+            Amount(u32),
+            Grams(u32),
+        }
+
+        impl std::ops::Add for Values {
+            type Output = Self;
+            fn add(self, rhs: Self) -> Self::Output {
+                use Values::*;
+                match (self, rhs) {
+                    (Dollars(a), Dollars(b)) => Dollars(a + b),
+                    (Amount(a), Amount(b)) => Amount(a + b),
+                    (Grams(a), Grams(b)) => Amount(a + b),
+                    (a, b) => panic!("Cannot add incompatible values {a:?} and {b:?}"),
+                }
+            }
+        }
+        impl std::ops::Mul for Values {
+            type Output = Self;
+            fn mul(self, rhs: Self) -> Self::Output {
+                use Values::*;
+                match (self, rhs) {
+                    (Dollars(a), Amount(b)) | (Amount(a), Dollars(b)) => Dollars(a * b),
+                    (Grams(a), Amount(b)) | (Amount(a), Grams(b)) => Grams(a * b),
+                    (Amount(a), Amount(b)) => Amount(a * b),
+                    (a, b) => panic!("Cannot multiply incompatible values {a:?} and {b:?}"),
+                }
+            }
+        }
+
+        let mut db = Db::new();
+        db.set_input(Keys::BurritoPrice, |_| Values::Dollars(8));
+        db.set_input(Keys::NumBurritos, |_| Values::Amount(3));
+        db.set_input(Keys::SalsaPerBurrito, |_| Values::Grams(40));
+        db.set_derived(
+            Keys::BurritoPriceWithShip,
+            || vec![Keys::BurritoPrice],
+            |v| v[0] + Values::Dollars(2),
+        );
+        db.set_derived(
+            Keys::Total,
+            || vec![Keys::BurritoPriceWithShip, Keys::NumBurritos],
+            |v| v[0] * v[1],
+        );
+        db.set_derived(
+            Keys::SalsaInOrder,
+            || vec![Keys::NumBurritos, Keys::SalsaPerBurrito],
+            |v| v[0] * v[1],
+        );
+        let revision_1 = db.revision;
+
+        assert_eq!(db.value(Keys::Total), Values::Dollars(30));
+        assert_eq!(db.value(Keys::SalsaInOrder), Values::Grams(120));
+        assert!(db.cells.values().all(|it| it.updated_at == revision_1));
+        assert!(db.cells.values().all(|it| it.verified_at == revision_1));
+
+        db.set_input(Keys::BurritoPrice, |_| Values::Dollars(9));
+        db.set_derived(
+            Keys::Total,
+            || vec![Keys::BurritoPriceWithShip, Keys::NumBurritos],
+            |v| (v[0] * v[1]) + Values::Dollars(2),
+        );
+        let revision_2 = db.revision;
+
+        assert_eq!(db.value(Keys::Total), Values::Dollars(35));
+        assert!(
+            db.cells.values().any(|it| it.verified_at == revision_2)
+                && !db.cells.values().all(|it| it.verified_at == revision_2),
+            "some (but not all) are verified at revision 2 because we haven't observed SalsaInOrder yet."
+        );
+        assert_eq!(db.value(Keys::SalsaInOrder), Values::Grams(120));
+        assert!(
+            db.cells.values().all(|it| it.verified_at == revision_2),
+            "now all are verified at revision 2, because we *have* observed all output cells."
+        );
+        assert_eq!(
+            db.cells[&Keys::Total].updated_at,
+            revision_2,
+            "total was updated"
+        );
+        assert_eq!(
+            db.cells[&Keys::SalsaInOrder].updated_at,
+            revision_1,
+            "salsa in order remains untouched"
+        );
     }
 }
