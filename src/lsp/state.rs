@@ -1,6 +1,5 @@
 use super::{
     document::{DocumentEdit, InkDocument},
-    links::Links,
     location::{
         self,
         specification::{rank_match, LocationThat},
@@ -31,7 +30,6 @@ impl From<&Uri> for DocId {
 pub(crate) struct State {
     wide_encoding: Option<WideEncoding>,
     documents: HashMap<DocId, InkDocument>,
-    links: Links, // Sure would be nice for this to be reactive
     qualified_names: bool,
 }
 
@@ -43,7 +41,6 @@ impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
         Self {
             documents: HashMap::new(),
-            links: Links::new(),
             wide_encoding,
             qualified_names,
         }
@@ -61,13 +58,7 @@ impl State {
             .documents
             .get_mut(&doc_id)
             .expect("we just made sure it exists");
-        let new_locations = doc.edit(edits);
-        for loc in &new_locations {
-            self.links.remove_any(&loc.file_range);
-        }
-        for _loc in new_locations {
-            // todo!()
-        }
+        doc.edit(edits);
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {

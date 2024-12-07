@@ -9,7 +9,6 @@ use crate::ink_syntax::{
 };
 use crate::lsp::location::{self, specification::LocationThat};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use locations::LocationVisitor;
 use lsp_types::{DocumentSymbol, Position, WorkspaceSymbol};
 use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
 use tree_sitter::Parser;
@@ -54,7 +53,7 @@ impl InkDocument {
         }
     }
 
-    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) -> Vec<Location> {
+    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) {
         // eprintln!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
             let edit = range.map(|range| self.input_edit(range, &new_text));
@@ -73,12 +72,8 @@ impl InkDocument {
                 .expect("parsing must work");
             self.lines = LineIndex::new(&self.text);
         }
-        // let locations = Locations::new(, )
         self.doc_symbols_cache = None;
         self.ws_symbols_cache = None;
-        let mut visitor = LocationVisitor::new(self);
-        visitor.traverse(&mut self.tree.root_node().walk());
-        visitor.locs
     }
 
     pub(crate) fn symbols(&mut self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
@@ -122,7 +117,7 @@ impl InkDocument {
             let node = root
                 .descendant_for_byte_range(offset, offset)
                 .expect("the offset must lie within the file, so there must be a node here");
-            eprintln!("found {node} at offset {offset}");
+            // eprintln!("found {node} at offset {offset}");
 
             if node.is_error() || node.is_missing() {
                 let text = &self.text[node.byte_range()];
