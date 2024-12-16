@@ -19,13 +19,24 @@ use type_sitter_lib::Node;
 
 pub(crate) struct InkDocument {
     uri: lsp_types::Uri,
-    tree: tree_sitter::Tree,
-    text: String,
-    parser: tree_sitter::Parser,
+    pub(crate) tree: tree_sitter::Tree,
+    pub(crate) text: String,
+    pub(crate) parser: tree_sitter::Parser,
     enc: Option<WideEncoding>,
-    lines: line_index::LineIndex,
+    pub(crate) lines: line_index::LineIndex,
     doc_symbols_cache: Option<DocumentSymbol>,
     ws_symbols_cache: Option<Vec<WorkspaceSymbol>>,
+}
+
+impl std::fmt::Debug for InkDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InkDocument")
+            .field("uri", &self.uri.path())
+            .field("tree", &self.tree)
+            .field("text", &format!("[{} bytes]", self.text.len()))
+            .field("enc", &self.enc)
+            .finish_non_exhaustive()
+    }
 }
 
 pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);

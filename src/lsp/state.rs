@@ -5,12 +5,14 @@ use super::{
         specification::{rank_match, LocationThat},
         Location,
     },
+    salsa::{doc_symbols, DbImpl, Doc, Workspace},
 };
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
 };
+use salsa::Setter as _;
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -18,7 +20,7 @@ use std::{
 
 /// A way to identify Documents hat is Copy (instead of just clone, like Uri).
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
-struct DocId(u64);
+pub(crate) struct DocId(u64);
 impl From<&Uri> for DocId {
     fn from(uri: &Uri) -> Self {
         let mut hasher = std::hash::DefaultHasher::new();
@@ -28,42 +30,73 @@ impl From<&Uri> for DocId {
 }
 
 pub(crate) struct State {
-    wide_encoding: Option<WideEncoding>,
-    documents: HashMap<DocId, InkDocument>,
+    parsers: HashMap<DocId, InkDocument>,
+    workspace: Workspace,
+    db: DbImpl,
     qualified_names: bool,
 }
 
-#[derive(Debug, Display, Error)]
+#[derive(Debug, Clone, Display, Error)]
 #[display("Document not found: `{}`", _0.path())]
 pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 
 impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
+        let db = DbImpl::new();
+        let workspace = Workspace::new(&db, Default::default(), wide_encoding);
         Self {
-            documents: HashMap::new(),
-            wide_encoding,
+            db,
+            parsers: Default::default(),
+            workspace,
             qualified_names,
         }
     }
 
     pub fn edit(&mut self, uri: Uri, edits: Vec<DocumentEdit>) {
         let doc_id = DocId::from(&uri);
-        if !self.documents.contains_key(&doc_id) {
-            self.documents.insert(
+        if !self.parsers.contains_key(&doc_id) {
+            self.parsers.insert(
                 doc_id,
-                InkDocument::new(uri.clone(), String::new(), self.wide_encoding),
+                InkDocument::new(uri.clone(), String::new(), self.workspace.enc(&self.db)),
             );
+            let parser = &self.parsers[&doc_id];
+            let mut ws_docs = self.workspace.docs(&self.db).clone();
+            ws_docs.insert(
+                uri.clone(),
+                Doc::new(
+                    &self.db,
+                    parser.text.clone(),
+                    parser.tree.clone(),
+                    parser.lines.clone(),
+                    self.workspace.enc(&self.db),
+                ),
+            );
+            self.workspace.set_docs(&mut self.db).to(ws_docs);
         }
-        let doc = self
-            .documents
+        let parser = self
+            .parsers
             .get_mut(&doc_id)
             .expect("we just made sure it exists");
-        doc.edit(edits);
+        parser.edit(edits);
+        let doc = *self
+            .workspace
+            .docs(&self.db)
+            .get(&uri)
+            .expect("just made sure");
+        doc.set_text(&mut self.db).to(parser.text.clone());
+        doc.set_tree(&mut self.db).to(parser.tree.clone());
+        doc.set_lines(&mut self.db).to(parser.lines.clone());
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        match self.documents.remove(&DocId::from(&uri)) {
-            Some(_) => Ok(()),
+        let doc_id = DocId::from(&uri);
+        match self.parsers.remove(&doc_id) {
+            Some(_) => {
+                let mut ws_docs = self.workspace.docs(&self.db).clone();
+                ws_docs.remove(&uri);
+                self.workspace.set_docs(&mut self.db).to(ws_docs);
+                Ok(())
+            }
             None => Err(DocumentNotFound(uri)),
         }
     }
@@ -73,15 +106,15 @@ impl State {
         &mut self,
         uri: Uri,
     ) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        match self.documents.get_mut(&DocId::from(&uri)) {
-            Some(doc) => Ok(doc.symbols(self.qualified_names)),
+        match self.workspace.docs(&self.db).get(&uri) {
+            Some(&doc) => Ok(doc_symbols(&self.db, doc)),
             None => Err(DocumentNotFound(uri)),
         }
     }
 
     pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
         let symbols = self
-            .documents
+            .parsers
             .values_mut() // mut because of caching. feels weird, but at least it's honest.
             .filter_map(InkDocument::workspace_symbols)
             .flatten();
@@ -99,7 +132,7 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        match self.documents.get_mut(&DocId::from(&uri)) {
+        match self.parsers.get_mut(&DocId::from(&uri)) {
             Some(doc) => {
                 let Some((range, specification)) = doc.possible_completions(position) else {
                     return Ok(None);
@@ -118,11 +151,11 @@ impl State {
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
         let uris: Vec<DocId> = location::specification::extract_uris(&spec)
             .map(|uris| uris.iter().map(DocId::from).collect())
-            .unwrap_or_else(|| self.documents.keys().cloned().collect());
+            .unwrap_or_else(|| self.parsers.keys().cloned().collect());
         let mut locs = Vec::new();
         for uri in uris {
             let doc = self
-                .documents
+                .parsers
                 .get(&uri)
                 .expect("we mustn't get uris that we don't know");
             let doc_locs = doc
@@ -227,7 +260,7 @@ mod tests {
             let (contents, caret) = text_with_caret("{o@}");
             let uri = uri("test.ink");
             set_content(&mut state, uri.clone(), contents);
-            let doc = state.documents.get(&state::DocId::from(&uri)).unwrap();
+            let doc = state.parsers.get(&state::DocId::from(&uri)).unwrap();
             eprintln!(
                 "completions: {:?}",
                 doc.possible_completions(caret).unwrap()
