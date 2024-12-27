@@ -1,16 +1,7 @@
-mod locations;
-mod scoped_names;
-mod symbols;
-
-use super::{location::Location, scopes::Scopes};
-use crate::ink_syntax::{
-    types::{Condition, DivertTarget, Eval, Expr, Redirect},
-    Visitor as _,
-};
+use crate::ink_syntax::types::{Condition, DivertTarget, Eval, Expr, Redirect};
 use crate::lsp::location::{self, specification::LocationThat};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use lsp_types::{DocumentSymbol, Position, WorkspaceSymbol};
-use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
+use lsp_types::Position;
 use tree_sitter::Parser;
 use type_sitter_lib::Node;
 
@@ -24,8 +15,6 @@ pub(crate) struct InkDocument {
     pub(crate) parser: tree_sitter::Parser,
     enc: Option<WideEncoding>,
     pub(crate) lines: line_index::LineIndex,
-    doc_symbols_cache: Option<DocumentSymbol>,
-    ws_symbols_cache: Option<Vec<WorkspaceSymbol>>,
 }
 
 impl std::fmt::Debug for InkDocument {
@@ -59,8 +48,6 @@ impl InkDocument {
             lines,
             enc,
             text,
-            doc_symbols_cache: None,
-            ws_symbols_cache: None,
         }
     }
 
@@ -83,30 +70,9 @@ impl InkDocument {
                 .expect("parsing must work");
             self.lines = LineIndex::new(&self.text);
         }
-        self.doc_symbols_cache = None;
-        self.ws_symbols_cache = None;
     }
 
-    pub(crate) fn symbols(&mut self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
-        if self.doc_symbols_cache.is_none() {
-            let new = DocumentSymbols::new(&self, qualified_symbol_names)
-                .traverse(&mut self.tree.walk())
-                .and_then(|it| it.sym);
-            self.doc_symbols_cache = new;
-        }
-        self.doc_symbols_cache.clone()
-    }
-
-    pub(crate) fn workspace_symbols(&mut self) -> Option<Vec<WorkspaceSymbol>> {
-        if self.ws_symbols_cache.is_none() {
-            let mut symbols = WorkspaceSymbols::new(self, &self.uri);
-            symbols.traverse(&mut self.tree.walk());
-            self.ws_symbols_cache = Some(symbols.sym);
-        }
-        self.ws_symbols_cache.clone()
-    }
-
-    pub fn possible_completions(
+    pub(crate) fn possible_completions(
         &self,
         position: Position,
     ) -> Option<(lsp_types::Range, location::specification::LocationThat)> {
@@ -159,17 +125,6 @@ impl InkDocument {
         }
         // For-loop hasn't produced anything, so:
         None
-    }
-
-    pub(crate) fn locations(&self) -> impl Iterator<Item = Location> {
-        let mut locations = locations::LocationVisitor::new(self);
-        locations.traverse(&mut self.tree.root_node().walk());
-        locations.locs.into_iter()
-    }
-
-    pub(crate) fn update_scopes(&self, scopes: &mut Scopes) {
-        scoped_names::ScopedNamesVisitor::new(&self, scopes)
-            .traverse(&mut self.tree.root_node().walk());
     }
 }
 
@@ -234,7 +189,7 @@ impl InkDocument {
         }
     }
 
-    fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
+    pub(super) fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(node.start_point);
         let end = self.lsp_position(node.end_point);
         lsp_types::Range { start, end }

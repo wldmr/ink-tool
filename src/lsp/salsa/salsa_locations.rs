@@ -1,19 +1,24 @@
-use crate::lsp::document::InkDocument;
 use crate::{
     ink_syntax::{types::AllNamed, VisitInstruction, Visitor},
     lsp::location::{Location, LocationKind},
 };
+use lsp_types::Uri;
 use type_sitter_lib::{IncorrectKindCause, Node};
 
-pub(crate) struct LocationVisitor<'a> {
-    doc: &'a InkDocument,
+use super::salsa_doc_symbols::lsp_range;
+use super::{Db, Doc};
+
+pub(super) struct LocationVisitor<'a> {
+    db: &'a dyn Db,
+    doc: Doc,
     namespace: Option<String>,
     pub(crate) locs: Vec<Location>,
 }
 
 impl<'a> LocationVisitor<'a> {
-    pub(crate) fn new(doc: &'a InkDocument) -> Self {
+    pub(super) fn new(db: &'a dyn Db, doc: Doc) -> Self {
         Self {
+            db,
             doc,
             namespace: None,
             locs: Vec::new(),
@@ -22,17 +27,30 @@ impl<'a> LocationVisitor<'a> {
 
     fn new_loc(&mut self, kind: LocationKind, name: String, range: tree_sitter::Range) -> Self {
         self.locs.push(Location::new(
-            self.doc.uri.clone(),
-            self.doc.lsp_range(&range),
+            self.uri().clone(),
+            self.lsp_range(&range),
             name,
             self.namespace.clone(),
             kind,
         ));
         Self {
+            db: self.db,
             doc: self.doc,
             namespace: self.namespace.clone(),
             locs: Vec::new(),
         }
+    }
+
+    fn uri(&self) -> &Uri {
+        self.doc.uri(self.db)
+    }
+
+    fn lsp_range(&self, range: &tree_sitter::Range) -> lsp_types::Range {
+        lsp_range(self.doc.lines(self.db), self.doc.enc(self.db), range)
+    }
+
+    fn text(&self, byte_range: std::ops::Range<usize>) -> &'a str {
+        &self.doc.text(self.db)[byte_range]
     }
 }
 
@@ -116,7 +134,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
                     // dirty trick to get the params in there. We should do this better
                     byte_range.end = params.end_byte();
                 }
-                let name = self.doc.text[byte_range.clone()].to_string();
+                let name = self.text(byte_range.clone()).to_string();
                 let mut new_loc = self.new_loc(kind, name.clone(), knot.name().range());
                 new_loc.namespace = Some(name);
                 Return(new_loc)
@@ -128,7 +146,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
                     // dirty trick to get the params in there. We should do this better
                     byte_range.end = params.end_byte();
                 }
-                let name = self.doc.text[byte_range.clone()].to_string();
+                let name = self.text(byte_range.clone()).to_string();
                 let mut new_loc =
                     self.new_loc(LocationKind::Stitch, name.clone(), stitch.name().range());
                 new_loc.namespace = if let Some(ref knot) = self.namespace {
@@ -145,19 +163,19 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
                     // dirty trick to get the params in there. We should do this better
                     byte_range.end = params.end_byte();
                 }
-                let name = self.doc.text[byte_range.clone()].to_string();
+                let name = self.text(byte_range.clone()).to_string();
                 Return(self.new_loc(LocationKind::Function, name, external.name().range()))
             }
 
             AllNamed::Label(label) => {
                 let byte_range = label.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_string();
+                let name = self.text(byte_range.clone()).to_string();
                 Return(self.new_loc(LocationKind::Label, name, label.name().range()))
             }
 
             AllNamed::Global(global) => {
                 let byte_range = global.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_owned();
+                let name = self.text(byte_range.clone()).to_owned();
                 let mut new_loc = self.new_loc(LocationKind::Variable, name, global.name().range());
                 new_loc.namespace = None;
                 Return(new_loc)
@@ -165,7 +183,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
 
             AllNamed::List(list) => {
                 let byte_range = list.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_owned();
+                let name = self.text(byte_range.clone()).to_owned();
                 let mut new_loc =
                     self.new_loc(LocationKind::Variable, name.clone(), list.name().range());
                 new_loc.namespace = Some(name);
@@ -174,13 +192,13 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
 
             AllNamed::ListValueDef(def) => {
                 let byte_range = def.name().byte_range();
-                let name = self.doc.text[byte_range.clone().clone()].to_owned();
+                let name = self.text(byte_range.clone().clone()).to_owned();
                 Return(self.new_loc(LocationKind::Variable, name, def.name().range()))
             }
 
             AllNamed::Temp(temp) => {
                 let byte_range = temp.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_owned();
+                let name = self.text(byte_range.clone()).to_owned();
                 Return(self.new_loc(LocationKind::Variable, name, temp.name().range()))
             }
         }

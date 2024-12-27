@@ -1,26 +1,24 @@
-use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
-
-use type_sitter_lib::{IncorrectKindCause, Node};
-
 use crate::ink_syntax::{
     types::{AllNamed, GlobalKeyword},
     VisitInstruction, Visitor,
 };
+use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
+use type_sitter_lib::{IncorrectKindCause, Node};
 
-use crate::lsp::document::InkDocument;
+use super::{salsa_doc_symbols::lsp_range, Db, Doc};
 
-pub(crate) struct WorkspaceSymbols<'a> {
-    uri: &'a Uri,
-    doc: &'a InkDocument,
+pub(super) struct WorkspaceSymbols<'a> {
+    db: &'a dyn Db,
+    doc: Doc,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
-    pub(crate) sym: Vec<WorkspaceSymbol>,
+    pub(super) sym: Vec<WorkspaceSymbol>,
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    pub(crate) fn new(doc: &'a InkDocument, uri: &'a Uri) -> Self {
+    pub(crate) fn new(db: &'a dyn Db, doc: Doc) -> Self {
         Self {
-            uri,
+            db,
             doc,
             knot: None,
             stitch: None,
@@ -37,10 +35,10 @@ impl<'a> WorkspaceSymbols<'a> {
         }
     }
 
-    pub fn location(&self, range: tree_sitter::Range) -> OneOf<Location, WorkspaceLocation> {
+    fn location(&self, range: tree_sitter::Range) -> OneOf<Location, WorkspaceLocation> {
         OneOf::Left(Location {
-            uri: self.uri.clone(),
-            range: self.doc.lsp_range(&range),
+            uri: self.uri().clone(),
+            range: self.lsp_range(&range),
         })
     }
 
@@ -59,6 +57,18 @@ impl<'a> WorkspaceSymbols<'a> {
             location,
             data: None,
         });
+    }
+
+    fn uri(&self) -> &Uri {
+        self.doc.uri(self.db)
+    }
+
+    fn lsp_range(&self, range: &tree_sitter::Range) -> lsp_types::Range {
+        lsp_range(self.doc.lines(self.db), self.doc.enc(self.db), range)
+    }
+
+    fn text(&self, byte_range: std::ops::Range<usize>) -> &'a str {
+        &self.doc.text(self.db)[byte_range]
     }
 }
 
@@ -134,7 +144,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             // Symbols (== levels) to be created
             AllNamed::Ink(ink) => {
-                let name = std::path::Path::new(self.uri.path().as_str())
+                let name = std::path::Path::new(self.uri().path().as_str())
                     .file_name()
                     .expect("there should be a filename")
                     .to_string_lossy()
@@ -150,7 +160,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     SymbolKind::CLASS
                 };
                 let name_node = knot.name().unwrap();
-                let local_name = &self.doc.text[name_node.byte_range()];
+                let local_name = self.text(name_node.byte_range());
                 self.add_sym(kind, local_name, None, self.location(name_node.range()));
                 self.knot = Some(local_name);
                 self.stitch = None;
@@ -159,7 +169,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             AllNamed::Stitch(stitch) => {
                 let name_node = stitch.name().unwrap();
-                let local_name = &self.doc.text[name_node.byte_range()];
+                let local_name = self.text(name_node.byte_range());
                 self.add_sym(
                     SymbolKind::CLASS,
                     local_name,
@@ -173,7 +183,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             AllNamed::Choice(choice) => {
                 if let Some(Ok(label)) = choice.label() {
                     let name_node = label.name().unwrap();
-                    let local_name = &self.doc.text[name_node.byte_range()];
+                    let local_name = self.text(name_node.byte_range());
                     self.add_sym(
                         SymbolKind::KEY,
                         local_name,
@@ -189,7 +199,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     let name_node = label.name().unwrap();
                     self.add_sym(
                         SymbolKind::KEY,
-                        &self.doc.text[name_node.byte_range()],
+                        self.text(name_node.byte_range()),
                         self.namespace(),
                         self.location(name_node.range()),
                     );
@@ -205,7 +215,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 let name_node = &global.name().unwrap();
                 self.add_sym(
                     kind,
-                    &self.doc.text[name_node.byte_range()],
+                    self.text(name_node.byte_range()),
                     None,
                     self.location(name_node.range()),
                 );
@@ -214,7 +224,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             AllNamed::List(list) => {
                 let name_node = list.name().unwrap();
-                let list_name = &self.doc.text[name_node.byte_range()];
+                let list_name = self.text(name_node.byte_range());
                 self.add_sym(
                     SymbolKind::ENUM,
                     list_name,
@@ -229,7 +239,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                         .filter_map(|def| def.name().ok())
                         .map(|identifier| identifier);
                     for identifier in list_values {
-                        let value_name = &self.doc.text[identifier.byte_range()];
+                        let value_name = self.text(identifier.byte_range());
                         self.add_sym(
                             SymbolKind::ENUM_MEMBER,
                             value_name,
@@ -245,7 +255,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 if let Ok(name_node) = external.name() {
                     self.add_sym(
                         SymbolKind::INTERFACE,
-                        &self.doc.text[name_node.byte_range()],
+                        self.text(name_node.byte_range()),
                         None,
                         self.location(name_node.range()),
                     );

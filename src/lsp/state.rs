@@ -5,7 +5,7 @@ use super::{
         specification::{rank_match, LocationThat},
         Location,
     },
-    salsa::{doc_symbols, DbImpl, Doc, Workspace},
+    salsa::{doc_symbols, locations, workspace_symbols, DbImpl, Doc, Workspace},
 };
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
@@ -33,7 +33,6 @@ pub(crate) struct State {
     parsers: HashMap<DocId, InkDocument>,
     workspace: Workspace,
     db: DbImpl,
-    qualified_names: bool,
 }
 
 #[derive(Debug, Clone, Display, Error)]
@@ -48,7 +47,6 @@ impl State {
             db,
             parsers: Default::default(),
             workspace,
-            qualified_names,
         }
     }
 
@@ -65,6 +63,7 @@ impl State {
                 uri.clone(),
                 Doc::new(
                     &self.db,
+                    uri.clone(),
                     parser.text.clone(),
                     parser.tree.clone(),
                     parser.lines.clone(),
@@ -114,10 +113,10 @@ impl State {
 
     pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
         let symbols = self
-            .parsers
-            .values_mut() // mut because of caching. feels weird, but at least it's honest.
-            .filter_map(InkDocument::workspace_symbols)
-            .flatten();
+            .workspace
+            .docs(&self.db)
+            .into_iter()
+            .flat_map(|doc| workspace_symbols(&self.db, *doc.1));
         if query.is_empty() {
             symbols.collect()
         } else {
@@ -127,6 +126,7 @@ impl State {
                 .collect()
         }
     }
+
     pub fn completions(
         &mut self,
         uri: Uri,
@@ -149,17 +149,10 @@ impl State {
     }
 
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
-        let uris: Vec<DocId> = location::specification::extract_uris(&spec)
-            .map(|uris| uris.iter().map(DocId::from).collect())
-            .unwrap_or_else(|| self.parsers.keys().cloned().collect());
         let mut locs = Vec::new();
-        for uri in uris {
-            let doc = self
-                .parsers
-                .get(&uri)
-                .expect("we mustn't get uris that we don't know");
-            let doc_locs = doc
-                .locations()
+        for (_uri, &doc) in self.workspace.docs(&self.db) {
+            let doc_locs = locations(&self.db, doc)
+                .into_iter()
                 .map(|loc| (rank_match(&spec, &loc), loc))
                 .filter(|(rank, _)| *rank > 0);
             locs.extend(doc_locs);

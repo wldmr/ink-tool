@@ -4,7 +4,7 @@ use std::{ops::RangeBounds, str::FromStr};
 
 pub mod specification;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct Location {
     pub(crate) file_range: FileTextRange,

@@ -9,11 +9,10 @@ use std::{ops::Not, path::Path};
 
 mod document;
 mod file_watching;
-mod links;
 mod location;
 mod notification_handlers;
 mod request_handlers;
-pub(crate) mod salsa;
+mod salsa;
 mod scopes;
 mod shared;
 mod state;
