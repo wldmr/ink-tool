@@ -112,18 +112,13 @@ impl State {
     }
 
     pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
-        let symbols = self
-            .workspace
-            .docs(&self.db)
-            .into_iter()
-            .flat_map(|doc| workspace_symbols(&self.db, *doc.1));
+        let mut symbols = workspace_symbols(&self.db, self.workspace);
         if query.is_empty() {
-            symbols.collect()
+            symbols
         } else {
             let query = query.to_lowercase();
+            symbols.retain(|sym| sym.name.to_lowercase().contains(&query));
             symbols
-                .filter(|sym| sym.name.to_lowercase().contains(&query))
-                .collect()
         }
     }
 

@@ -1,8 +1,10 @@
-use super::location::Location;
-use crate::ink_syntax::Visitor as _;
+use super::location::{Location, TextRange};
+use crate::ink_syntax::{self, Visitor as _};
 use line_index::{LineIndex, WideEncoding};
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
+use salsa;
 use std::collections::HashMap;
+use type_sitter_lib::Node;
 
 mod salsa_doc_symbols;
 mod salsa_locations;
@@ -68,7 +70,16 @@ pub(crate) fn doc_symbols<'d>(db: &'d dyn Db, doc: Doc) -> Option<DocumentSymbol
 }
 
 #[salsa::tracked]
-pub(crate) fn workspace_symbols<'d>(db: &'d dyn Db, doc: Doc) -> Vec<WorkspaceSymbol> {
+pub(crate) fn workspace_symbols<'d>(db: &'d dyn Db, workspace: Workspace) -> Vec<WorkspaceSymbol> {
+    workspace
+        .docs(db)
+        .values()
+        .flat_map(|&doc| workspace_symbols_for_doc(db, doc))
+        .collect()
+}
+
+#[salsa::tracked]
+pub(crate) fn workspace_symbols_for_doc<'d>(db: &'d dyn Db, doc: Doc) -> Vec<WorkspaceSymbol> {
     let mut sym = salsa_ws_symbols::WorkspaceSymbols::new(db, doc);
     sym.traverse(&mut doc.tree(db).walk());
     sym.sym
