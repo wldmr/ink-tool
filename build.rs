@@ -131,18 +131,15 @@ fn compile_type_sitter() {
 
     let mut node_map = NodeTypeMap::try_from(tree_sitter_ink::NODE_TYPES)
         .expect("generating nodes should work, otherwise the feature is pointless");
-    let (named, unnamed): (Vec<_>, Vec<_>) = node_map
+    let named: Vec<_> = node_map
         .values()
+        // Ignore implicit nodes (i.e. supertypes).
+        // Including supertypes would lead to ambiguities (different possible typed nodes) when iterating over the tree.
+        .filter(|it| it.name.is_named && !it.name.is_implicit())
         .map(|node| node.name.clone())
-        .partition(|name| name.is_named);
-    let named = node_map
+        .collect();
+    _ = node_map
         .add_custom_supertype("_all_named", named)
-        .expect("this shouldn't already exist");
-    let unnamed = node_map
-        .add_custom_supertype("_all_unnamed", unnamed)
-        .expect("this shouldn't already exist");
-    node_map
-        .add_custom_supertype("_all_nodes", vec![named, unnamed])
         .expect("this shouldn't already exist");
     let type_sitter_ink_types = generate_nodes(node_map)
         .expect("generating rust code should work, otherwise the feature is pointless")
