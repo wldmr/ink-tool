@@ -217,6 +217,7 @@ mod tests {
     use test_case::test_case;
 
     use crate::lsp::location;
+    use crate::test_utils::Compact;
 
     use super::{DocumentEdit, InkDocument};
 
@@ -379,20 +380,6 @@ mod tests {
             }
         }
         panic!("There should have been an '@' in there somewhere.");
-    }
-
-    /// Wrapper to enable a more compact debug representation for tests.
-    #[derive(PartialEq)]
-    struct Compact<T>(T);
-
-    impl std::fmt::Debug for Compact<lsp_types::Range> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "{}:{}-{}:{}",
-                self.0.start.line, self.0.start.character, self.0.end.line, self.0.end.character
-            )
-        }
     }
 
     fn new_doc(text: impl Into<String>, enc: Option<WideEncoding>) -> InkDocument {
