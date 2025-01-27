@@ -46,36 +46,100 @@ impl AnnotationScanner {
 }
 
 /// An annotation on a piece of text
-///
-/// Corresponds to a byte range in the input text.
-/// Use this to construct assertions about the text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Annotation<'a> {
-    pub bytes: (usize, usize),
-    /// The claim associated with the byte range (i.e. "is function", "defines variable x", etc.)
-    pub claim: &'a str,
+    /// The full underlying text. Might as well keep the whole thing around,
+    /// instead of two individual slices (text + claim).
+    pub full_text: &'a str,
+    /// The part of `full_text` being annotated
+    pub text_location: TextRegion,
+    /// The part of `full_text` that annotates
+    pub claim_location: TextRegion,
 }
 
-impl Annotation<'_> {
-    /// Convenience for converting `self.bytes` into a range
-    pub fn byte_range(&self) -> std::ops::Range<usize> {
-        self.bytes.0..self.bytes.1
+impl<'a> Annotation<'a> {
+    /// The annotated text
+    pub fn text(&self) -> &'a str {
+        &self.full_text[self.text_location.byte_range()]
+    }
+
+    /// The claim about the annotated text
+    pub fn claim(&self) -> &'a str {
+        &self.full_text[self.claim_location.byte_range()]
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-struct PositionInterval(usize, usize);
+pub struct TextRegion {
+    // (inclusive)
+    pub start: TextPos,
+    // (exclusive)
+    pub end: TextPos,
+}
+
+impl TextRegion {
+    pub fn new(start: TextPos, end: TextPos) -> Self {
+        Self { start, end }
+    }
+
+    pub fn byte_range(&self) -> std::ops::Range<usize> {
+        self.start.byte..self.end.byte
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TextPos {
+    pub byte: usize,
+    pub row: u32,
+    pub col: u32,
+}
+
+struct TextPosIter<'a> {
+    inner: CharIndices<'a>,
+    row: u32,
+    col: u32,
+}
+
+impl<'a> TextPosIter<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            inner: text.char_indices(),
+            row: 0,
+            col: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for TextPosIter<'a> {
+    type Item = (TextPos, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (byte, chr) = self.inner.next()?;
+        let pos = TextPos {
+            byte,
+            row: self.row,
+            col: self.col,
+        };
+        if chr == '\n' {
+            self.row += 1;
+            self.col = 0;
+        } else {
+            self.col += 1;
+        }
+        Some((pos, chr))
+    }
+}
 
 /// Iterates over some text and extracts annotations on pieces of text.
 struct Annonations<'a> {
-    inner: Peekable<CharIndices<'a>>,
+    inner: Peekable<TextPosIter<'a>>,
     comment_starter: &'a str,
     interval_char: char,
     guide_char: char,
     /// Full text that we're iterating over.
     text: &'a str,
     /// Interval of the line we're currently collecting annotions on
-    content_line: PositionInterval,
+    content_line: TextRegion,
 }
 
 impl<'a> Annonations<'a> {
@@ -85,7 +149,7 @@ impl<'a> Annonations<'a> {
             interval_char: scanner.interval_char,
             guide_char: scanner.guide_char,
             text,
-            inner: text.char_indices().peekable(),
+            inner: TextPosIter::new(text).peekable(),
             content_line: Default::default(),
         }
     }
@@ -110,7 +174,7 @@ enum ParseResult<'a> {
     /// Found a annotation
     Annotation(Annotation<'a>),
     /// Found a new content line
-    ContentLine(PositionInterval),
+    ContentLine(TextRegion),
     // Found normal comment, do nothing
     Ignore,
 }
@@ -130,7 +194,7 @@ impl<'a> Annonations<'a> {
                 (_, current_char) = self.inner.next()?;
             } else {
                 let line_end = self.skip_to_next_line()?;
-                let interval = PositionInterval(line_start, line_end);
+                let interval = TextRegion::new(line_start, line_end);
                 return Some(ParseResult::ContentLine(interval));
             }
         }
@@ -149,11 +213,11 @@ impl<'a> Annonations<'a> {
             self.skip_to_next_line();
             return Some(ParseResult::Ignore);
         };
-        let target = self.shift_to_content_line(line_start, target);
+        let text_interval = self.shift_to_content_line(line_start, target);
 
         self.skip(whitespace_or_guide);
 
-        let Some(claim) = self.skip(|chr| chr != '\n') else {
+        let Some(claim_interval) = self.skip(|chr| chr != '\n') else {
             self.skip_to_next_line();
             return Some(ParseResult::Ignore);
         };
@@ -161,20 +225,21 @@ impl<'a> Annonations<'a> {
         self.skip_to_next_line();
 
         Some(ParseResult::Annotation(Annotation {
-            bytes: (target.0, target.1),
-            claim: &self.text[claim.0..claim.1].trim_matches(whitespace_or_guide),
+            text_location: text_interval,
+            full_text: self.text,
+            claim_location: claim_interval,
         }))
     }
 
     /// Advance the cursor as long as `predicate` is true. Return the interval advanced over.
     /// Return `None` if the interval would be empty;
-    fn skip(&mut self, predicate: impl Fn(char) -> bool) -> Option<PositionInterval> {
+    fn skip(&mut self, predicate: impl Fn(char) -> bool) -> Option<TextRegion> {
         let start = self.inner.peek()?.0;
-        let mut result = PositionInterval(start, start);
-        while let Some((end, _)) = self.inner.next_if(|(_, chr)| predicate(*chr)) {
-            result.1 = end + 1;
+        let mut result = TextRegion::new(start, start);
+        while let Some(end) = self.inner.next_if(|(_, chr)| predicate(*chr)) {
+            result.end = self.inner.peek().unwrap_or(&end).0;
         }
-        if result.0 == result.1 {
+        if result.start == result.end {
             None
         } else {
             Some(result)
@@ -182,15 +247,15 @@ impl<'a> Annonations<'a> {
     }
 
     /// Advance iterator until it has consumed the next newline (if any).
-    /// Returns index of the zero'th character on the new line.
-    fn skip_to_next_line(&mut self) -> Option<usize> {
+    /// Returns position of the first character on the next line.
+    fn skip_to_next_line(&mut self) -> Option<TextPos> {
         // Skip until after newline;
         // If inner finishes, we can just abort. No annotations can follow,
         // so we don't need to keep track of anything.
         loop {
-            let (pos, chr) = self.inner.next()?;
+            let (_, chr) = self.inner.next()?;
             if chr == '\n' {
-                return Some(pos + 1);
+                return Some(self.inner.peek()?.0);
             }
         }
     }
@@ -198,12 +263,15 @@ impl<'a> Annonations<'a> {
     /// Take an interval and shift it "upwards" that that it points into the current content line
     fn shift_to_content_line(
         &self,
-        annotation_line_start: usize,
-        mut interval: PositionInterval,
-    ) -> PositionInterval {
-        let offset = annotation_line_start - self.content_line.0;
-        interval.0 -= offset;
-        interval.1 -= offset;
+        annotation_line_start: TextPos,
+        mut interval: TextRegion,
+    ) -> TextRegion {
+        let byte_offset = annotation_line_start.byte - self.content_line.start.byte;
+        let row_offset = annotation_line_start.row - self.content_line.start.row;
+        interval.start.byte -= byte_offset;
+        interval.end.byte -= byte_offset;
+        interval.start.row -= row_offset;
+        interval.end.row -= row_offset;
         interval
     }
 }
@@ -211,13 +279,20 @@ impl<'a> Annonations<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
+
+    fn row_cols<'a>(ann: Annotation<'a>) -> (u32, u32, u32) {
+        let TextRegion { start, end } = ann.text_location;
+        assert_eq!(start.row, end.row);
+        (start.row, start.col, end.col)
+    }
 
     #[test]
     fn parsing() {
         let scanner = AnnotationScanner::new();
-        let text = "
+        let text = indoc! {"\
             fn plus(a: u32, b: u32) -> u32 {
             // |  | ^ param            |||
             // |  |         ^ param    |||
@@ -230,21 +305,22 @@ mod tests {
                 a + b
             //    ^ operator
             //  ^^^^^ sum
-            }";
+            }"};
         assert_eq!(
             scanner
                 .scan(text)
-                .map(|it| (&text[it.byte_range()], it.claim))
-                .unique()
+                .map(|it| (row_cols(it), it.claim(), it.text()))
                 .sorted_unstable()
                 .collect::<Vec<_>>(),
             vec![
-                ("+", "operator"),
-                ("a", "param"),
-                ("a + b", "sum"),
-                ("b", "param"),
-                ("plus", "function"),
-                ("u32", "type"),
+                ((0, 03, 07), "function", "plus"),
+                ((0, 08, 09), "param", "a"),
+                ((0, 11, 14), "type", "u32"),
+                ((0, 16, 17), "param", "b"),
+                ((0, 19, 22), "type", "u32"),
+                ((0, 27, 30), "type", "u32"),
+                ((9, 04, 09), "sum", "a + b"),
+                ((9, 06, 07), "operator", "+"),
             ]
         )
     }
@@ -255,7 +331,7 @@ mod tests {
             .annotation('%')
             .interval('=')
             .guide('.');
-        let text = "
+        let text = indoc! {"\
             fn plus(a: u32, b: u32) -> u32 {
             %  .  . = param            ...
             %  .  .         = param    ...
@@ -263,20 +339,20 @@ mod tests {
             %                          === type
                 a + b
             %   ===== sum
-            }";
+            }"
+        };
         assert_eq!(
             scanner
                 .scan(text)
-                .map(|it| (&text[it.byte_range()], it.claim))
-                .unique()
+                .map(|it| (row_cols(it), it.claim(), it.text()))
                 .sorted_unstable()
                 .collect::<Vec<_>>(),
             vec![
-                ("a", "param"),
-                ("a + b", "sum"),
-                ("b", "param"),
-                ("plus", "function"),
-                ("u32", "type"),
+                ((00, 03, 07), "function", "plus"),
+                ((00, 08, 09), "param", "a"),
+                ((00, 16, 17), "param", "b"),
+                ((00, 27, 30), "type", "u32"),
+                ((05, 04, 09), "sum", "a + b"),
             ]
         )
     }
