@@ -217,16 +217,22 @@ impl<'a> Annonations<'a> {
 
         self.skip(whitespace_or_guide);
 
-        let Some(claim_interval) = self.skip(|chr| chr != '\n') else {
+        let Some(mut claim_interval) = self.skip(|chr| chr != '\n') else {
             self.skip_to_next_line();
             return Some(ParseResult::Ignore);
         };
 
+        // correct trailing whitspace/guide chars
+        let mut claim_text = &self.text[claim_interval.byte_range()];
+        claim_text = claim_text.trim_end_matches(whitespace_or_guide);
+        claim_interval.end.byte = claim_interval.start.byte + claim_text.len();
+        claim_interval.end.col = claim_interval.start.col + claim_text.chars().count() as u32;
+
         self.skip_to_next_line();
 
         Some(ParseResult::Annotation(Annotation {
-            text_location: text_interval,
             full_text: self.text,
+            text_location: text_interval,
             claim_location: claim_interval,
         }))
     }
