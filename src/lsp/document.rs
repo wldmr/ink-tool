@@ -28,7 +28,7 @@ impl std::fmt::Debug for InkDocument {
     }
 }
 
-pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
+pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
 /// Public API
 impl InkDocument {
@@ -51,17 +51,17 @@ impl InkDocument {
         }
     }
 
-    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) {
+    pub(crate) fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
         // eprintln!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
-            let edit = range.map(|range| self.input_edit(range, &new_text));
+            let edit = range.map(|range| self.input_edit(range, new_text.as_ref()));
             let modified_tree = if let Some(edit) = edit {
                 self.text
-                    .replace_range(edit.start_byte..edit.old_end_byte, &new_text);
+                    .replace_range(edit.start_byte..edit.old_end_byte, new_text.as_ref());
                 self.tree.edit(&edit);
                 Some(&self.tree)
             } else {
-                self.text = new_text;
+                self.text = new_text.into();
                 None
             };
             self.tree = self
@@ -151,7 +151,7 @@ impl InkDocument {
         }
     }
 
-    fn to_byte(&self, pos: lsp_types::Position) -> usize {
+    fn to_byte_maybe(&self, pos: lsp_types::Position) -> Option<usize> {
         let lsp_types::Position {
             line,
             character: col,
@@ -163,10 +163,12 @@ impl InkDocument {
         } else {
             LineCol { line, col }
         };
-        self.lines
-            .offset(pos)
+        self.lines.offset(pos).map(|it| it.into())
+    }
+
+    fn to_byte(&self, pos: lsp_types::Position) -> usize {
+        self.to_byte_maybe(pos)
             .expect("LineCol must correspond to an offset")
-            .into()
     }
 
     fn lsp_position(&self, point: tree_sitter::Point) -> lsp_types::Position {
@@ -210,16 +212,14 @@ impl InkDocument {
 
 #[cfg(test)]
 mod tests {
+    use super::{DocumentEdit, InkDocument};
+    use crate::lsp::location;
+    use crate::test_utils::Compact;
     use line_index::WideEncoding;
     use lsp_types::Uri;
     use pretty_assertions::assert_str_eq;
     use std::str::FromStr;
     use test_case::test_case;
-
-    use crate::lsp::location;
-    use crate::test_utils::Compact;
-
-    use super::{DocumentEdit, InkDocument};
 
     /// The important thing here is that each edit's coordinates is relative to the previous edit,
     /// not the initial document.
@@ -244,10 +244,9 @@ mod tests {
         document.edit(vec![
             (
                 None,
-                "some ignored text\nthis will be completely overwritted\nby the next edit"
-                    .to_string(),
+                "some ignored text\nthis will be completely overwritted\nby the next edit",
             ),
-            (None, "final version".to_string()),
+            (None, "final version"),
         ]);
         assert_str_eq!(document.text, "final version");
     }
@@ -339,7 +338,7 @@ mod tests {
         }
     }
 
-    fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit {
+    fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit<&str> {
         (
             Some(lsp_types::Range {
                 start: lsp_types::Position {
@@ -351,7 +350,7 @@ mod tests {
                     character: to.1,
                 },
             }),
-            text.to_owned(),
+            text,
         )
     }
 

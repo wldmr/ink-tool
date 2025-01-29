@@ -50,7 +50,7 @@ impl State {
         }
     }
 
-    pub fn edit(&mut self, uri: Uri, edits: Vec<DocumentEdit>) {
+    pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
         let doc_id = DocId::from(&uri);
         if !self.parsers.contains_key(&doc_id) {
             self.parsers.insert(
