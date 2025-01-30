@@ -428,7 +428,12 @@ mod tests {
                         .iter()
                         .map(|(uri, annotation, _, _)| (*uri, annotation.full_text))
                         .collect();
-                    let all_links = links.resolved.iter().cloned().into_group_map();
+                    let all_links = links
+                        .resolved
+                        .iter()
+                        .cloned()
+                        .into_grouping_map()
+                        .collect::<std::collections::HashSet<_>>();
                     if all_links.is_empty() {
                         messages.push(
                             annotate_snippets::Level::Warning.title("No resolved links found!"),

@@ -1,7 +1,8 @@
+use itertools::Itertools;
 use std::collections::HashMap;
 
-pub trait LinkLocation: Eq + Clone {}
-impl<T: Eq + Clone> LinkLocation for T {}
+pub trait LinkLocation: Eq + Clone + std::hash::Hash {}
+impl<T: Eq + Clone + std::hash::Hash> LinkLocation for T {}
 
 /// Result of of run of the Visitor for a particular node.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +141,7 @@ impl<'a, L: LinkLocation> Links<'a, L> {
             .iter()
             .filter(move |(def, _)| def == loc)
             .map(|(_, usage)| usage)
+            .unique()
     }
 
     pub fn definitions<'s>(&'s self, loc: &'s L) -> impl Iterator<Item = &'s L> {
@@ -147,5 +149,6 @@ impl<'a, L: LinkLocation> Links<'a, L> {
             .iter()
             .filter(move |(_, usage)| usage == loc)
             .map(|(def, _usage)| def)
+            .unique()
     }
 }
