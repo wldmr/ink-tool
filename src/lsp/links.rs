@@ -88,17 +88,28 @@ impl<'a, L: LinkLocation> Links<'a, L> {
     }
 
     /// Remove definitions for which `predicate` is true.
+    /// Then remove all references to names that no longer have definitions.
+    /// (Conversely, if there is at least one definition left, don't remove the reference.)
     /// The predicate gets references to both the name and the location.
     /// NOTE: You'll probably want to call `self.resolve()` beforehand,
     /// otherwise the names you remove will remain … well, unresolved.
     pub fn unprovide(&mut self, should_remove: impl Fn(&str, &L) -> bool) {
         // a "nested" removal:
+        let mut removed_names = Vec::new();
         self.provided_names.retain(|name, defs| {
             // retain defs which do _not_ match the predicate.
             defs.retain(|def| !should_remove(name, def));
             // and retain the name _only_ if there are any defs left
-            !defs.is_empty()
+            if defs.is_empty() {
+                removed_names.push(name.clone());
+                false
+            } else {
+                true
+            }
         });
+        // Consequently, references to the names we just removed can't resolve to anything anymore:
+        self.resolvable
+            .retain(|(_reference, name)| !removed_names.iter().any(|it| it == name));
     }
 
     /// Register a reference to a name.

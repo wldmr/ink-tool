@@ -4,30 +4,35 @@ That means they aren't visible in higher levels, NOR in lower levels.
 <> local variables are visible in enclosed scopes.)
 
 ~ temp t = "temporarily"
-//     ^ defines t.toplevel
+//     ^ defines toplevel
 He was {t} indisposed.
-//      ^ references t.toplevel
+//      ^ references toplevel
+//      ^ references-not knot knot.stitch knot.stitch2 k2
 
 === knot ===
 ~ temp t = "knot"
-//     ^ defines t.knot
+//     ^ defines knot
 He was {t} amused.
-//      ^ references t.knot
+//      ^ references knot
+//      ^ references-not toplevel knot.stitch knot.stitch2 k2
 
 = stitch
 ~ temp t = "stitch"
-//     ^ defines t.knot.stitch
+//     ^ defines knot.stitch
 He was in {t}es.
-//         ^ references t.knot.stitch
+//         ^ references knot.stitch
+//         ^ references-not toplevel knot knot.stitch2 k2
 
 = stitch_2
 ~ temp t = 2
-//     ^ defines t.knot.stitch_2
+//     ^ defines knot.stitch2
+//     ^ references-not toplevel knot knot.stitch k2
 It was {t} hot.
-//      ^ references t.knot.stitch_2
+//      ^ references knot.stitch2
 
 === k2 ===
 ~ temp t = "k2"
-//     ^ defines t.k2
+//     ^ defines k2
 That was o{t}.
-//         ^ references t.k2
+//         ^ references k2
+//         ^ references-not toplevel knot knot.stitch knot.stitch2

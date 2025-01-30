@@ -2,7 +2,7 @@ use crate::{
     ink_syntax::{self, types::AllNamed, Visit, VisitInstruction, Visitor},
     lsp::links::Links,
 };
-use type_sitter_lib::{IncorrectKindCause, OptionNodeResultExt};
+use type_sitter_lib::IncorrectKindCause;
 
 pub struct LinkVisitor<'a> {
     text: &'a str,
