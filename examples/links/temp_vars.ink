@@ -8,8 +8,6 @@ That means they aren't visible in higher levels, NOR in lower levels.
 He was {t} indisposed.
 //      ^ references t.toplevel
 
-TODO: Add link testing features like references-not or references-exactly
-
 === knot ===
 ~ temp t = "knot"
 //     ^ defines t.knot

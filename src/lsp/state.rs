@@ -282,45 +282,212 @@ mod tests {
     }
 
     mod links {
-        use std::{
-            collections::{HashMap, HashSet},
-            str::FromStr,
-        };
+        use std::{collections::HashMap, str::FromStr};
 
         use super::{new_state, set_content};
         use crate::{
-            lsp::{links::Links, salsa::links_for_workspace, state::tests::annotation_to_snippet},
-            test_utils::text_annotations::{Annotation, AnnotationScanner, TextPos, TextRegion},
+            lsp::salsa::links_for_workspace,
+            test_utils::{
+                text_annotations::{Annotation, AnnotationScanner, TextRegion},
+                Compact,
+            },
         };
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
         use test_case::test_case;
 
-        pub fn annotations_to_links<'a>(
-            annotations: impl IntoIterator<Item = Annotation<'a>>,
-        ) -> Links<'a, Annotation<'a>> {
-            use itertools::Either;
-            use std::convert::identity;
-            let (provided_names, resolvable): (Vec<_>, Vec<_>) = annotations
-                .into_iter()
-                .filter_map(|it| {
-                    let Some((keyword, name)) = it.claim().split_whitespace().collect_tuple()
-                    else {
-                        return None;
+        #[derive(Debug, Default)]
+        struct LinkCheck<'a> {
+            definitions: HashMap<&'a str, (&'a Uri, Annotation<'a>)>,
+            references: Vec<(&'a Uri, Annotation<'a>, bool, Vec<&'a str>)>,
+        }
+
+        impl<'a> LinkCheck<'a> {
+            fn add_annotations(
+                &mut self,
+                uri: &'a Uri,
+                annotations: impl IntoIterator<Item = Annotation<'a>>,
+            ) {
+                for loc in annotations {
+                    let Some((keyword, arg)) = loc.claim().split_once(char::is_whitespace) else {
+                        continue;
                     };
                     match keyword {
-                        "defines" => Some(Either::Left((name.to_string(), it))),
-                        "references" => Some(Either::Right((it, name))),
-                        _ => None, // Ignore (might be a claim for another annotation scanner)
+                        "defines" => {
+                            if let Some((existing_uri, existing_ann)) = self.definitions.get(arg) {
+                                panic!(
+                                    "Duplicate definition for `{}`: {}:{:?} and {}:{:?}",
+                                    existing_ann.text(),
+                                    existing_uri.path().as_str(),
+                                    Compact(existing_ann.text_location),
+                                    uri.path().as_str(),
+                                    Compact(loc.text_location)
+                                );
+                            } else {
+                                self.definitions.insert(arg, (uri, loc));
+                            };
+                        }
+                        "references" => {
+                            let names = arg.split_whitespace().collect();
+                            self.references.push((uri, loc, true, names));
+                        }
+                        "references-not" => {
+                            let names = arg.split_whitespace().collect();
+                            self.references.push((uri, loc, false, names));
+                        }
+                        _ => continue, // Ignore (might be a claim for another annotation scanner)
                     }
-                })
-                .partition_map(identity);
-            let provided_names = provided_names.into_iter().into_group_map();
-            Links {
-                resolved: Vec::new(),
-                resolvable,
-                provided_names,
+                }
+            }
+
+            fn check(
+                &self,
+                links: &crate::lsp::links::Links<'a, (&'a Uri, TextRegion)>,
+            ) -> Vec<annotate_snippets::Message> {
+                // Insurance against some obviously bad test definitions:
+                {
+                    let defined_names = self
+                        .definitions
+                        .keys()
+                        .map(|it| *it)
+                        .sorted_unstable()
+                        .unique()
+                        .collect::<Vec<_>>();
+                    let referenced_names = self
+                        .references
+                        .iter()
+                        .flat_map(|(_, _, _, names)| names.iter().map(|it| *it))
+                        .sorted_unstable()
+                        .unique()
+                        .collect::<Vec<_>>();
+                    assert!(
+                        defined_names == referenced_names,
+                        "We don't want dangling references or definitions in tests."
+                    );
+                    assert!(
+                        defined_names.len() != 0,
+                        "There should be at least one reference in a test"
+                    );
+                }
+
+                let mut messages = Vec::new();
+                for (usage_uri, usage_ann, should_reference, names) in &self.references {
+                    for name in names {
+                        let (def_uri, def_ann) = self
+                            .definitions
+                            .get(name)
+                            .expect("we checked that every reference has a definition, see above");
+                        let expected = (
+                            (*def_uri, def_ann.text_location),
+                            (*usage_uri, usage_ann.text_location),
+                        );
+                        let does_reference = links.resolved.contains(&expected);
+                        if *should_reference && !does_reference {
+                            messages.push(
+                                annotate_snippets::Level::Error
+                                    .title("Required reference not found")
+                                    .snippets([
+                                        Self::annotation_to_snippet(
+                                            &usage_uri,
+                                            &usage_ann,
+                                            "Expected this usage …",
+                                        ),
+                                        Self::annotation_to_snippet(
+                                            &def_uri,
+                                            &def_ann,
+                                            "… to reference this definition.",
+                                        ),
+                                    ]),
+                            );
+                        } else if !should_reference && does_reference {
+                            messages.push(
+                                annotate_snippets::Level::Error
+                                    .title("Forbidden reference found")
+                                    .snippets([
+                                        Self::annotation_to_snippet(
+                                            &usage_uri,
+                                            &usage_ann,
+                                            "Expected this usage …",
+                                        ),
+                                        Self::annotation_to_snippet(
+                                            &def_uri,
+                                            &def_ann,
+                                            "… to not reference this definition, but it does.",
+                                        ),
+                                    ]),
+                            );
+                        }
+                    }
+                }
+
+                if !messages.is_empty() {
+                    // Add existing links as additional context
+                    let inks: HashMap<&'a Uri, &'a str> = self
+                        .references
+                        .iter()
+                        .map(|(uri, annotation, _, _)| (*uri, annotation.full_text))
+                        .collect();
+                    let all_links = links.resolved.iter().cloned().into_group_map();
+                    if all_links.is_empty() {
+                        messages.push(
+                            annotate_snippets::Level::Warning.title("No resolved links found!"),
+                        );
+                    }
+                    for ((uri, region), usages) in all_links {
+                        let mut message =
+                            annotate_snippets::Level::Help.title("Found link").snippet(
+                                annotate_snippets::Snippet::source(&inks[uri])
+                                    .origin(uri.path().as_str())
+                                    .line_start(region.start.col as usize)
+                                    .fold(true)
+                                    .annotation(
+                                        annotate_snippets::Level::Help
+                                            .span(region.byte_range())
+                                            .label("this definition"),
+                                    ),
+                            );
+                        for (i, (uri, region)) in usages.into_iter().enumerate() {
+                            message = message.snippet(
+                                annotate_snippets::Snippet::source(&inks[uri])
+                                    .origin(uri.path().as_str())
+                                    .line_start(region.start.col as usize)
+                                    .fold(true)
+                                    .annotation(
+                                        annotate_snippets::Level::Info
+                                            .span(region.byte_range())
+                                            .label(if i == 0 {
+                                                "is used here"
+                                            } else {
+                                                "and here"
+                                            }),
+                                    ),
+                            );
+                        }
+                        messages.push(message);
+                    }
+                }
+
+                messages
+            }
+
+            fn annotation_to_snippet(
+                file: &'a Uri,
+                ann: &crate::test_utils::text_annotations::Annotation<'a>,
+                label: &'a str,
+            ) -> annotate_snippets::Snippet<'a> {
+                annotate_snippets::Snippet::source(ann.full_text)
+                    .origin(file.path().as_str())
+                    .line_start(ann.text_location.start.col as usize)
+                    .fold(true)
+                    .annotations([
+                        annotate_snippets::Level::Error
+                            .span(ann.text_location.byte_range())
+                            .label(label),
+                        annotate_snippets::Level::Help
+                            .span(ann.claim_location.byte_range())
+                            .label("due to this claim"),
+                    ])
             }
         }
 
@@ -345,155 +512,32 @@ mod tests {
 
             let mut state = new_state();
             let annotation_scanner = AnnotationScanner::new();
-            let mut expected_links = Links::default();
+            let mut checks = LinkCheck::default();
 
             for (uri, contents) in &inks {
-                // parse via tree-sitter (i.e. normally)
+                // parse actual links via tree-sitter (i.e. normally)
                 set_content(&mut state, uri.clone(), contents);
-                // parse annotations
-                expected_links += annotations_to_links(annotation_scanner.scan(contents))
-                    .transform_locations(|it| (uri, it));
-            }
-            expected_links.resolve();
-
-            // insurance against some obviously bad test definitions:
-            {
-                assert!(
-                    expected_links.resolved.len() >= 1,
-                    "There should be at least one expected link."
-                );
-                let referenced_names = expected_links
-                    .resolvable
-                    .iter()
-                    .map(|(_, name)| *name)
-                    .sorted_unstable()
-                    .unique()
-                    .collect::<Vec<_>>();
-                let defined_names = expected_links
-                    .provided_names
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .sorted_unstable()
-                    .unique()
-                    .collect::<Vec<_>>();
-                assert!(
-                    defined_names == referenced_names,
-                    "We don't want dangling references or definitions in tests."
-                );
+                // parse expected links via annotations
+                checks.add_annotations(uri, annotation_scanner.scan(contents))
             }
 
             // WHEN
-            let transform_locations = links_for_workspace(&state.db, state.workspace)
-                .transform_locations(|it| {
-                    let node = it.cst_node(&state.db);
-                    let interval = TextRegion {
-                        start: TextPos {
-                            byte: node.start_byte(),
-                            row: node.start_position().row as u32,
-                            col: node.start_position().column as u32,
-                        },
-                        end: TextPos {
-                            byte: node.end_byte(),
-                            row: node.end_position().row as u32,
-                            col: node.end_position().column as u32,
-                        },
-                    };
+            let actual_links =
+                links_for_workspace(&state.db, state.workspace).transform_locations(|it| {
                     let uri = it.cst(&state.db).uri(&state.db);
-                    (uri, interval)
+                    let region = TextRegion::from(it.cst_node(&state.db));
+                    (uri, region)
                 });
-            let actual_links: HashSet<_> = (transform_locations).resolved.into_iter().collect();
 
             // THEN
-            let expected_links: HashSet<_> = expected_links.resolved.into_iter().collect();
-            let num_expected_links = expected_links.len();
-            let mut found_references = HashSet::new();
-            let mut messages = Vec::new();
-            for ((def_uri, def_ann), (usage_uri, usage_ann)) in expected_links {
-                let expected = (
-                    (def_uri, def_ann.text_location),
-                    (usage_uri, usage_ann.text_location),
-                );
-                if actual_links.contains(&expected) {
-                    found_references.insert(expected);
-                } else {
-                    messages.push(
-                        annotate_snippets::Level::Error
-                            .title("Required reference not found")
-                            .snippets([
-                                annotation_to_snippet(
-                                    &usage_uri,
-                                    &usage_ann,
-                                    "Expected this usage …",
-                                ),
-                                annotation_to_snippet(
-                                    &def_uri,
-                                    &def_ann,
-                                    "… to reference this definition.",
-                                ),
-                            ]),
-                    );
-                }
-            }
-
-            let renderer = annotate_snippets::Renderer::styled();
+            let messages = checks.check(&actual_links);
             if !messages.is_empty() {
+                let renderer = annotate_snippets::Renderer::styled();
                 for message in messages {
                     eprintln!("{}", renderer.render(message));
                 }
-                let all_links = actual_links.into_iter().into_group_map();
-                for ((uri, region), usages) in all_links {
-                    let mut message = annotate_snippets::Level::Info.title("Found link").snippet(
-                        annotate_snippets::Snippet::source(&inks[uri])
-                            .origin(uri.path().as_str())
-                            .line_start(region.start.col as usize)
-                            .fold(true)
-                            .annotation(
-                                annotate_snippets::Level::Info
-                                    .span(region.byte_range())
-                                    .label("this definition"),
-                            ),
-                    );
-                    for (i, (uri, region)) in usages.into_iter().enumerate() {
-                        message = message.snippet(
-                            annotate_snippets::Snippet::source(&inks[uri])
-                                .origin(uri.path().as_str())
-                                .line_start(region.start.col as usize)
-                                .fold(true)
-                                .annotation(
-                                    annotate_snippets::Level::Info
-                                        .span(region.byte_range())
-                                        .label(if i == 0 { "is used here" } else { "and here" }),
-                                ),
-                        );
-                    }
-
-                    eprintln!("{}", renderer.render(message));
-                }
-                panic!(
-                    "Expected {num_expected_links} reference(s) in {fs_location} \
-                    but found {} references in links.",
-                    found_references.len()
-                );
+                panic!("Link check failed for {fs_location}");
             }
         }
-    }
-
-    fn annotation_to_snippet<'a: 'text, 'text>(
-        file: &'a Uri,
-        ann: &crate::test_utils::text_annotations::Annotation<'text>,
-        label: &'a str,
-    ) -> annotate_snippets::Snippet<'text> {
-        annotate_snippets::Snippet::source(ann.full_text)
-            .origin(file.path().as_str())
-            .line_start(ann.text_location.start.col as usize)
-            .fold(true)
-            .annotations([
-                annotate_snippets::Level::Error
-                    .span(ann.text_location.byte_range())
-                    .label(label),
-                annotate_snippets::Level::Help
-                    .span(ann.claim_location.byte_range())
-                    .label("due to this claim"),
-            ])
     }
 }

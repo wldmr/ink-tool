@@ -54,3 +54,13 @@ impl std::fmt::Debug for Compact<tree_sitter::Range> {
         )
     }
 }
+
+impl std::fmt::Debug for Compact<text_annotations::TextRegion> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}-{}:{}",
+            self.0.start.row, self.0.start.col, self.0.end.row, self.0.end.col
+        )
+    }
+}

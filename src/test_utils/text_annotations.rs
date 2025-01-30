@@ -87,6 +87,23 @@ impl TextRegion {
     }
 }
 
+impl From<tree_sitter::Node<'_>> for TextRegion {
+    fn from(node: tree_sitter::Node<'_>) -> Self {
+        TextRegion {
+            start: TextPos {
+                byte: node.start_byte(),
+                row: node.start_position().row as u32,
+                col: node.start_position().column as u32,
+            },
+            end: TextPos {
+                byte: node.end_byte(),
+                row: node.end_position().row as u32,
+                col: node.end_position().column as u32,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TextPos {
     pub byte: usize,
