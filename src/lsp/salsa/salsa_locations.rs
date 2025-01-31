@@ -189,7 +189,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
                 Return(self.new_loc(LocationKind::Variable, name, def.name().range()))
             }
 
-            AllNamed::Temp(temp) => {
+            AllNamed::TempDef(temp) => {
                 let byte_range = temp.name().byte_range();
                 let name = self.text(byte_range.clone()).to_owned();
                 Return(self.new_loc(LocationKind::Variable, name, temp.name().range()))

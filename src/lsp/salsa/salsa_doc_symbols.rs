@@ -395,7 +395,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 Return(self.new_sym(sym))
             }
 
-            AllNamed::Temp(temp) => {
+            AllNamed::TempDef(temp) => {
                 let name_node = &temp.name();
                 let sym = SymbolBuilder::new(SymbolKind::VARIABLE)
                     .name(self.address_name(&self.text[name_node.byte_range()]))

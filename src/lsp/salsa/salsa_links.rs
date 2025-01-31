@@ -88,7 +88,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
         use VisitInstruction::*;
         match visit {
             // Definitions
-            Enter(Temp(node)) => {
+            Enter(TempDef(node)) => {
                 let name = self.text(node.name());
                 self.links.provide(name, Scoped::temp(node.name()));
                 Ignore

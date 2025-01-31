@@ -128,7 +128,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             | AllNamed::Return(_)
             | AllNamed::String(_)
             | AllNamed::Tag(_)
-            | AllNamed::Temp(_)
+            | AllNamed::TempDef(_)
             | AllNamed::Text(_)
             | AllNamed::Thread(_)
             | AllNamed::TodoComment(_)
