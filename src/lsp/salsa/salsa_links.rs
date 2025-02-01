@@ -4,11 +4,25 @@ use crate::{
 };
 use type_sitter_lib::IncorrectKindCause;
 
+/* NOTE: Since scoping in Ink is so weird this visitor is very stateful.
+        This bothers me a little, because keeping track of the state can get confusing,
+        but between the weird scoping rules and tree-sitter's imperative approach to traversal,
+        it's kind of the path of least resistance.
+*/
 pub struct LinkVisitor<'a> {
     text: &'a str,
+    /// name of the list we're currently defining
     current_list: Option<&'a str>,
+    /// name of the knot block we're currently in
     current_knot: Option<&'a str>,
+    /// name of the stitch block we're currently in
     current_stitch: Option<&'a str>,
+    /// `identifier` nodes are used as both definitions and references;
+    /// this flag is used to distinguish between those cases:
+    /// `true` means "treat identifier/qualified name as a usage"
+    /// Set to false during definitions for lists/params/etc, where names can't mean references
+    collect_usages: bool,
+    /// everything we've seen so far
     links: Links<'a, Scoped<tree_sitter::Node<'a>>>,
 }
 
@@ -47,6 +61,7 @@ impl<'a> LinkVisitor<'a> {
             current_list: Default::default(),
             current_knot: Default::default(),
             current_stitch: Default::default(),
+            collect_usages: true,
             links: Default::default(),
         }
     }
@@ -65,20 +80,6 @@ impl<'a> LinkVisitor<'a> {
     fn text(&self, node: impl type_sitter_lib::Node<'a>) -> &'a str {
         &self.text[node.byte_range()]
     }
-    fn reference_expr(&mut self, expr: ink_syntax::types::Expr<'a>) -> VisitInstruction<Self> {
-        if let Some(qname) = expr.as_qualified_name() {
-            // TODO: resolve leading parts?
-            self.links.reference(self.text(qname), Scoped::usage(qname));
-            // ... if we descend, then each name will be resolved individually, which will generate false positives
-            VisitInstruction::Ignore
-        } else if let Some(ident) = expr.as_identifier() {
-            // TODO: resolve leading parts?
-            self.links.reference(self.text(ident), Scoped::usage(ident));
-            VisitInstruction::Ignore
-        } else {
-            VisitInstruction::Descend
-        }
-    }
 }
 
 impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
@@ -91,7 +92,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
             Enter(TempDef(node)) => {
                 let name = self.text(node.name());
                 self.links.provide(name, Scoped::temp(node.name()));
-                Ignore
+                Descend // because values after the `=` might reference other variables
             }
 
             Enter(External(node)) => {
@@ -103,18 +104,15 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
             Enter(Global(node)) => {
                 let name = self.text(node.name());
                 self.links.provide(name, Scoped::global(node.name()));
-                Ignore
+                Descend // because values might reference list items (and other names, though that would be an error)
             }
 
             Enter(List(node)) => {
                 let name = self.text(node.name());
                 self.links.provide(name, Scoped::global(node.name()));
                 self.current_list = Some(name);
+                self.collect_usages = false;
                 Descend
-            }
-            Leave(List(_)) => {
-                self.current_list = None;
-                Ignore
             }
             Enter(ListValueDef(node)) => {
                 let list = self
@@ -125,6 +123,11 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 let global_def = Scoped::global(node.name());
                 self.links.provide(name, global_def); // naked
                 self.links.provide(format!("{list}.{name}"), global_def); // qualified
+                Ignore
+            }
+            Leave(List(_)) => {
+                self.current_list = None;
+                self.collect_usages = true;
                 Ignore
             }
 
@@ -142,7 +145,12 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 self.links.provide(name, Scoped::global(node.name()));
                 self.current_knot = Some(name);
                 self.current_stitch = None;
+                self.collect_usages = false; // so it doesn't interfere with param definitions
                 Descend // collect params
+            }
+            Leave(Knot(_)) => {
+                self.collect_usages = true;
+                Ignore
             }
             Leave(KnotBlock(_)) => {
                 self.links.resolve();
@@ -165,7 +173,12 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                         .provide(format!("{name}"), Scoped::global(name_node));
                 }
                 self.current_stitch = Some(name);
+                self.collect_usages = false;
                 Descend // collect params
+            }
+            Leave(Stitch(_)) => {
+                self.collect_usages = true;
+                Ignore
             }
             Leave(StitchBlock(_)) => {
                 self.links.resolve();
@@ -191,7 +204,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
 
             Enter(Label(node)) => {
                 let name_node = node.name();
-                let label = self.text(node);
+                let label = self.text(name_node);
                 let links = &mut self.links;
                 match (self.current_knot, self.current_stitch) {
                     (None, None) => {
@@ -220,14 +233,15 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
             }
 
             // Usages
-            Enter(Expr(expr)) => self.reference_expr(expr),
-            Enter(Eval(eval)) => {
-                // Eval "hides" its inner expr by making it anonymous.
-                // Somehow, this results in Eval nodes not descending into that "hidden" expr,
-                // so `Enter(Expr(_))` doesn't fire for Evals. I don't get it.
-                // Anyway, we work around this by unpacking the eval ourselves.
-                let Ok(expr) = eval.expr() else { return Ignore };
-                self.reference_expr(expr)
+            Enter(QualifiedName(qname)) if self.collect_usages => {
+                // TODO: resolve leading parts?
+                self.links.reference(self.text(qname), Scoped::usage(qname));
+                // if we descend, then each name will be resolved individually, which will generate false positives
+                Ignore
+            }
+            Enter(Identifier(ident)) if self.collect_usages => {
+                self.links.reference(self.text(ident), Scoped::usage(ident));
+                Ignore
             }
 
             // Others

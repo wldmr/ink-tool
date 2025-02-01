@@ -282,7 +282,7 @@ mod tests {
     }
 
     mod links {
-        use std::{collections::HashMap, str::FromStr};
+        use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
         use super::{new_state, set_content};
         use crate::{
@@ -300,7 +300,14 @@ mod tests {
         #[derive(Debug, Default)]
         struct LinkCheck<'a> {
             definitions: HashMap<&'a str, (&'a Uri, Annotation<'a>)>,
-            references: Vec<(&'a Uri, Annotation<'a>, bool, Vec<&'a str>)>,
+            references: Vec<(&'a Uri, Annotation<'a>, ReferenceKind, Vec<&'a str>)>,
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum ReferenceKind {
+            Any,
+            None,
+            Unresolved,
         }
 
         impl<'a> LinkCheck<'a> {
@@ -310,6 +317,11 @@ mod tests {
                 annotations: impl IntoIterator<Item = Annotation<'a>>,
             ) {
                 for loc in annotations {
+                    if loc.claim().trim().starts_with("references-nothing") {
+                        self.references
+                            .push((uri, loc, ReferenceKind::Unresolved, Vec::new()));
+                        continue;
+                    }
                     let Some((keyword, arg)) = loc.claim().split_once(char::is_whitespace) else {
                         continue;
                     };
@@ -329,12 +341,18 @@ mod tests {
                             };
                         }
                         "references" => {
-                            let names = arg.split_whitespace().collect();
-                            self.references.push((uri, loc, true, names));
+                            let names = arg.trim().split_whitespace().collect_vec();
+                            if names.is_empty() {
+                                panic!("references must have at least one argument");
+                            }
+                            self.references.push((uri, loc, ReferenceKind::Any, names));
                         }
                         "references-not" => {
-                            let names = arg.split_whitespace().collect();
-                            self.references.push((uri, loc, false, names));
+                            let names = arg.trim().split_whitespace().collect_vec();
+                            if names.is_empty() {
+                                panic!("references-not must have at least one argument");
+                            }
+                            self.references.push((uri, loc, ReferenceKind::None, names));
                         }
                         _ => continue, // Ignore (might be a claim for another annotation scanner)
                     }
@@ -371,19 +389,50 @@ mod tests {
                     );
                 }
 
+                let inks: HashMap<&'a Uri, &'a str> = self
+                    .references
+                    .iter()
+                    .map(|(uri, annotation, _, _)| (*uri, annotation.full_text))
+                    .collect();
+
                 let mut messages = Vec::new();
-                for (usage_uri, usage_ann, should_reference, names) in &self.references {
+                for (usage_uri, usage_ann, reference_kind, names) in &self.references {
+                    let usage = (*usage_uri, usage_ann.text_location);
+                    if *reference_kind == ReferenceKind::Unresolved {
+                        let definitions = links.definitions(&usage).collect_vec();
+                        if !definitions.is_empty() {
+                            for (def_uri, def_region) in definitions {
+                                messages.push(
+                                    annotate_snippets::Level::Error
+                                        .title("Disallowed definition")
+                                        .snippets([
+                                            Self::annotation_to_snippet(
+                                                &usage_uri,
+                                                &usage_ann,
+                                                "Expected this usage to be unresolved, …",
+                                            ),
+                                            annotate_snippets::Snippet::source(&inks[def_uri])
+                                                .origin(def_uri.path().as_str())
+                                                .line_start(def_region.start.col as usize)
+                                                .fold(true)
+                                                .annotation(
+                                                    annotate_snippets::Level::Error
+                                                        .span(def_region.byte_range())
+                                                        .label("… but it links to this definition"),
+                                                ),
+                                        ]),
+                                );
+                            }
+                        }
+                    }
                     for name in names {
                         let (def_uri, def_ann) = self
                             .definitions
                             .get(name)
                             .expect("we checked that every reference has a definition, see above");
-                        let expected = (
-                            (*def_uri, def_ann.text_location),
-                            (*usage_uri, usage_ann.text_location),
-                        );
+                        let expected = ((*def_uri, def_ann.text_location), usage);
                         let does_reference = links.resolved.contains(&expected);
-                        if *should_reference && !does_reference {
+                        if *reference_kind == ReferenceKind::Any && !does_reference {
                             messages.push(
                                 annotate_snippets::Level::Error
                                     .title("Required reference not found")
@@ -400,7 +449,7 @@ mod tests {
                                         ),
                                     ]),
                             );
-                        } else if !should_reference && does_reference {
+                        } else if *reference_kind == ReferenceKind::None && does_reference {
                             messages.push(
                                 annotate_snippets::Level::Error
                                     .title("Forbidden reference found")
@@ -423,11 +472,6 @@ mod tests {
 
                 if !messages.is_empty() {
                     // Add existing links as additional context
-                    let inks: HashMap<&'a Uri, &'a str> = self
-                        .references
-                        .iter()
-                        .map(|(uri, annotation, _, _)| (*uri, annotation.full_text))
-                        .collect();
                     let all_links = links
                         .resolved
                         .iter()
@@ -498,9 +542,9 @@ mod tests {
 
         #[test_case("examples/links/forward_declarations.ink")]
         #[test_case("examples/links/temp_vars.ink")]
+        #[test_case("examples/links/lists.ink")]
         #[test_case("examples/links/ambiguous/")]
         #[test_case("examples/links/knots_and_stitches/")]
-        #[test_case("examples/links/labels/")]
         fn test_links(fs_location: &str) {
             // GIVEN
             let inks = walkdir::WalkDir::new(fs_location)
