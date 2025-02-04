@@ -32,8 +32,6 @@ enum Scoped<T> {
     WithinKnot(T),
     WithinStitch(T),
     Temp(T),
-    /// A reference to a definition.
-    Usage(T),
 }
 
 impl<'a> Scoped<tree_sitter::Node<'a>> {
@@ -48,9 +46,6 @@ impl<'a> Scoped<tree_sitter::Node<'a>> {
     }
     fn temp(node: impl type_sitter_lib::Node<'a>) -> Self {
         Self::Temp(node.into_raw())
-    }
-    fn usage(node: impl type_sitter_lib::Node<'a>) -> Self {
-        Self::Usage(node.into_raw())
     }
 }
 
@@ -67,13 +62,12 @@ impl<'a> LinkVisitor<'a> {
     }
 
     pub fn into_links(mut self) -> Links<'a, tree_sitter::Node<'a>> {
-        self.links.resolve();
+        self.links.resolve_where(|_, _, _| true);
         self.links.transform_locations(|it| match it {
             Scoped::Global(it)
             | Scoped::WithinKnot(it)
             | Scoped::WithinStitch(it)
-            | Scoped::Temp(it)
-            | Scoped::Usage(it) => it,
+            | Scoped::Temp(it) => it,
         })
     }
 
@@ -134,7 +128,8 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
             Enter(Ink(_)) | Enter(KnotBlock(_)) | Enter(StitchBlock(_)) => {
                 // We don't really have a node for temp scope in the tree-sitter syntax,
                 // so we resolve, then clear the temps at the _start_ of the scope where the next temps starts.
-                self.links.resolve();
+                self.links
+                    .resolve_where(|_, def, _| matches!(*def, Scoped::Temp(_)));
                 self.links
                     .unprovide(|_name, def| matches!(*def, Scoped::Temp(_)));
                 Descend
@@ -153,7 +148,9 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 Ignore
             }
             Leave(KnotBlock(_)) => {
-                self.links.resolve();
+                self.links.resolve_where(|_, def, r#ref| {
+                    matches!(*r#ref, Scoped::WithinKnot(_)) && matches!(*def, Scoped::WithinKnot(_))
+                });
                 self.links
                     .unprovide(|_name, def| matches!(*def, Scoped::WithinKnot(_)));
                 self.current_knot = None;
@@ -181,7 +178,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 Ignore
             }
             Leave(StitchBlock(_)) => {
-                self.links.resolve();
+                self.links.resolve_where(|_, def, r#ref| {
+                    matches!(*r#ref, Scoped::WithinStitch(_))
+                        && matches!(*def, Scoped::WithinStitch(_) | Scoped::WithinKnot(_))
+                });
                 self.links
                     .unprovide(|_name, def| matches!(*def, Scoped::WithinStitch(_)));
                 self.current_stitch = None;
@@ -196,8 +196,6 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                     self.links.provide(name, Scoped::within_stitch(param_value));
                 } else if self.current_knot.is_some() {
                     self.links.provide(name, Scoped::within_knot(param_value));
-                } else {
-                    unreachable!("Param should only exist within Knots or Stitches");
                 };
                 Ignore
             }
@@ -221,7 +219,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                     (Some(knot), Some(stitch)) => {
                         links.provide(format!("{label}"), Scoped::within_stitch(name_node));
                         links.provide(format!("{stitch}.{label}"), Scoped::within_knot(name_node));
-                        // this is the weird one; labels are uniqe per Knot, even within nested stitches:
+                        // this is the weird one; labels are uniqe per knot(!), even within nested stitches:
                         links.provide(format!("{knot}.{label}"), Scoped::global(name_node));
                         links.provide(
                             format!("{knot}.{stitch}.{label}"),
@@ -235,12 +233,22 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
             // Usages
             Enter(QualifiedName(qname)) if self.collect_usages => {
                 // TODO: resolve leading parts?
-                self.links.reference(self.text(qname), Scoped::usage(qname));
+                let usage = match (self.current_knot, self.current_stitch) {
+                    (None, None) => Scoped::global(qname),
+                    (Some(_knot), None) => Scoped::within_knot(qname),
+                    (_, Some(_stitch)) => Scoped::within_stitch(qname),
+                };
+                self.links.reference(self.text(qname), usage);
                 // if we descend, then each name will be resolved individually, which will generate false positives
                 Ignore
             }
             Enter(Identifier(ident)) if self.collect_usages => {
-                self.links.reference(self.text(ident), Scoped::usage(ident));
+                let usage = match (self.current_knot, self.current_stitch) {
+                    (None, None) => Scoped::global(ident),
+                    (Some(_knot), None) => Scoped::within_knot(ident),
+                    (_, Some(_stitch)) => Scoped::within_stitch(ident),
+                };
+                self.links.reference(self.text(ident), usage);
                 Ignore
             }
 

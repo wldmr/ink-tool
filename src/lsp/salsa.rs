@@ -198,7 +198,7 @@ impl<'db> Poi<'db> {
 #[salsa::tracked]
 pub(crate) fn links_for_workspace<'d>(db: &'d dyn Db, ws: Workspace) -> Links<'d, Poi<'d>> {
     let mut links: Links<'d, Poi<'d>> = ws.docs(db).values().map(|doc| find_links(db, *doc)).sum();
-    links.resolve();
+    links.resolve_where(|_, _, _| true);
     for (loc, name) in &links.resolvable {
         LspDiagnostic {
             doc: loc.cst(db),

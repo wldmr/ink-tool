@@ -125,12 +125,14 @@ impl<'a, L: LinkLocation> Links<'a, L> {
     /// Note that matches are not removed from `self.resolvable`,
     /// because in the general case we might want to allow ambiguity.
     /// Unprovide names from  manually if they go out of scope.
-    pub fn resolve(&mut self) {
+    pub fn resolve_where(&mut self, should_resolve: impl Fn(&str, &L, &L) -> bool) {
         for (reference, name) in &self.resolvable {
             if let Some(definitions) = self.provided_names.get(*name) {
-                for def in definitions {
-                    // XXX: This'll result in duplicate definitions. Probably should prevent that.
-                    self.resolved.push((def.clone(), reference.clone()));
+                for definition in definitions {
+                    if should_resolve(name, definition, reference) {
+                        // XXX: This'll result in duplicate definitions. Probably should prevent that.
+                        self.resolved.push((definition.clone(), reference.clone()));
+                    }
                 }
             }
         }

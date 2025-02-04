@@ -543,6 +543,8 @@ mod tests {
         #[test_case("examples/links/forward_declarations.ink")]
         #[test_case("examples/links/temp_vars.ink")]
         #[test_case("examples/links/lists.ink")]
+        #[test_case("examples/links/labels.ink")]
+        #[test_case("examples/links/shadowing.ink")]
         #[test_case("examples/links/ambiguous/")]
         #[test_case("examples/links/knots_and_stitches/")]
         fn test_links(fs_location: &str) {
