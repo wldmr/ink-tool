@@ -7,7 +7,7 @@ use super::{
     },
     salsa::{doc_symbols, locations, workspace_symbols, DbImpl, Doc, Workspace},
 };
-use crate::{ink_syntax, lsp::salsa::definitions_to_usages};
+use crate::{ink_syntax, lsp::salsa::usages_to_definitions};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
@@ -156,6 +156,41 @@ impl State {
         }
     }
 
+    pub fn goto_definition(
+        &self,
+        from_uri: Uri,
+        from_position: Position,
+    ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
+        let Some(doc) = self.workspace.docs(&self.db).get(&from_uri) else {
+            return Err(DocumentNotFound(from_uri).into());
+        };
+        let target_node = doc.named_cst_node_at(&self.db, from_position)?;
+        eprintln!("Searching for links for target node {target_node:?}");
+        if target_node.kind() != ink_syntax::types::Identifier::KIND {
+            eprintln!("Not even an identifier, what is wrong with you!");
+            return Ok(Vec::new());
+        }
+        let usg2def = usages_to_definitions(&self.db, self.workspace);
+        let Some(map) = usg2def.get(&from_uri) else {
+            return Ok(Vec::new());
+        };
+        let mut defs = map.get(&target_node.range()).cloned().unwrap_or_default();
+        if let Some(parent) = target_node.parent() {
+            if parent.kind() == ink_syntax::types::QualifiedName::KIND {
+                defs.extend(
+                    map.get(&parent.range())
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter(),
+                );
+            }
+        }
+        Ok(defs
+            .into_iter()
+            .map(|(uri, range)| lsp_types::Location { uri, range })
+            .collect())
+    }
+
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
         let mut locs = Vec::new();
         for (_uri, &doc) in self.workspace.docs(&self.db) {
@@ -282,7 +317,7 @@ mod tests {
     }
 
     mod links {
-        use std::{collections::HashMap, path::PathBuf, str::FromStr};
+        use std::{collections::HashMap, str::FromStr};
 
         use super::{new_state, set_content};
         use crate::{

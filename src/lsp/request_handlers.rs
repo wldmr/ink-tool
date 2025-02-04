@@ -1,8 +1,10 @@
 use super::state::DocumentNotFound;
+use super::state::GotoDefinitionError;
 use super::RequestHandler;
 use super::SharedState;
 use lsp_server::ResponseError;
 use lsp_types::*;
+use std::error::Error;
 
 impl From<DocumentNotFound> for ResponseError {
     fn from(value: DocumentNotFound) -> Self {
@@ -10,6 +12,20 @@ impl From<DocumentNotFound> for ResponseError {
             code: lsp_server::ErrorCode::RequestFailed as i32,
             message: value.to_string(),
             data: serde_json::to_value(value.0.as_str()).ok(),
+        }
+    }
+}
+
+impl From<GotoDefinitionError> for ResponseError {
+    fn from(value: GotoDefinitionError) -> Self {
+        Self {
+            code: lsp_server::ErrorCode::RequestFailed as i32,
+            message: value.to_string(),
+            data: value
+                .source()
+                .map(ToString::to_string)
+                .map(serde_json::to_value)
+                .and_then(Result::ok),
         }
     }
 }
@@ -52,5 +68,21 @@ impl RequestHandler for request::Completion {
             params.text_document_position.position,
         )?;
         Ok(completions.map(CompletionResponse::Array))
+    }
+}
+
+impl RequestHandler for request::GotoDefinition {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        use lsp_types::GotoDefinitionResponse::*;
+        let defs = state.lock()?.goto_definition(
+            params.text_document_position_params.text_document.uri,
+            params.text_document_position_params.position,
+        )?;
+        let response = match defs.len() {
+            0 => None,
+            1 => Some(Scalar(defs.into_iter().next().unwrap())),
+            _ => Some(Array(defs)),
+        };
+        Ok(response)
     }
 }

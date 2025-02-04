@@ -87,6 +87,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
+        definition_provider: Some(OneOf::Left(true)),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -127,6 +128,7 @@ fn handle_request(request: Request, state: &SharedState) -> Result<Response, Req
         DocumentSymbolRequest,
         WorkspaceSymbolRequest,
         Completion,
+        GotoDefinition,
     }
 }
 

@@ -232,7 +232,7 @@ pub(crate) fn map_of_definitions<'d>(
 
 /// file -> location -> linked location
 #[salsa::tracked]
-pub(crate) fn definitions_to_usages<'d>(
+pub(crate) fn usages_to_definitions<'d>(
     db: &'d dyn Db,
     ws: Workspace,
 ) -> HashMap<Uri, HashMap<tree_sitter::Range, Vec<(Uri, lsp_types::Range)>>> {
