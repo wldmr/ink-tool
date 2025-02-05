@@ -7,8 +7,15 @@ use super::{
     },
     salsa::{doc_symbols, locations, workspace_symbols, DbImpl, Doc, Workspace},
 };
-use crate::{ink_syntax, lsp::salsa::usages_to_definitions};
+use crate::{
+    ink_syntax,
+    lsp::salsa::{
+        links_for_workspace, map_of_definitions, salsa_doc_symbols::lsp_range,
+        usages_to_definitions,
+    },
+};
 use derive_more::derive::{Display, Error};
+use itertools::Itertools;
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
@@ -18,6 +25,7 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
 };
+use tap::{Pipe as _, Tap as _};
 use type_sitter_lib::Node;
 
 /// A way to identify Documents hat is Copy (instead of just clone, like Uri).
@@ -189,6 +197,68 @@ impl State {
             .into_iter()
             .map(|(uri, range)| lsp_types::Location { uri, range })
             .collect())
+    }
+
+    pub fn goto_references(
+        &self,
+        from_uri: &Uri,
+        from_position: Position,
+    ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
+        let Some(doc) = self.workspace.docs(&self.db).get(&from_uri) else {
+            return Err(DocumentNotFound(from_uri.clone()).into());
+        };
+        let mut target_node = doc.named_cst_node_at(&self.db, from_position)?;
+        eprintln!("Searching for references to target node {target_node:?}");
+        if target_node.kind() != ink_syntax::types::Identifier::KIND {
+            eprintln!("Not even an identifier, what is wrong with you!");
+            return Ok(Vec::new());
+        }
+
+        if let Some(parent) = target_node.parent() {
+            if parent.kind() == ink_syntax::types::QualifiedName::KIND {
+                target_node = parent;
+                eprintln!("Target is actually a qualified name! {target_node:?}");
+            }
+        };
+
+        let map = map_of_definitions(&self.db, self.workspace);
+
+        let defs_for_target = self.goto_definition(from_uri, from_position)?;
+
+        // NOTE: relying on the fact that definitions link to themselves as definitinos, so this list is never empty.
+        let refs = defs_for_target
+            .into_iter()
+            // .unique()
+            .inspect(|it| {
+                eprintln!(
+                    "relevant def {}:{}:{}-{}:{}",
+                    it.uri.path(),
+                    it.range.start.line + 1,
+                    it.range.start.character + 1,
+                    it.range.end.line + 1,
+                    it.range.end.character + 1,
+                )
+            })
+            .filter_map(|def| map.get(&def))
+            .flatten()
+            // .unique()
+            .map(|it| lsp_types::Location {
+                uri: it.uri(&self.db).clone(),
+                range: it.lsp_range(&self.db),
+            })
+            .inspect(|it| {
+                eprintln!(
+                    "relevant ref {}:{}:{}-{}:{}",
+                    it.uri.path(),
+                    it.range.start.line + 1,
+                    it.range.start.character + 1,
+                    it.range.end.line + 1,
+                    it.range.end.character + 1,
+                )
+            })
+            .collect();
+
+        Ok(refs)
     }
 
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
@@ -581,6 +651,7 @@ mod tests {
         #[test_case("examples/links/labels.ink")]
         #[test_case("examples/links/shadowing.ink")]
         #[test_case("examples/links/self-reference.ink")]
+        #[test_case("examples/links/conditions.ink")]
         #[test_case("examples/links/ambiguous/")]
         #[test_case("examples/links/knots_and_stitches/")]
         fn test_links(fs_location: &str) {

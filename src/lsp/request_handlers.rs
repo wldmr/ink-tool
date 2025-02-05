@@ -86,3 +86,17 @@ impl RequestHandler for request::GotoDefinition {
         Ok(response)
     }
 }
+
+impl RequestHandler for request::References {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        let refs = state.lock()?.goto_references(
+            &params.text_document_position.text_document.uri,
+            params.text_document_position.position,
+        )?;
+        let response = match refs.len() {
+            0 => None,
+            _ => Some(refs),
+        };
+        Ok(response)
+    }
+}

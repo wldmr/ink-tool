@@ -1,11 +1,12 @@
 use super::{location::Location, state::PositionOutOfBounds};
 use crate::{ink_syntax::Visitor as _, lsp::links::Links};
-use itertools::Itertools as _;
+use itertools::Itertools;
 use line_index::{LineCol, LineIndex, WideEncoding};
 use lsp_types::{Diagnostic, DocumentSymbol, Uri, WorkspaceSymbol};
 use salsa::{self, Accumulator};
 use salsa_links::LinkVisitor;
 use std::collections::HashMap;
+use tap::Tap as _;
 
 pub mod salsa_doc_symbols;
 pub mod salsa_links;
@@ -171,6 +172,7 @@ impl<'db> Poi<'db> {
     pub fn uri(self, db: &'db dyn Db) -> &'db lsp_types::Uri {
         self.cst(db).uri(db)
     }
+
     pub fn lsp_range(self, db: &'db dyn Db) -> lsp_types::Range {
         let cst = self.cst(db);
         let (start, end) = self.range(db);
@@ -225,11 +227,35 @@ pub(crate) fn links_for_workspace<'d>(db: &'d dyn Db, ws: Workspace) -> Links<'d
 pub(crate) fn map_of_definitions<'d>(
     db: &'d dyn Db,
     ws: Workspace,
-) -> HashMap<Poi<'d>, Vec<Poi<'d>>> {
+) -> HashMap<lsp_types::Location, Vec<Poi<'d>>> {
     links_for_workspace(db, ws)
         .resolved
         .into_iter()
         .into_group_map()
+        .into_iter()
+        .map(|(definition, references)| {
+            (
+                lsp_types::Location {
+                    uri: definition.uri(db).clone(),
+                    range: definition.lsp_range(db),
+                },
+                references,
+            )
+                .tap(|(def, refs)| {
+                    eprintln!(
+                        "{}:{}:{}-{}:{}\n    {}",
+                        def.uri.path().as_str(),
+                        def.range.start.line + 1,
+                        def.range.start.character + 1,
+                        def.range.end.line + 1,
+                        def.range.end.character + 1,
+                        refs.into_iter()
+                            .map(|it| format!("{} {:?}", it.text(db), it.cst_node(db)))
+                            .join("\n    ")
+                    )
+                })
+        })
+        .collect()
 }
 
 /// file -> location -> linked location
@@ -242,9 +268,9 @@ pub(crate) fn usages_to_definitions<'d>(
         .resolved
         .into_iter()
         .map(|(def, usage)| {
-            let usage_uri = usage.cst(db).uri(db).clone();
+            let usage_uri = usage.uri(db).clone();
             let usage_range = usage.cst_node(db).range();
-            let def_uri = def.cst(db).uri(db).clone();
+            let def_uri = def.uri(db).clone();
             let def_range = def.lsp_range(db).clone();
             (usage_uri, (usage_range, (def_uri, def_range)))
         })

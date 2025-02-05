@@ -88,6 +88,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -129,6 +130,7 @@ fn handle_request(request: Request, state: &SharedState) -> Result<Response, Req
         WorkspaceSymbolRequest,
         Completion,
         GotoDefinition,
+        References,
     }
 }
 
