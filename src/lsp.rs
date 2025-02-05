@@ -300,6 +300,7 @@ pub fn run_lsp() -> AppResult<()> {
         drop(file_watcher);
     }
     eprintln!("shutting down client connection");
+    drop(client_connection);
     client_io_threads.join()?;
     eprintln!("shutting down server state");
 
