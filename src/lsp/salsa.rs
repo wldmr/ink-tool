@@ -168,7 +168,9 @@ impl<'db> Poi<'db> {
         Poi::new(database, cst, (range.start_point, range.end_point))
     }
 
-    #[salsa::tracked]
+    pub fn uri(self, db: &'db dyn Db) -> &'db lsp_types::Uri {
+        self.cst(db).uri(db)
+    }
     pub fn lsp_range(self, db: &'db dyn Db) -> lsp_types::Range {
         let cst = self.cst(db);
         let (start, end) = self.range(db);

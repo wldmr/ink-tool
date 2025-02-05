@@ -158,11 +158,11 @@ impl State {
 
     pub fn goto_definition(
         &self,
-        from_uri: Uri,
+        from_uri: &Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
         let Some(doc) = self.workspace.docs(&self.db).get(&from_uri) else {
-            return Err(DocumentNotFound(from_uri).into());
+            return Err(DocumentNotFound(from_uri.clone()).into());
         };
         let target_node = doc.named_cst_node_at(&self.db, from_position)?;
         eprintln!("Searching for links for target node {target_node:?}");
@@ -171,7 +171,7 @@ impl State {
             return Ok(Vec::new());
         }
         let usg2def = usages_to_definitions(&self.db, self.workspace);
-        let Some(map) = usg2def.get(&from_uri) else {
+        let Some(map) = usg2def.get(from_uri) else {
             return Ok(Vec::new());
         };
         let mut defs = map.get(&target_node.range()).cloned().unwrap_or_default();
@@ -580,6 +580,7 @@ mod tests {
         #[test_case("examples/links/lists.ink")]
         #[test_case("examples/links/labels.ink")]
         #[test_case("examples/links/shadowing.ink")]
+        #[test_case("examples/links/self-reference.ink")]
         #[test_case("examples/links/ambiguous/")]
         #[test_case("examples/links/knots_and_stitches/")]
         fn test_links(fs_location: &str) {
@@ -610,7 +611,7 @@ mod tests {
             // WHEN
             let actual_links =
                 links_for_workspace(&state.db, state.workspace).transform_locations(|it| {
-                    let uri = it.cst(&state.db).uri(&state.db);
+                    let uri = it.uri(&state.db);
                     let region = TextRegion::from(it.cst_node(&state.db));
                     (uri, region)
                 });

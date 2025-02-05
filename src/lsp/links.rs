@@ -72,7 +72,7 @@ impl<'a, L: LinkLocation> Links<'a, L> {
             provided_names: self
                 .provided_names
                 .into_iter()
-                .map(|(name, defs)| (name.clone(), defs.into_iter().map(|loc| (f(loc))).collect()))
+                .map(|(name, defs)| (name.clone(), defs.into_iter().map(&f).collect()))
                 .collect(),
         }
     }
@@ -92,7 +92,7 @@ impl<'a, L: LinkLocation> Links<'a, L> {
     /// Then remove all references to names that no longer have definitions.
     /// (Conversely, if there is at least one definition left, don't remove the reference.)
     /// The predicate gets references to both the name and the location.
-    /// NOTE: You'll probably want to call `self.resolve()` beforehand,
+    /// NOTE: You'll probably want to call resolve the soon-to-be-out-of-scope locations beforehand,
     /// otherwise the names you remove will remain … well, unresolved.
     pub fn unprovide(&mut self, should_remove: impl Fn(&str, &L) -> bool) {
         // a "nested" removal:

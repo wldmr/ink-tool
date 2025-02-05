@@ -75,7 +75,7 @@ impl RequestHandler for request::GotoDefinition {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         use lsp_types::GotoDefinitionResponse::*;
         let defs = state.lock()?.goto_definition(
-            params.text_document_position_params.text_document.uri,
+            &params.text_document_position_params.text_document.uri,
             params.text_document_position_params.position,
         )?;
         let response = match defs.len() {

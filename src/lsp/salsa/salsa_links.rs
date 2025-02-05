@@ -85,25 +85,33 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
             // Definitions
             Enter(TempDef(node)) => {
                 let name = self.text(node.name());
-                self.links.provide(name, Scoped::temp(node.name()));
+                let loc = Scoped::temp(node.name());
+                self.links.provide(name, loc);
+                self.links.resolved.push((loc, loc));
                 Descend // because values after the `=` might reference other variables
             }
 
             Enter(External(node)) => {
                 let name = self.text(node.name());
-                self.links.provide(name, Scoped::global(node.name()));
+                let loc = Scoped::global(node.name());
+                self.links.provide(name, loc);
+                self.links.resolved.push((loc, loc));
                 Ignore // can't have a body, therefore
             }
 
             Enter(Global(node)) => {
                 let name = self.text(node.name());
-                self.links.provide(name, Scoped::global(node.name()));
+                let loc = Scoped::global(node.name());
+                self.links.provide(name, loc);
+                self.links.resolved.push((loc, loc));
                 Descend // because values might reference list items (and other names, though that would be an error)
             }
 
             Enter(List(node)) => {
                 let name = self.text(node.name());
-                self.links.provide(name, Scoped::global(node.name()));
+                let loc = Scoped::global(node.name());
+                self.links.provide(name, loc);
+                self.links.resolved.push((loc, loc));
                 self.current_list = Some(name);
                 self.collect_usages = false;
                 Descend
@@ -114,9 +122,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                     .expect("list items can only be defined inside a list node");
                 let name = self.text(node.name());
                 // List items have two global names:
-                let global_def = Scoped::global(node.name());
-                self.links.provide(name, global_def); // naked
-                self.links.provide(format!("{list}.{name}"), global_def); // qualified
+                let loc = Scoped::global(node.name());
+                self.links.provide(name, loc); // naked
+                self.links.provide(format!("{list}.{name}"), loc); // qualified
+                self.links.resolved.push((loc, loc));
                 Ignore
             }
             Leave(List(_)) => {
@@ -137,7 +146,9 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
 
             Enter(Knot(node)) => {
                 let name = self.text(node.name());
-                self.links.provide(name, Scoped::global(node.name()));
+                let loc = Scoped::global(node.name());
+                self.links.provide(name, loc);
+                self.links.resolved.push((loc, loc));
                 self.current_knot = Some(name);
                 self.current_stitch = None;
                 self.collect_usages = false; // so it doesn't interfere with param definitions
@@ -163,11 +174,13 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 if let Some(knot) = self.current_knot {
                     self.links
                         .provide(format!("{name}"), Scoped::within_knot(name_node));
-                    self.links
-                        .provide(format!("{knot}.{name}"), Scoped::global(name_node));
+                    let global_def = Scoped::global(name_node);
+                    self.links.provide(format!("{knot}.{name}"), global_def);
+                    self.links.resolved.push((global_def, global_def));
                 } else {
-                    self.links
-                        .provide(format!("{name}"), Scoped::global(name_node));
+                    let loc = Scoped::global(name_node);
+                    self.links.provide(format!("{name}"), loc);
+                    self.links.resolved.push((loc, loc));
                 }
                 self.current_stitch = Some(name);
                 self.collect_usages = false;
@@ -193,9 +206,13 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 let name = self.text(param_value);
 
                 if self.current_stitch.is_some() {
-                    self.links.provide(name, Scoped::within_stitch(param_value));
+                    let loc = Scoped::within_stitch(param_value);
+                    self.links.provide(name, loc);
+                    self.links.resolved.push((loc, loc));
                 } else if self.current_knot.is_some() {
-                    self.links.provide(name, Scoped::within_knot(param_value));
+                    let loc = Scoped::within_knot(param_value);
+                    self.links.provide(name, loc);
+                    self.links.resolved.push((loc, loc));
                 };
                 Ignore
             }
@@ -206,25 +223,33 @@ impl<'a> Visitor<'a, AllNamed<'a>> for LinkVisitor<'a> {
                 let links = &mut self.links;
                 match (self.current_knot, self.current_stitch) {
                     (None, None) => {
-                        links.provide(format!("{label}"), Scoped::global(name_node));
+                        let loc = Scoped::global(name_node);
+                        links.provide(format!("{label}"), loc);
+                        self.links.resolved.push((loc, loc));
                     }
                     (Some(knot), None) => {
                         links.provide(format!("{label}"), Scoped::within_knot(name_node));
-                        links.provide(format!("{knot}.{label}"), Scoped::global(name_node));
+                        let loc = Scoped::global(name_node);
+                        links.provide(format!("{knot}.{label}"), loc);
+                        self.links.resolved.push((loc, loc));
                     }
                     (None, Some(stitch)) => {
                         links.provide(format!("{label}"), Scoped::within_stitch(name_node));
-                        links.provide(format!("{stitch}.{label}"), Scoped::global(name_node));
+                        let loc = Scoped::global(name_node);
+                        links.provide(format!("{stitch}.{label}"), loc);
+                        self.links.resolved.push((loc, loc));
                     }
                     (Some(knot), Some(stitch)) => {
                         links.provide(format!("{label}"), Scoped::within_stitch(name_node));
                         links.provide(format!("{stitch}.{label}"), Scoped::within_knot(name_node));
                         // this is the weird one; labels are uniqe per knot(!), even within nested stitches:
-                        links.provide(format!("{knot}.{label}"), Scoped::global(name_node));
+                        let loc = Scoped::global(name_node);
+                        links.provide(format!("{knot}.{label}"), loc);
                         links.provide(
                             format!("{knot}.{stitch}.{label}"),
                             Scoped::global(name_node),
                         );
+                        self.links.resolved.push((loc, loc));
                     }
                 }
                 Ignore
