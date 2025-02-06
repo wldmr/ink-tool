@@ -84,7 +84,7 @@ pub(crate) fn fmt(opt: FmtOpt) -> AppResult<()> {
 }
 
 fn fmt_single(input: &Path, output: &Path) -> std::io::Result<()> {
-    eprintln!("Formatting {}", output.display());
+    log::info!("Formatting {}", output.display());
     let source = std::fs::read_to_string(input)?;
     let formatted = ink_tool::fmt::format(source);
     std::fs::write(output, formatted)

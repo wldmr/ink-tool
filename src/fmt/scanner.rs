@@ -91,7 +91,7 @@ impl FormatScanner {
 
         // explicit filter step so it's easy to debug-print if something is off.
         let spacing = spacing.filter_map(Result::ok).collect();
-        // eprintln!("{:?}", spacing);
+        // log::debug!("{:?}", spacing);
 
         let captures = CapIndex {
             indent_anchor: query.capture_index_for_name("indent.anchor"),
@@ -128,7 +128,7 @@ impl FormatScanner {
         // This could happen on init, speeds things up when these rules get re-used.
         for pattern_index in 1..self.query.pattern_count() {
             // for prop in self.query.property_settings(pattern_index) {
-            //     eprintln!("Found the query property {:?}", prop);
+            //     log::debug!("Found the query property {:?}", prop);
             // }
             for prop in self.query.general_predicates(pattern_index) {
                 let op = &*prop.operator;
@@ -214,7 +214,7 @@ impl FormatScanner {
                 }
             }
         }
-        // eprintln!("{:#?}", rules);
+        // doc::debug!("{:#?}", rules);
 
         let mut iter = tree.walk();
         collect_outputs(formatter, &mut rules, iter.node(), &mut iter, source);

@@ -38,7 +38,7 @@ impl DbImpl {
 impl salsa::Database for DbImpl {
     fn salsa_event(&self, event: &dyn Fn() -> salsa::Event) {
         let _event = event();
-        // eprintln!("Event: {event:?}");
+        // log::trace!("Event: {event:?}");
     }
 }
 
@@ -242,7 +242,7 @@ pub(crate) fn map_of_definitions<'d>(
                 references,
             )
                 .tap(|(def, refs)| {
-                    eprintln!(
+                    log::debug!(
                         "{}:{}:{}-{}:{}\n    {}",
                         def.uri.path().as_str(),
                         def.range.start.line + 1,

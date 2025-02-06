@@ -74,7 +74,7 @@ impl<'a> WorkspaceSymbols<'a> {
 
 impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
     fn visit(&mut self, node: AllNamed) -> VisitInstruction<Self> {
-        // eprintln!("visiting: {}", node.kind());
+        // log::trace!("visiting: {}", node.kind());
         use VisitInstruction::*;
         match node {
             // recurse into these without creating a new level

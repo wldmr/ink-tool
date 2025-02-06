@@ -9,13 +9,9 @@ use super::{
 };
 use crate::{
     ink_syntax,
-    lsp::salsa::{
-        links_for_workspace, map_of_definitions, salsa_doc_symbols::lsp_range,
-        usages_to_definitions,
-    },
+    lsp::salsa::{map_of_definitions, usages_to_definitions},
 };
 use derive_more::derive::{Display, Error};
-use itertools::Itertools;
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
@@ -25,7 +21,6 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
 };
-use tap::{Pipe as _, Tap as _};
 use type_sitter_lib::Node;
 
 /// A way to identify Documents hat is Copy (instead of just clone, like Uri).
@@ -153,7 +148,7 @@ impl State {
                 let Some((range, specification)) = doc.possible_completions(position) else {
                     return Ok(None);
                 };
-                // eprintln!("find {specification}");
+                // log::debug!("find {specification}");
                 let completions = self
                     .find_locations(specification)
                     .map(|loc| to_completion_item(range, loc))
@@ -173,9 +168,9 @@ impl State {
             return Err(DocumentNotFound(from_uri.clone()).into());
         };
         let target_node = doc.named_cst_node_at(&self.db, from_position)?;
-        eprintln!("Searching for links for target node {target_node:?}");
+        log::debug!("Searching for links for target node {target_node:?}");
         if target_node.kind() != ink_syntax::types::Identifier::KIND {
-            eprintln!("Not even an identifier, what is wrong with you!");
+            log::debug!("Not even an identifier, what is wrong with you!");
             return Ok(Vec::new());
         }
         let usg2def = usages_to_definitions(&self.db, self.workspace);
@@ -208,16 +203,16 @@ impl State {
             return Err(DocumentNotFound(from_uri.clone()).into());
         };
         let mut target_node = doc.named_cst_node_at(&self.db, from_position)?;
-        eprintln!("Searching for references to target node {target_node:?}");
+        log::debug!("Searching for references to target node {target_node:?}");
         if target_node.kind() != ink_syntax::types::Identifier::KIND {
-            eprintln!("Not even an identifier, what is wrong with you!");
+            log::debug!("Not even an identifier, what is wrong with you!");
             return Ok(Vec::new());
         }
 
         if let Some(parent) = target_node.parent() {
             if parent.kind() == ink_syntax::types::QualifiedName::KIND {
                 target_node = parent;
-                eprintln!("Target is actually a qualified name! {target_node:?}");
+                log::debug!("Target is actually a qualified name! {target_node:?}");
             }
         };
 
@@ -230,7 +225,7 @@ impl State {
             .into_iter()
             // .unique()
             .inspect(|it| {
-                eprintln!(
+                log::debug!(
                     "relevant def {}:{}:{}-{}:{}",
                     it.uri.path(),
                     it.range.start.line + 1,
@@ -247,7 +242,7 @@ impl State {
                 range: it.lsp_range(&self.db),
             })
             .inspect(|it| {
-                eprintln!(
+                log::debug!(
                     "relevant ref {}:{}:{}-{}:{}",
                     it.uri.path(),
                     it.range.start.line + 1,
@@ -371,7 +366,7 @@ mod tests {
             let uri = uri("test.ink");
             set_content(&mut state, uri.clone(), contents);
             let doc = state.parsers.get(&state::DocId::from(&uri)).unwrap();
-            eprintln!(
+            log::debug!(
                 "completions: {:?}",
                 doc.possible_completions(caret).unwrap()
             );

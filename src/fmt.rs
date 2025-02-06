@@ -37,7 +37,7 @@ pub fn format(source: String) -> String {
     let mut formatter = Tracing::new(Layout::new(Tracing::new(&mut result)));
 
     scanner.scan(&tree, &source, &mut formatter);
-    // eprintln!("outer:\n{}", formatter.trace);
-    // eprintln!("inner:\n{}\n", formatter.downstream.downstream.trace);
+    // log::debug!("outer:\n{}", formatter.trace);
+    // log::debug!("inner:\n{}\n", formatter.downstream.downstream.trace);
     result
 }

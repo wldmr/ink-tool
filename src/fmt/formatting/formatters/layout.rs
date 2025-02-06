@@ -106,7 +106,7 @@ impl<T: Formatting> Layout<T> {
                             let next_indent = match self.alignment {
                                 Some(Alignment::Determined(column)) => column,
                                 Some(Alignment::Tentative) => {
-                                    eprintln!("Tentative alignment at newline. Is this a bug?");
+                                    log::warn!("Tentative alignment at newline. Is this a bug?");
                                     *self.indents.last().expect("this shouldn't be empty") + 4
                                 }
                                 None => *self.indents.last().expect("this shouldn't be empty") + 4,

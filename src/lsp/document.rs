@@ -52,7 +52,7 @@ impl InkDocument {
     }
 
     pub(crate) fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
-        // eprintln!("applying {} edits", edits.len());
+        // log::trace!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
             let edit = range.map(|range| self.input_edit(range, new_text.as_ref()));
             let modified_tree = if let Some(edit) = edit {
@@ -87,17 +87,19 @@ impl InkDocument {
                 Some("") => break,   // we're at the beginning of the file; nothing to complete here
                 None => continue,    // we're inside a multibyte sequence
                 Some(_other) => {
-                    // eprintln!("The character left of offset {offset} is `{_other}`");
+                    // log::debug!("The character left of offset {offset} is `{_other}`");
                 }
             };
 
             let node = root
                 .descendant_for_byte_range(offset, offset)
                 .expect("the offset must lie within the file, so there must be a node here");
-            // eprintln!("found {node} at offset {offset}");
+            // log::debug!("found {node} at offset {offset}");
 
             if node.is_error() || node.is_missing() {
                 let text = &self.text[node.byte_range()];
+                log::error!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
+                // so that the client also sees it:
                 eprintln!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
             } else if let Ok(target) = DivertTarget::try_from_raw(node) {
                 let target = Self::widen_to_full_name(target);
