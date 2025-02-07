@@ -1,4 +1,5 @@
 use crate::AppResult;
+use futures::FutureExt as _;
 use line_index::WideEncoding;
 use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
@@ -9,6 +10,7 @@ use std::{ops::Not, path::Path};
 
 mod document;
 mod file_watching;
+mod http_server;
 mod links;
 mod location;
 mod notification_handlers;
@@ -265,19 +267,27 @@ pub fn run_lsp() -> AppResult<()> {
         .map(force_server_file_watcher)
         .unwrap_or(false);
     let file_watcher = if client_can_watch_files && !force_server_side_watching {
-        log::debug!("relying on client for file watching");
+        log::info!("relying on lsp client for file watching");
         file_watching::register_file_change_notification(&client_connection, workspace_folders)
             .expect(
                 "If this doesn't work, it means sending doesn't work at all. No need to go on.",
             );
         None
     } else {
-        log::debug!("relying on server for file watching");
+        log::warn!("ink-tool language server will watch files. \
+            However, the spec recommends clients do this: \
+            <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workspace_didChangeWatchedFiles>");
         Some(file_watching::start_file_watcher(
             state.clone(),
             workspace_folders,
         ))
     };
+
+    let http_state = state.clone();
+    let (shutdown, shutdown_notification) = tokio::sync::oneshot::channel::<()>();
+    // http server doesn't care about rcv-errors, so we just swallow it:
+    let shutdown_notification = shutdown_notification.map(|_| ());
+    let http_handle = std::thread::spawn(|| http_server::start(http_state, shutdown_notification));
 
     // Ladies and gentlemen, the main loop:
     while let Ok(msg) = client_connection.receiver.recv() {
@@ -293,19 +303,26 @@ pub fn run_lsp() -> AppResult<()> {
         }
     }
 
+    log::trace!("sending shutdown signal");
+    if let Err(_) = shutdown.send(()) {
+        log::error!("shutdown signal failed ¯\\_(ツ)_/¯");
+    };
+
     // Shut down gracefully.
-    let me = std::process::id();
     if file_watcher.is_some() {
-        log::debug!("{me:?}: shutting down file watcher");
+        log::trace!("shutting down file watcher");
         drop(file_watcher);
     }
 
-    log::debug!("{me:?}: dropping_client_connection");
+    log::trace!("waiting for shutdown of view server");
+    _ = http_handle.join();
+
+    log::trace!("dropping_client_connection");
     drop(client_connection);
-    log::debug!("{me:?}: shutting down client connection");
+    log::trace!("shutting down client connection");
     client_io_threads.join()?;
 
-    log::debug!("{me:?}: shutdown complete");
+    log::trace!("shutdown complete");
     Ok(())
 }
 
@@ -319,7 +336,7 @@ pub(crate) fn handle_message(
             match handle_request(req, state).into() {
                 Ok(response) => Some(Message::Response(response)),
                 Err(req) => {
-                    log::debug!("unhandled request {req:?}");
+                    log::warn!("unhandled request {req:?}");
                     None
                 }
             }
@@ -333,7 +350,7 @@ pub(crate) fn handle_message(
             match handle_notification(not, state) {
                 Ok(()) => None,
                 Err(not) => {
-                    log::debug!("unhandled notification {not:?}");
+                    log::warn!("unhandled notification {not:?}");
                     None
                 }
             }

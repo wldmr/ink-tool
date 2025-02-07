@@ -224,6 +224,27 @@ pub(crate) fn links_for_workspace<'d>(db: &'d dyn Db, ws: Workspace) -> Links<'d
 }
 
 #[salsa::tracked]
+pub(crate) fn uris<'d>(db: &'d dyn Db, ws: Workspace) -> Vec<&'d Uri> {
+    ws.docs(db).keys().sorted_unstable().collect()
+}
+
+#[salsa::tracked]
+pub(crate) fn common_file_prefix<'d>(db: &'d dyn Db, ws: Workspace) -> String {
+    uris(db, ws)
+        .into_iter()
+        .map(|it| it.path().to_string())
+        .reduce(|acc, next| {
+            acc.chars()
+                .zip(next.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| a)
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+        .tap(|it| log::debug!("Common file name prefix: `{it}``"))
+}
+
+#[salsa::tracked]
 pub(crate) fn map_of_definitions<'d>(
     db: &'d dyn Db,
     ws: Workspace,

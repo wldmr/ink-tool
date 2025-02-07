@@ -5,7 +5,10 @@ use super::{
         specification::{rank_match, LocationThat},
         Location,
     },
-    salsa::{doc_symbols, locations, workspace_symbols, DbImpl, Doc, Workspace},
+    salsa::{
+        common_file_prefix, doc_symbols, links_for_workspace, locations, uris, workspace_symbols,
+        DbImpl, Doc, Workspace,
+    },
 };
 use crate::{
     ink_syntax,
@@ -64,6 +67,32 @@ impl State {
             parsers: Default::default(),
             workspace,
         }
+    }
+
+    pub fn uris(&self) -> Vec<&Uri> {
+        uris(&self.db, self.workspace)
+    }
+
+    pub fn common_file_prefix(&self) -> String {
+        common_file_prefix(&self.db, self.workspace)
+    }
+
+    pub fn text(&self, uri: Uri) -> Result<&String, DocumentNotFound> {
+        self.workspace
+            .docs(&self.db)
+            .get(&uri)
+            .map(|it| it.text(&self.db))
+            .ok_or_else(|| DocumentNotFound(uri))
+    }
+
+    pub fn links(&self) -> super::links::Links<(&Uri, &str, tree_sitter::Node)> {
+        links_for_workspace(&self.db, self.workspace).transform_locations(|poi| {
+            (
+                poi.uri(&self.db),
+                poi.text(&self.db),
+                poi.cst_node(&self.db),
+            )
+        })
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {

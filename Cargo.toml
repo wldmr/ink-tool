@@ -8,9 +8,12 @@ edition = "2021"
 
 [dependencies]
 assert2 = "0.3.15"
+axum = "0.8.1"
 clap = { version = "4.5.18", features = ["derive"] }
 derive_more = { version = "1.0.0", features = ["display", "debug", "error", "from", "into", "deref", "deref_mut"] }
 fern = "0.7.1"
+futures = "0.3.31"
+html = "0.6.3"
 humantime = "2.1.0"
 itertools = "0.13.0"
 jsonrpc = "0.18.0"
@@ -23,6 +26,7 @@ salsa = { git = "https://github.com/salsa-rs/salsa", version = "0.18.0" }
 serde = "1.0.210"
 serde_json = "1.0.128"
 tap = "1.0.1"
+tokio = { version = "1.43.0", features = ["rt"] }
 tree-sitter = "0.23"
 tree-sitter-ink = { path = "../tree-sitter-ink/", version = '24.6.18'}
 walkdir = "2.5.0"
