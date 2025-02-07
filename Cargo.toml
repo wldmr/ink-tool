@@ -10,8 +10,8 @@ edition = "2021"
 assert2 = "0.3.15"
 clap = { version = "4.5.18", features = ["derive"] }
 derive_more = { version = "1.0.0", features = ["display", "debug", "error", "from", "into", "deref", "deref_mut"] }
-directories = "6.0.0"
-ftail = "0.2.0"
+fern = "0.7.1"
+humantime = "2.1.0"
 itertools = "0.13.0"
 jsonrpc = "0.18.0"
 line-index = "0.1.1"
