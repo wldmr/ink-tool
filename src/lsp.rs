@@ -11,12 +11,10 @@ use std::{ops::Not, path::Path};
 mod document;
 mod file_watching;
 mod http_server;
-mod links;
 mod location;
 mod notification_handlers;
 mod request_handlers;
 mod salsa;
-mod scopes;
 mod shared;
 mod state;
 
@@ -197,14 +195,14 @@ pub fn run_lsp() -> AppResult<()> {
     };
     let init_result = serde_json::to_value(&init_result)?;
 
-    log::debug!(
-        "init params: {}",
-        serde_json::to_string_pretty(&init_params).unwrap()
-    );
-    log::debug!(
-        "init result: {}",
-        serde_json::to_string_pretty(&init_result).unwrap()
-    );
+    // log::debug!(
+    //     "init params: {}",
+    //     serde_json::to_string_pretty(&init_params).unwrap()
+    // );
+    // log::debug!(
+    //     "init result: {}",
+    //     serde_json::to_string_pretty(&init_result).unwrap()
+    // );
 
     let qualified_names = init_params
         .capabilities

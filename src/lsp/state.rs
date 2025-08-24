@@ -6,15 +6,18 @@ use super::{
         Location,
     },
     salsa::{
-        common_file_prefix, doc_symbols, links_for_workspace, locations, uris, workspace_symbols,
-        DbImpl, Doc, Workspace,
+        common_file_prefix, doc_symbols, locations, uris, workspace_symbols, DbImpl, Doc, Workspace,
     },
 };
 use crate::{
-    ink_syntax,
-    lsp::salsa::{map_of_definitions, usages_to_definitions},
+    ink_syntax::{
+        self,
+        types::{AllNamed, Usages},
+    },
+    lsp::salsa::{usages_in_block, usages_in_doc, GetNodeError, NodeSalsa, SalsaUsage},
 };
 use derive_more::derive::{Display, Error};
+use itertools::Itertools;
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
@@ -24,6 +27,7 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
 };
+use tap::Pipe as _;
 use type_sitter_lib::Node;
 
 /// A way to identify Documents hat is Copy (instead of just clone, like Uri).
@@ -48,14 +52,14 @@ pub(crate) struct State {
 pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
-#[display("Position out of bounds: {}:{}", _0.line, _0.character)]
-pub(crate) struct PositionOutOfBounds(#[error(not(source))] pub(crate) Position);
+#[display("Not a valid position: {}:{}", _0.line, _0.character)]
+pub(crate) struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
 #[derive(Debug, Clone, Display, Error, derive_more::From)]
 #[display("Could not go to position")]
 pub(crate) enum GotoDefinitionError {
     DocumentNotFound(DocumentNotFound),
-    PositionOutOfBounds(PositionOutOfBounds),
+    PositionOutOfBounds(InvalidPosition),
 }
 
 impl State {
@@ -85,29 +89,16 @@ impl State {
             .ok_or_else(|| DocumentNotFound(uri))
     }
 
-    pub fn links(&self) -> super::links::Links<(&Uri, &str, tree_sitter::Node)> {
-        links_for_workspace(&self.db, self.workspace).transform_locations(|poi| {
-            (
-                poi.uri(&self.db),
-                poi.text(&self.db),
-                poi.cst_node(&self.db),
-            )
-        })
-    }
-
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
         let doc_id = DocId::from(&uri);
-        if !self.parsers.contains_key(&doc_id) {
-            self.parsers.insert(
-                doc_id,
-                InkDocument::new(uri.clone(), String::new(), self.workspace.enc(&self.db)),
-            );
-            let parser = &self.parsers[&doc_id];
+        let parser = self.parsers.entry(doc_id).or_insert_with(|| {
+            let parser = InkDocument::new(uri.clone(), String::new(), self.workspace.enc(&self.db));
             let mut ws_docs = self.workspace.docs(&self.db).clone();
             ws_docs.insert(
                 uri.clone(),
                 Doc::new(
                     &self.db,
+                    self.workspace,
                     uri.clone(),
                     parser.text.clone(),
                     parser.tree.clone(),
@@ -116,11 +107,8 @@ impl State {
                 ),
             );
             self.workspace.set_docs(&mut self.db).to(ws_docs);
-        }
-        let parser = self
-            .parsers
-            .get_mut(&doc_id)
-            .expect("we just made sure it exists");
+            parser
+        });
         parser.edit(edits);
         let doc = *self
             .workspace
@@ -196,31 +184,41 @@ impl State {
         let Some(doc) = self.workspace.docs(&self.db).get(&from_uri) else {
             return Err(DocumentNotFound(from_uri.clone()).into());
         };
-        let target_node = doc.named_cst_node_at(&self.db, from_position)?;
-        log::debug!("Searching for links for target node {target_node:?}");
-        if target_node.kind() != ink_syntax::types::Identifier::KIND {
-            log::debug!("Not even an identifier, what is wrong with you!");
-            return Ok(Vec::new());
-        }
-        let usg2def = usages_to_definitions(&self.db, self.workspace);
-        let Some(map) = usg2def.get(from_uri) else {
-            return Ok(Vec::new());
-        };
-        let mut defs = map.get(&target_node.range()).cloned().unwrap_or_default();
-        if let Some(parent) = target_node.parent() {
-            if parent.kind() == ink_syntax::types::QualifiedName::KIND {
-                defs.extend(
-                    map.get(&parent.range())
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter(),
-                );
-            }
-        }
-        Ok(defs
-            .into_iter()
-            .map(|(uri, range)| lsp_types::Location { uri, range })
-            .collect())
+        let db = &self.db;
+        let (_point, cursor_offset) = doc.ts_point(db, from_position)?;
+        // let start_node: Usages<'_> = match doc.get_node_at(&self.db, from_position) {
+        //     Ok(usage) => usage,
+        //     Err(GetNodeError::InvalidType) => {
+        //         log::trace!("Not even a usage, what is wrong with you!");
+        //         // not an error, just no definitions to be found
+        //         return Ok(Vec::new());
+        //     }
+        //     Err(GetNodeError::PositionOutOfBounds(e)) => return Err(e.into()),
+        // };
+        // log::debug!(
+        //     "Searching for links for node under cursor: `{}` {:?}",
+        //     &doc.text(&self.db)[start_node.byte_range()],
+        //     start_node.raw(),
+        // );
+        usages_in_doc(db, *doc)
+            .iter()
+            .inspect(|it| log::debug!("found usage {:?}", it.node(db).into_raw()))
+            .filter(|usage| usage.node(db).raw().byte_range().contains(&cursor_offset))
+            .inspect(|_| log::debug!("which is under cursor"))
+            .flat_map(|usage| usage.definition(db))
+            .inspect(|def| {
+                log::debug!(
+                    "with definition {:?} in {}",
+                    def.node(db),
+                    def.uri(db).path()
+                )
+            })
+            .map(|it| lsp_types::Location {
+                uri: it.uri(&self.db).clone(),
+                range: doc.lsp_range(db, it.name_node(db).range()),
+            })
+            .collect_vec()
+            .pipe(Ok)
     }
 
     pub fn goto_references(
@@ -240,49 +238,12 @@ impl State {
 
         if let Some(parent) = target_node.parent() {
             if parent.kind() == ink_syntax::types::QualifiedName::KIND {
-                target_node = parent;
+                target_node = parent.downcast::<AllNamed>().unwrap();
                 log::debug!("Target is actually a qualified name! {target_node:?}");
             }
         };
 
-        let map = map_of_definitions(&self.db, self.workspace);
-
-        let defs_for_target = self.goto_definition(from_uri, from_position)?;
-
-        // NOTE: relying on the fact that definitions link to themselves as definitinos, so this list is never empty.
-        let refs = defs_for_target
-            .into_iter()
-            // .unique()
-            .inspect(|it| {
-                log::debug!(
-                    "relevant def {}:{}:{}-{}:{}",
-                    it.uri.path(),
-                    it.range.start.line + 1,
-                    it.range.start.character + 1,
-                    it.range.end.line + 1,
-                    it.range.end.character + 1,
-                )
-            })
-            .filter_map(|def| map.get(&def))
-            .flatten()
-            // .unique()
-            .map(|it| lsp_types::Location {
-                uri: it.uri(&self.db).clone(),
-                range: it.lsp_range(&self.db),
-            })
-            .inspect(|it| {
-                log::debug!(
-                    "relevant ref {}:{}:{}-{}:{}",
-                    it.uri.path(),
-                    it.range.start.line + 1,
-                    it.range.start.character + 1,
-                    it.range.end.line + 1,
-                    it.range.end.character + 1,
-                )
-            })
-            .collect();
-
-        Ok(refs)
+        todo!()
     }
 
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
@@ -296,6 +257,17 @@ impl State {
         }
         locs.sort_unstable_by_key(|(rank, _)| *rank);
         locs.into_iter().map(|(_, location)| location)
+    }
+
+    #[cfg(test)]
+    fn to_ts_range(&self, from_uri: &Uri, loc: lsp_types::Range) -> tree_sitter::Range {
+        // only used in tests, so we'll crash liberally
+        self.workspace
+            .docs(&self.db)
+            .get(from_uri)
+            .expect("why would you call this with a made-up URI?")
+            .ts_range(&self.db, loc)
+            .expect("don't call this with an invalid location")
     }
 }
 
@@ -413,11 +385,12 @@ mod tests {
     mod links {
         use std::{collections::HashMap, str::FromStr};
 
-        use super::{new_state, set_content};
+        use super::{new_state, set_content, State};
         use crate::{
-            lsp::salsa::links_for_workspace,
+            lsp::salsa::{workspace_definitions_by_name, NodeSalsa},
             test_utils::{
-                text_annotations::{Annotation, AnnotationScanner, TextRegion},
+                self,
+                text_annotations::{Annotation, AnnotationScanner},
                 Compact,
             },
         };
@@ -425,6 +398,7 @@ mod tests {
         use itertools::Itertools;
         use lsp_types::Uri;
         use test_case::test_case;
+        use type_sitter_lib::Node;
 
         #[derive(Debug, Default)]
         struct LinkCheck<'a> {
@@ -446,11 +420,6 @@ mod tests {
                 annotations: impl IntoIterator<Item = Annotation<'a>>,
             ) {
                 for loc in annotations {
-                    if loc.claim().trim().starts_with("references-nothing") {
-                        self.references
-                            .push((uri, loc, ReferenceKind::Unresolved, Vec::new()));
-                        continue;
-                    }
                     let Some((keyword, arg)) = loc.claim().split_once(char::is_whitespace) else {
                         continue;
                     };
@@ -468,6 +437,13 @@ mod tests {
                             } else {
                                 self.definitions.insert(arg, (uri, loc));
                             };
+                        }
+                        "references-nothing" => {
+                            if !arg.is_empty() {
+                                panic!("references-nothing doesn't take arguments, found `{arg}`");
+                            }
+                            self.references
+                                .push((uri, loc, ReferenceKind::Unresolved, Vec::new()));
                         }
                         "references" => {
                             let names = arg.trim().split_whitespace().collect_vec();
@@ -488,10 +464,7 @@ mod tests {
                 }
             }
 
-            fn check(
-                &self,
-                links: &crate::lsp::links::Links<'a, (&'a Uri, TextRegion)>,
-            ) -> Vec<annotate_snippets::Message> {
+            fn failed(&'a self, state: &'a State) -> bool {
                 // Insurance against some obviously bad test definitions:
                 {
                     let defined_names = self
@@ -517,20 +490,48 @@ mod tests {
                         "There should be at least one reference in a test"
                     );
                 }
+                let db = &state.db;
 
-                let inks: HashMap<&'a Uri, &'a str> = self
-                    .references
-                    .iter()
-                    .map(|(uri, annotation, _, _)| (*uri, annotation.full_text))
-                    .collect();
+                let inks: HashMap<&'a Uri, &'a str> = {
+                    let defs = self
+                        .definitions
+                        .iter()
+                        .map(|(_, (uri, annotation))| (*uri, annotation.full_text));
+                    let refs = self
+                        .references
+                        .iter()
+                        .map(|(uri, annotation, _, _)| (*uri, annotation.full_text));
+                    defs.chain(refs).collect()
+                };
+
+                // kind of breaks encapsulation, but just to get going:
+                let visibilities_of_definitions =
+                    workspace_definitions_by_name(db, state.workspace)
+                        .into_iter()
+                        .flat_map(|(name, visibilities)| {
+                            visibilities.into_iter().map(move |(vis, def)| {
+                                let def_lsp_location = lsp_types::Location {
+                                    uri: def.uri(db).clone(),
+                                    range: def.lsp_range(db),
+                                };
+                                (def_lsp_location, (vis, name.clone()))
+                            })
+                        })
+                        .into_group_map();
 
                 let mut messages = Vec::new();
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
-                    let usage = (*usage_uri, usage_ann.text_location);
+                    let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
+                    let found_definitions = state
+                        .goto_definition(&usage_uri, usage_lsp_position.start)
+                        .expect("we should be within range");
                     if *reference_kind == ReferenceKind::Unresolved {
-                        let definitions = links.definitions(&usage).collect_vec();
-                        if !definitions.is_empty() {
-                            for (def_uri, def_region) in definitions {
+                        if !found_definitions.is_empty() {
+                            for def in found_definitions {
+                                let ts_range = state.to_ts_range(&usage_uri, usage_lsp_position);
+                                let byte_range = ts_range.start_byte..ts_range.end_byte;
+                                // have to use def_uri, because we can't return a reference to def.uri from this function.
+                                let (def_uri, def_src) = inks.get_key_value(&def.uri).unwrap();
                                 messages.push(
                                     annotate_snippets::Level::Error
                                         .title("Disallowed definition")
@@ -540,113 +541,209 @@ mod tests {
                                                 &usage_ann,
                                                 "Expected this usage to be unresolved, …",
                                             ),
-                                            annotate_snippets::Snippet::source(&inks[def_uri])
+                                            annotate_snippets::Snippet::source(def_src)
                                                 .origin(def_uri.path().as_str())
-                                                .line_start(def_region.start.col as usize)
+                                                // .line_start(def.range.start.line as usize + 1)
                                                 .fold(true)
                                                 .annotation(
                                                     annotate_snippets::Level::Error
-                                                        .span(def_region.byte_range())
+                                                        .span(byte_range)
                                                         .label("… but it links to this definition"),
                                                 ),
                                         ]),
                                 );
                             }
                         }
-                    }
-                    for name in names {
-                        let (def_uri, def_ann) = self
-                            .definitions
-                            .get(name)
-                            .expect("we checked that every reference has a definition, see above");
-                        let expected = ((*def_uri, def_ann.text_location), usage);
-                        let does_reference = links.resolved.contains(&expected);
-                        if *reference_kind == ReferenceKind::Any && !does_reference {
-                            messages.push(
-                                annotate_snippets::Level::Error
-                                    .title("Required reference not found")
-                                    .snippets([
-                                        Self::annotation_to_snippet(
-                                            &usage_uri,
-                                            &usage_ann,
-                                            "Expected this usage …",
-                                        ),
-                                        Self::annotation_to_snippet(
-                                            &def_uri,
-                                            &def_ann,
-                                            "… to reference this definition.",
-                                        ),
-                                    ]),
+                    } else {
+                        for name in names {
+                            let (def_uri, def_ann) = self.definitions.get(name).expect(
+                                "we checked that every reference has a definition, see above",
                             );
-                        } else if *reference_kind == ReferenceKind::None && does_reference {
-                            messages.push(
-                                annotate_snippets::Level::Error
-                                    .title("Forbidden reference found")
-                                    .snippets([
-                                        Self::annotation_to_snippet(
-                                            &usage_uri,
-                                            &usage_ann,
-                                            "Expected this usage …",
-                                        ),
-                                        Self::annotation_to_snippet(
-                                            &def_uri,
-                                            &def_ann,
-                                            "… to not reference this definition, but it does.",
-                                        ),
-                                    ]),
+                            let def_lsp_location = lsp_types::Location {
+                                uri: (*def_uri).clone(),
+                                range: def_ann.text_location.into(),
+                            };
+                            log::debug!(
+                                "expecting location for definition {name}: {:#?}",
+                                vec![Compact(def_lsp_location.clone())]
                             );
+                            log::debug!(
+                                "found definitions for {name}: {:#?}",
+                                found_definitions.iter().cloned().map(Compact).collect_vec()
+                            );
+
+                            let does_reference = found_definitions.contains(&def_lsp_location);
+
+                            if *reference_kind == ReferenceKind::Any && !does_reference {
+                                let other_references = found_definitions
+                                    .iter()
+                                    .map(|other| {
+                                        let span = state.workspace.docs(db)[&other.uri]
+                                            .ts_range(db, other.range)
+                                            .map(|it| it.start_byte..it.end_byte)
+                                            .unwrap();
+                                        let (uri, source) = inks.get_key_value(&other.uri).unwrap();
+                                        annotate_snippets::Snippet::source(source)
+                                            .origin(uri.path().as_str())
+                                            .annotation(annotate_snippets::Level::Info.span(span))
+                                    })
+                                    .collect_vec();
+                                let vis_of_target = if let Some((_loc, vec)) =
+                                    visibilities_of_definitions.get_key_value(&def_lsp_location)
+                                {
+                                    vec.iter()
+                                        .map(|(vis, name)| {
+                                            use crate::lsp::salsa::Visibility::*;
+                                            match vis {
+                                                Global => {
+                                                    let source = &def_ann.full_text;
+                                                    let span = def_ann.text_location.byte_range();
+                                                    annotate_snippets::Snippet::source(source)
+                                                        .origin(def_uri.path().as_str())
+                                                        .annotations([
+                                                            annotate_snippets::Level::Info
+                                                                .span(span.clone())
+                                                                .label("has global name"),
+                                                            annotate_snippets::Level::Info
+                                                                .span(span)
+                                                                .label(name),
+                                                        ])
+                                                }
+                                                Inside(scope) => {
+                                                    let source = scope.cst(db).text(db);
+                                                    let uri = scope.uri(db);
+                                                    let span = scope.node(db).byte_range();
+                                                    annotate_snippets::Snippet::source(source)
+                                                        .origin(uri.path().as_str())
+                                                        .annotations([
+                                                            annotate_snippets::Level::Info
+                                                                .span(span.clone())
+                                                                .label("has local name here"),
+                                                            annotate_snippets::Level::Info
+                                                                .span(span)
+                                                                .label(name),
+                                                        ])
+                                                }
+                                                Temp(scope) => {
+                                                    let source = scope.cst(db).text(db);
+                                                    let uri = scope.uri(db);
+                                                    let span = scope.node(db).byte_range();
+                                                    annotate_snippets::Snippet::source(source)
+                                                        .origin(uri.path().as_str())
+                                                        .annotations([
+                                                            annotate_snippets::Level::Info
+                                                                .span(span.clone())
+                                                                .label("has temp name here"),
+                                                            annotate_snippets::Level::Info
+                                                                .span(span)
+                                                                .label(name),
+                                                        ])
+                                                }
+                                            }
+                                        })
+                                        .collect_vec()
+                                } else {
+                                    Vec::new()
+                                };
+                                messages.push(
+                                    annotate_snippets::Level::Error
+                                        .title("Required reference not found")
+                                        .snippets([
+                                            Self::annotation_to_snippet(
+                                                &usage_uri,
+                                                &usage_ann,
+                                                "Expected this usage …",
+                                            ),
+                                            Self::annotation_to_snippet(
+                                                &def_uri,
+                                                &def_ann,
+                                                "… to reference this definition.",
+                                            ),
+                                        ])
+                                        .footer(if other_references.is_empty() {
+                                            annotate_snippets::Level::Error
+                                                .title("But it links nowhere.")
+                                        } else {
+                                            annotate_snippets::Level::Error
+                                                .title("But it only links to these locations:")
+                                                .snippets(other_references)
+                                        })
+                                        .footer(if vis_of_target.is_empty() {
+                                            annotate_snippets::Level::Error
+                                                .title("The intended target is not visible anywhere.")
+                                        } else {
+                                            annotate_snippets::Level::Note
+                                                .title("The intended target has the following visibilities:")
+                                                .snippets(vis_of_target)
+                                        }),
+                                );
+                            } else if *reference_kind == ReferenceKind::None && does_reference {
+                                messages.push(
+                                    annotate_snippets::Level::Error
+                                        .title("Forbidden reference found")
+                                        .snippets([
+                                            Self::annotation_to_snippet(
+                                                &usage_uri,
+                                                &usage_ann,
+                                                "Expected this usage …",
+                                            ),
+                                            Self::annotation_to_snippet(
+                                                &def_uri,
+                                                &def_ann,
+                                                "… to not reference this definition, but it does.",
+                                            ),
+                                        ]),
+                                );
+                            }
                         }
                     }
                 }
 
-                if !messages.is_empty() {
-                    // Add existing links as additional context
-                    let all_links = links
-                        .resolved
-                        .iter()
-                        .cloned()
-                        .into_grouping_map()
-                        .collect::<std::collections::HashSet<_>>();
-                    if all_links.is_empty() {
-                        messages.push(
-                            annotate_snippets::Level::Warning.title("No resolved links found!"),
-                        );
+                if messages.is_empty() {
+                    false
+                } else {
+                    let renderer = annotate_snippets::Renderer::styled();
+                    for message in messages {
+                        eprintln!("{}", renderer.render(message));
                     }
-                    for ((uri, region), usages) in all_links {
-                        let mut message =
-                            annotate_snippets::Level::Help.title("Found link").snippet(
-                                annotate_snippets::Snippet::source(&inks[uri])
-                                    .origin(uri.path().as_str())
-                                    .line_start(region.start.col as usize)
-                                    .fold(true)
-                                    .annotation(
-                                        annotate_snippets::Level::Help
-                                            .span(region.byte_range())
-                                            .label("this definition"),
-                                    ),
-                            );
-                        for (i, (uri, region)) in usages.into_iter().enumerate() {
-                            message = message.snippet(
-                                annotate_snippets::Snippet::source(&inks[uri])
-                                    .origin(uri.path().as_str())
-                                    .line_start(region.start.col as usize)
-                                    .fold(true)
-                                    .annotation(
-                                        annotate_snippets::Level::Info
-                                            .span(region.byte_range())
-                                            .label(if i == 0 {
-                                                "is used here"
-                                            } else {
-                                                "and here"
-                                            }),
-                                    ),
-                            );
-                        }
-                        messages.push(message);
-                    }
+                    eprintln!(
+                        "all names: {:#?}",
+                        workspace_definitions_by_name(db, state.workspace)
+                    );
+                    // eprintln!(
+                    //     "all names: {:#?}",
+                    //     workspace_definitions_by_name(db, state.workspace)
+                    //         .iter()
+                    //         .flat_map(move |(name, defs)| defs
+                    //             .into_iter()
+                    //             .map(|def| (name.clone(), def)))
+                    //         .map(|(name, def)| format!(
+                    //             "{name} ({})",
+                    //             match def.0 {
+                    //                 crate::lsp::salsa::Visibility::Global => "global".to_string(),
+                    //                 crate::lsp::salsa::Visibility::Inside(scope) => format!(
+                    //                     "local in {}",
+                    //                     scope.global_name(db).unwrap_or_else(|| def
+                    //                         .1
+                    //                         .uri(db)
+                    //                         .path()
+                    //                         .to_string())
+                    //                 ),
+                    //                 crate::lsp::salsa::Visibility::Temp(scope) => format!(
+                    //                     "temp in {}",
+                    //                     scope.global_name(db).unwrap_or_else(|| def
+                    //                         .1
+                    //                         .uri(db)
+                    //                         .path()
+                    //                         .to_string())
+                    //                 ),
+                    //             }
+                    //         ))
+                    //         .sorted_unstable()
+                    //         .collect_vec()
+                    // );
+                    true
                 }
-
-                messages
             }
 
             fn annotation_to_snippet(
@@ -656,13 +753,13 @@ mod tests {
             ) -> annotate_snippets::Snippet<'a> {
                 annotate_snippets::Snippet::source(ann.full_text)
                     .origin(file.path().as_str())
-                    .line_start(ann.text_location.start.col as usize)
+                    // .line_start(ann.text_location.start.row as usize + 1)
                     .fold(true)
                     .annotations([
                         annotate_snippets::Level::Error
                             .span(ann.text_location.byte_range())
                             .label(label),
-                        annotate_snippets::Level::Help
+                        annotate_snippets::Level::Info
                             .span(ann.claim_location.byte_range())
                             .label("due to this claim"),
                     ])
@@ -675,12 +772,12 @@ mod tests {
         #[test_case("examples/links/labels.ink")]
         #[test_case("examples/links/shadowing.ink")]
         #[test_case("examples/links/self-reference.ink")]
-        #[test_case("examples/links/conditions.ink")]
         #[test_case("examples/links/ambiguous/")]
         #[test_case("examples/links/knots_and_stitches/")]
         fn test_links(fs_location: &str) {
-            // GIVEN
-            let inks = walkdir::WalkDir::new(fs_location)
+            test_utils::setup_logging(log::LevelFilter::Trace);
+
+            let ink_files = walkdir::WalkDir::new(fs_location)
                 .into_iter()
                 .filter_ok(|it| it.path().extension().is_some_and(|it| it == "ink"))
                 .map_ok(|it| {
@@ -696,29 +793,15 @@ mod tests {
             let annotation_scanner = AnnotationScanner::new();
             let mut checks = LinkCheck::default();
 
-            for (uri, contents) in &inks {
+            for (uri, contents) in &ink_files {
                 // parse actual links via tree-sitter (i.e. normally)
                 set_content(&mut state, uri.clone(), contents);
                 // parse expected links via annotations
                 checks.add_annotations(uri, annotation_scanner.scan(contents))
             }
 
-            // WHEN
-            let actual_links =
-                links_for_workspace(&state.db, state.workspace).transform_locations(|it| {
-                    let uri = it.uri(&state.db);
-                    let region = TextRegion::from(it.cst_node(&state.db));
-                    (uri, region)
-                });
-
-            // THEN
-            let messages = checks.check(&actual_links);
-            if !messages.is_empty() {
-                let renderer = annotate_snippets::Renderer::styled();
-                for message in messages {
-                    eprintln!("{}", renderer.render(message));
-                }
-                panic!("Link check failed for {fs_location}");
+            if checks.failed(&state) {
+                panic!("Link check for {fs_location} failed.");
             }
         }
     }

@@ -1,3 +1,5 @@
+#![allow(dead_code)] // TODO: remove this once we've settled on a design
+
 use derive_more::{derive::Display, Debug};
 use lsp_types::{Range, Uri};
 use std::{ops::RangeBounds, str::FromStr};

@@ -6,6 +6,7 @@ use axum::{
     Router,
 };
 use itertools::Itertools;
+use lsp_types::Uri;
 use std::{future::Future, str::FromStr};
 use tap::Pipe;
 
@@ -107,35 +108,25 @@ async fn workspace_symbols(State(state): State<SharedState>) -> impl IntoRespons
 
 async fn links(State(state): State<SharedState>) -> impl IntoResponse {
     let state = state.lock().expect("I want this lock!");
-    let links = state.links();
+    let links: Vec<(
+        String,
+        String,
+        tree_sitter::Node<'_>,
+        Vec<(String, Vec<(String, tree_sitter::Node<'_>)>)>,
+    )> = todo!("rewriting links, please don't use");
 
     let common_prefix = state.common_file_prefix();
-    let links = links.transform_locations(|(uri, name, node)| {
-        (uri.path().as_str().replace(&common_prefix, ""), name, node)
-    });
 
     let mut body = html::root::Body::builder();
     body.heading_1(|h1| h1.text("Links"));
     body.unordered_list(|def_ul| {
-        for ((def_path, def_text, def_node), refs) in links
-            .resolved
-            .into_iter()
-            .into_group_map()
-            .into_iter()
-            .sorted_unstable_by_key(|((path, _, node), _)| (path.clone(), node.start_byte()))
-        {
+        for (def_path, def_text, def_node, refs) in links {
             def_ul.list_item(|def_item| {
                 def_item.text(format!(
                     "{def_path}:{}:{}: {def_text}",
                     def_node.start_position().row + 1,
                     def_node.start_position().column + 1
                 ));
-                let refs = refs
-                    .into_iter()
-                    .map(|(uri, name, node)| (uri, (name, node)))
-                    .into_group_map()
-                    .into_iter()
-                    .sorted_unstable_by_key(|it| it.0.clone());
                 def_item.unordered_list(|references| {
                     for (ref_path, refs) in refs {
                         references.list_item(|ref_item| {

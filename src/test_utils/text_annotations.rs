@@ -87,8 +87,8 @@ impl TextRegion {
     }
 }
 
-impl From<tree_sitter::Node<'_>> for TextRegion {
-    fn from(node: tree_sitter::Node<'_>) -> Self {
+impl<'a, T: type_sitter_lib::Node<'a>> From<T> for TextRegion {
+    fn from(node: T) -> Self {
         TextRegion {
             start: TextPos {
                 byte: node.start_byte(),
@@ -104,6 +104,15 @@ impl From<tree_sitter::Node<'_>> for TextRegion {
     }
 }
 
+impl From<TextRegion> for lsp_types::Range {
+    fn from(value: TextRegion) -> Self {
+        Self {
+            start: value.start.into(),
+            end: value.end.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TextPos {
     pub byte: usize,
@@ -111,6 +120,14 @@ pub struct TextPos {
     pub col: u32,
 }
 
+impl From<TextPos> for lsp_types::Position {
+    fn from(value: TextPos) -> Self {
+        Self {
+            line: value.row,
+            character: value.col,
+        }
+    }
+}
 struct TextPosIter<'a> {
     inner: CharIndices<'a>,
     row: u32,

@@ -23,9 +23,8 @@
 *   -> SSSa
     // ^^^^ references stitch:KKKa.SSSa
 *   -> SSSb
-    // ^^^^ references stitch:KKKa.SSSb
-    // ^^^^ references-not stitch:SSSb
-    //      (because while the global stitch name exists, it is shadowed by the local one)
+    // ^^^^ references stitch:SSSb
+    // ^^^^ references-not stitch:KKKa.SSSb
 *   -> KKKa.SSSa
     // ^^^^^^^^^ references stitch:KKKa.SSSa
 

@@ -32,6 +32,17 @@ pub(crate) use in_case;
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub(crate) struct Compact<T>(pub(crate) T);
 
+impl std::fmt::Debug for Compact<lsp_types::Location> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{:?}",
+            self.0.uri.path().as_str(),
+            Compact(self.0.range)
+        )
+    }
+}
+
 impl std::fmt::Debug for Compact<lsp_types::Range> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -63,4 +74,20 @@ impl std::fmt::Debug for Compact<text_annotations::TextRegion> {
             self.0.start.row, self.0.start.col, self.0.end.row, self.0.end.col
         )
     }
+}
+
+pub fn setup_logging(min_level: log::LevelFilter) {
+    _ = fern::Dispatch::new()
+        .level(log::LevelFilter::Error)
+        .level_for("ink_tool", min_level)
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "{} {} {}",
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .chain(std::io::stderr())
+        .apply();
 }
