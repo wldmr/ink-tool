@@ -1,7 +1,11 @@
-use crate::ink_syntax::types::{Condition, DivertTarget, Eval, Expr, Redirect};
+use crate::ink_syntax::types::{AllNamed, Condition, DivertTarget, Eval, Expr, Redirect};
 use crate::lsp::location::{self, specification::LocationThat};
+use crate::lsp::salsa::{GetNodeError, Workspace};
+use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
+use milc::Db;
+use tap::Pipe as _;
 use tree_sitter::Parser;
 use type_sitter_lib::Node;
 
@@ -9,18 +13,16 @@ use type_sitter_lib::Node;
 // Everthing else works in terms of LSP types.
 
 pub(crate) struct InkDocument {
-    uri: lsp_types::Uri,
     pub(crate) tree: tree_sitter::Tree,
     pub(crate) text: String,
     pub(crate) parser: tree_sitter::Parser,
-    enc: Option<WideEncoding>,
+    pub(crate) enc: Option<WideEncoding>,
     pub(crate) lines: line_index::LineIndex,
 }
 
 impl std::fmt::Debug for InkDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InkDocument")
-            .field("uri", &self.uri.path())
             .field("tree", &self.tree)
             .field("text", &format!("[{} bytes]", self.text.len()))
             .field("enc", &self.enc)
@@ -28,11 +30,23 @@ impl std::fmt::Debug for InkDocument {
     }
 }
 
+impl PartialEq for InkDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl std::hash::Hash for InkDocument {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+    }
+}
+
 pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
 /// Public API
 impl InkDocument {
-    pub(crate) fn new(uri: lsp_types::Uri, text: String, enc: Option<WideEncoding>) -> Self {
+    pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
         let mut parser = Parser::new();
         parser
             .set_language(&tree_sitter_ink::LANGUAGE.into())
@@ -42,13 +56,16 @@ impl InkDocument {
             .expect("can only return None with timeout, cancellation flag or missing language");
         let lines = LineIndex::new(&text);
         Self {
-            uri,
             parser,
             tree,
             lines,
             enc,
             text,
         }
+    }
+
+    pub(crate) fn new_empty(enc: Option<WideEncoding>) -> Self {
+        Self::new(String::new(), enc)
     }
 
     pub(crate) fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
@@ -210,17 +227,91 @@ impl InkDocument {
             this
         }
     }
-}
 
+    pub fn get_node_at<'a, T>(
+        &'a self,
+        db: &'a impl Db,
+        pos: lsp_types::Position,
+    ) -> Result<T, GetNodeError>
+    where
+        T: type_sitter_lib::Node<'a>,
+    {
+        let (point, _byte) = self.ts_point(db, pos)?;
+        self.tree
+            .root_node()
+            .named_descendant_for_point_range(point, point)
+            .ok_or_else(|| InvalidPosition(pos))?
+            .pipe(T::try_from_raw)
+            .map_err(|_| GetNodeError::InvalidType)
+    }
+
+    pub fn named_cst_node_at(
+        &self,
+        db: &impl Db,
+        pos: lsp_types::Position,
+    ) -> Result<AllNamed<'_>, InvalidPosition> {
+        let (point, _byte) = self.ts_point(db, pos)?;
+        self.tree
+            .root_node()
+            .named_descendant_for_point_range(point, point)
+            .and_then(|node| AllNamed::try_from_raw(node).ok())
+            .ok_or_else(|| InvalidPosition(pos))
+    }
+
+    pub fn ts_point(
+        &self,
+        db: &impl Db,
+        pos: lsp_types::Position,
+    ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
+        let lines = &self.lines;
+        let line_col = if let Some(enc) = self.enc(db) {
+            let wide = line_index::WideLineCol {
+                line: pos.line,
+                col: pos.character,
+            };
+            lines
+                .to_utf8(enc, wide)
+                .ok_or_else(|| InvalidPosition(pos))?
+        } else {
+            line_index::LineCol {
+                line: pos.line,
+                col: pos.character,
+            }
+        };
+        let point = tree_sitter::Point::new(pos.line as usize, pos.character as usize);
+        let byte = lines
+            .offset(line_col)
+            .ok_or_else(|| InvalidPosition(pos))?
+            .into();
+        Ok((point, byte))
+    }
+
+    fn enc(&self, db: &impl Db) -> Option<WideEncoding> {
+        *db.get(&Workspace)
+    }
+
+    pub fn ts_range(
+        &self,
+        db: &impl Db,
+        range: lsp_types::Range,
+    ) -> Result<tree_sitter::Range, InvalidPosition> {
+        let (start_point, start_byte) = self.ts_point(db, range.start)?;
+        let (end_point, end_byte) = self.ts_point(db, range.end)?;
+        Ok(tree_sitter::Range {
+            start_byte,
+            end_byte,
+            start_point,
+            end_point,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{DocumentEdit, InkDocument};
     use crate::lsp::location;
     use crate::test_utils::Compact;
     use line_index::WideEncoding;
-    use lsp_types::Uri;
     use pretty_assertions::assert_str_eq;
-    use std::str::FromStr;
     use test_case::test_case;
 
     /// The important thing here is that each edit's coordinates is relative to the previous edit,
@@ -384,10 +475,6 @@ mod tests {
     }
 
     fn new_doc(text: impl Into<String>, enc: Option<WideEncoding>) -> InkDocument {
-        InkDocument::new(
-            Uri::from_str("file:///tmp/test.ink").unwrap(),
-            text.into(),
-            enc,
-        )
+        InkDocument::new(text.into(), enc)
     }
 }

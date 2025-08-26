@@ -1,7 +1,9 @@
-use super::{Db, Doc};
-use crate::ink_syntax::{
-    types::{AllNamed, GlobalKeyword},
-    VisitInstruction, Visitor,
+use crate::{
+    ink_syntax::{
+        types::{AllNamed, GlobalKeyword},
+        VisitInstruction, Visitor,
+    },
+    lsp::document::InkDocument,
 };
 use builder::SymbolBuilder;
 use line_index::{LineCol, LineIndex, WideEncoding};
@@ -122,11 +124,11 @@ pub(super) struct DocumentSymbols<'a> {
 }
 
 impl<'a> DocumentSymbols<'a> {
-    pub(crate) fn new(db: &'a dyn Db, doc: Doc, qualified_names: bool) -> Self {
+    pub(crate) fn new(doc: &'a InkDocument, qualified_names: bool) -> Self {
         Self {
-            text: doc.text(db),
-            lines: doc.lines(db),
-            enc: doc.enc(db),
+            text: &doc.text,
+            lines: &doc.lines,
+            enc: doc.enc,
             qualified_names,
             knot: None,
             stitch: None,

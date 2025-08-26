@@ -1,50 +1,19 @@
 use super::{
     document::{DocumentEdit, InkDocument},
-    location::{
-        self,
-        specification::{rank_match, LocationThat},
-        Location,
-    },
-    salsa::{
-        common_file_prefix, doc_symbols, locations, uris, workspace_symbols, DbImpl, Doc, Workspace,
-    },
+    location::{self, specification::LocationThat, Location},
+    salsa::Workspace,
 };
-use crate::{
-    ink_syntax::{
-        self,
-        types::{AllNamed, Usages},
-    },
-    lsp::salsa::{usages_in_block, usages_in_doc, GetNodeError, NodeSalsa, SalsaUsage},
-};
+use crate::lsp::salsa::{workspace_symbols, Docs, My};
 use derive_more::derive::{Display, Error};
-use itertools::Itertools;
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
 };
-use salsa::Setter as _;
-use std::{
-    collections::HashMap,
-    hash::{Hash, Hasher},
-};
-use tap::Pipe as _;
-use type_sitter_lib::Node;
-
-/// A way to identify Documents hat is Copy (instead of just clone, like Uri).
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-pub(crate) struct DocId(u64);
-impl From<&Uri> for DocId {
-    fn from(uri: &Uri) -> Self {
-        let mut hasher = std::hash::DefaultHasher::new();
-        (*uri).hash(&mut hasher);
-        DocId(hasher.finish())
-    }
-}
+use milc::{Db, InMemory};
+use tap::Tap as _;
 
 pub(crate) struct State {
-    parsers: HashMap<DocId, InkDocument>,
-    workspace: Workspace,
-    db: DbImpl,
+    db: InMemory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
@@ -64,88 +33,73 @@ pub(crate) enum GotoDefinitionError {
 
 impl State {
     pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
-        let db = DbImpl::new();
-        let workspace = Workspace::new(&db, Default::default(), wide_encoding);
-        Self {
-            db,
-            parsers: Default::default(),
-            workspace,
-        }
+        let mut db = milc::InMemory::new();
+        Workspace::new(&mut db, wide_encoding);
+        Self { db }
     }
 
-    pub fn uris(&self) -> Vec<&Uri> {
-        uris(&self.db, self.workspace)
+    pub fn uris(&self) -> Vec<Uri> {
+        self.db.get::<Docs>(&Workspace).keys().cloned().collect()
     }
 
     pub fn common_file_prefix(&self) -> String {
-        common_file_prefix(&self.db, self.workspace)
+        self.uris()
+            .into_iter()
+            .map(|it| it.path().to_string())
+            .reduce(|acc, next| {
+                acc.chars()
+                    .zip(next.chars())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(a, _)| a)
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+            .tap(|it| log::debug!("Common file name prefix: `{it}``"))
     }
 
-    pub fn text(&self, uri: Uri) -> Result<&String, DocumentNotFound> {
-        self.workspace
-            .docs(&self.db)
+    pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
+        self.db
+            .get::<Docs>(&Workspace)
             .get(&uri)
-            .map(|it| it.text(&self.db))
+            .map(|it| it.text.clone())
             .ok_or_else(|| DocumentNotFound(uri))
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
-        let doc_id = DocId::from(&uri);
-        let parser = self.parsers.entry(doc_id).or_insert_with(|| {
-            let parser = InkDocument::new(uri.clone(), String::new(), self.workspace.enc(&self.db));
-            let mut ws_docs = self.workspace.docs(&self.db).clone();
-            ws_docs.insert(
-                uri.clone(),
-                Doc::new(
-                    &self.db,
-                    self.workspace,
-                    uri.clone(),
-                    parser.text.clone(),
-                    parser.tree.clone(),
-                    parser.lines.clone(),
-                    self.workspace.enc(&self.db),
-                ),
-            );
-            self.workspace.set_docs(&mut self.db).to(ws_docs);
-            parser
+        let enc = *self.db.get::<Option<WideEncoding>>(&Workspace);
+        // TODO: Move away from caching all parsers in one map
+        // This means every edit invalidates all documents
+        self.db.mutate(&Workspace, move |docs: &mut Docs| {
+            let doc = docs
+                .entry(uri)
+                .or_insert_with(|| InkDocument::new_empty(enc));
+            doc.edit(edits);
         });
-        parser.edit(edits);
-        let doc = *self
-            .workspace
-            .docs(&self.db)
-            .get(&uri)
-            .expect("just made sure");
-        doc.set_text(&mut self.db).to(parser.text.clone());
-        doc.set_tree(&mut self.db).to(parser.tree.clone());
-        doc.set_lines(&mut self.db).to(parser.lines.clone());
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        let doc_id = DocId::from(&uri);
-        match self.parsers.remove(&doc_id) {
-            Some(_) => {
-                let mut ws_docs = self.workspace.docs(&self.db).clone();
-                ws_docs.remove(&uri);
-                self.workspace.set_docs(&mut self.db).to(ws_docs);
-                Ok(())
-            }
-            None => Err(DocumentNotFound(uri)),
+        let removed = self
+            .db
+            .mutate_if(&Workspace, |docs: &mut Docs| docs.remove(&uri).is_some());
+        if removed {
+            Ok(())
+        } else {
+            Err(DocumentNotFound(uri))
         }
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
-    pub fn document_symbols(
-        &mut self,
-        uri: Uri,
-    ) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        match self.workspace.docs(&self.db).get(&uri) {
-            Some(&doc) => Ok(doc_symbols(&self.db, doc)),
-            None => Err(DocumentNotFound(uri)),
+    pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
+        if self.db.get::<Docs>(&Workspace).contains_key(&uri) {
+            let symbol = self.db.get::<Option<DocumentSymbol>>(&My(uri));
+            Ok(symbol.clone())
+        } else {
+            Err(DocumentNotFound(uri))
         }
     }
 
     pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
-        let mut symbols = workspace_symbols(&self.db, self.workspace);
+        let mut symbols = workspace_symbols(&self.db);
         if query.is_empty() {
             symbols
         } else {
@@ -160,20 +114,7 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        match self.parsers.get_mut(&DocId::from(&uri)) {
-            Some(doc) => {
-                let Some((range, specification)) = doc.possible_completions(position) else {
-                    return Ok(None);
-                };
-                // log::debug!("find {specification}");
-                let completions = self
-                    .find_locations(specification)
-                    .map(|loc| to_completion_item(range, loc))
-                    .collect();
-                Ok(Some(completions))
-            }
-            None => Err(DocumentNotFound(uri)),
-        }
+        todo!()
     }
 
     pub fn goto_definition(
@@ -181,44 +122,7 @@ impl State {
         from_uri: &Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
-        let Some(doc) = self.workspace.docs(&self.db).get(&from_uri) else {
-            return Err(DocumentNotFound(from_uri.clone()).into());
-        };
-        let db = &self.db;
-        let (_point, cursor_offset) = doc.ts_point(db, from_position)?;
-        // let start_node: Usages<'_> = match doc.get_node_at(&self.db, from_position) {
-        //     Ok(usage) => usage,
-        //     Err(GetNodeError::InvalidType) => {
-        //         log::trace!("Not even a usage, what is wrong with you!");
-        //         // not an error, just no definitions to be found
-        //         return Ok(Vec::new());
-        //     }
-        //     Err(GetNodeError::PositionOutOfBounds(e)) => return Err(e.into()),
-        // };
-        // log::debug!(
-        //     "Searching for links for node under cursor: `{}` {:?}",
-        //     &doc.text(&self.db)[start_node.byte_range()],
-        //     start_node.raw(),
-        // );
-        usages_in_doc(db, *doc)
-            .iter()
-            .inspect(|it| log::debug!("found usage {:?}", it.node(db).into_raw()))
-            .filter(|usage| usage.node(db).raw().byte_range().contains(&cursor_offset))
-            .inspect(|_| log::debug!("which is under cursor"))
-            .flat_map(|usage| usage.definition(db))
-            .inspect(|def| {
-                log::debug!(
-                    "with definition {:?} in {}",
-                    def.node(db),
-                    def.uri(db).path()
-                )
-            })
-            .map(|it| lsp_types::Location {
-                uri: it.uri(&self.db).clone(),
-                range: doc.lsp_range(db, it.name_node(db).range()),
-            })
-            .collect_vec()
-            .pipe(Ok)
+        todo!()
     }
 
     pub fn goto_references(
@@ -226,44 +130,29 @@ impl State {
         from_uri: &Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
-        let Some(doc) = self.workspace.docs(&self.db).get(&from_uri) else {
-            return Err(DocumentNotFound(from_uri.clone()).into());
-        };
-        let mut target_node = doc.named_cst_node_at(&self.db, from_position)?;
-        log::debug!("Searching for references to target node {target_node:?}");
-        if target_node.kind() != ink_syntax::types::Identifier::KIND {
-            log::debug!("Not even an identifier, what is wrong with you!");
-            return Ok(Vec::new());
-        }
-
-        if let Some(parent) = target_node.parent() {
-            if parent.kind() == ink_syntax::types::QualifiedName::KIND {
-                target_node = parent.downcast::<AllNamed>().unwrap();
-                log::debug!("Target is actually a qualified name! {target_node:?}");
-            }
-        };
-
         todo!()
     }
 
     fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
-        let mut locs = Vec::new();
-        for (_uri, &doc) in self.workspace.docs(&self.db) {
-            let doc_locs = locations(&self.db, doc)
-                .into_iter()
-                .map(|loc| (rank_match(&spec, &loc), loc))
-                .filter(|(rank, _)| *rank > 0);
-            locs.extend(doc_locs);
-        }
-        locs.sort_unstable_by_key(|(rank, _)| *rank);
-        locs.into_iter().map(|(_, location)| location)
+        // let mut locs = Vec::new();
+        // for (_uri, &doc) in self.workspace.docs(&self.db) {
+        //     let doc_locs = locations(&self.db, doc)
+        //         .into_iter()
+        //         .map(|loc| (rank_match(&spec, &loc), loc))
+        //         .filter(|(rank, _)| *rank > 0);
+        //     locs.extend(doc_locs);
+        // }
+        // locs.sort_unstable_by_key(|(rank, _)| *rank);
+        // locs.into_iter().map(|(_, location)| location)
+        todo!();
+        Vec::new().into_iter()
     }
 
     #[cfg(test)]
     fn to_ts_range(&self, from_uri: &Uri, loc: lsp_types::Range) -> tree_sitter::Range {
         // only used in tests, so we'll crash liberally
-        self.workspace
-            .docs(&self.db)
+        self.db
+            .get::<Docs>(&Workspace)
             .get(from_uri)
             .expect("why would you call this with a made-up URI?")
             .ts_range(&self.db, loc)
@@ -344,7 +233,6 @@ mod tests {
 
     mod completions {
         use super::{set_content, tests::text_with_caret, uri};
-        use crate::lsp::state;
         use pretty_assertions::assert_eq;
 
         #[test]
@@ -366,11 +254,6 @@ mod tests {
             let (contents, caret) = text_with_caret("{o@}");
             let uri = uri("test.ink");
             set_content(&mut state, uri.clone(), contents);
-            let doc = state.parsers.get(&state::DocId::from(&uri)).unwrap();
-            log::debug!(
-                "completions: {:?}",
-                doc.possible_completions(caret).unwrap()
-            );
             let completions = state.completions(uri, caret).unwrap().unwrap();
             assert_eq!(
                 completions
@@ -387,7 +270,7 @@ mod tests {
 
         use super::{new_state, set_content, State};
         use crate::{
-            lsp::salsa::{workspace_definitions_by_name, NodeSalsa},
+            lsp::salsa::{Docs, Workspace},
             test_utils::{
                 self,
                 text_annotations::{Annotation, AnnotationScanner},
@@ -397,6 +280,7 @@ mod tests {
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
+        use milc::Db as _;
         use test_case::test_case;
         use type_sitter_lib::Node;
 
@@ -505,19 +389,7 @@ mod tests {
                 };
 
                 // kind of breaks encapsulation, but just to get going:
-                let visibilities_of_definitions =
-                    workspace_definitions_by_name(db, state.workspace)
-                        .into_iter()
-                        .flat_map(|(name, visibilities)| {
-                            visibilities.into_iter().map(move |(vis, def)| {
-                                let def_lsp_location = lsp_types::Location {
-                                    uri: def.uri(db).clone(),
-                                    range: def.lsp_range(db),
-                                };
-                                (def_lsp_location, (vis, name.clone()))
-                            })
-                        })
-                        .into_group_map();
+                let visibilities_of_definitions = todo!();
 
                 let mut messages = Vec::new();
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
@@ -578,7 +450,7 @@ mod tests {
                                 let other_references = found_definitions
                                     .iter()
                                     .map(|other| {
-                                        let span = state.workspace.docs(db)[&other.uri]
+                                        let span = db.get::<Docs>(&Workspace)[&other.uri]
                                             .ts_range(db, other.range)
                                             .map(|it| it.start_byte..it.end_byte)
                                             .unwrap();
@@ -588,58 +460,55 @@ mod tests {
                                             .annotation(annotate_snippets::Level::Info.span(span))
                                     })
                                     .collect_vec();
-                                let vis_of_target = if let Some((_loc, vec)) =
-                                    visibilities_of_definitions.get_key_value(&def_lsp_location)
-                                {
+                                let visibilities: Vec<(&str, &str)> = Vec::new(); // TODO: Fill this in.
+                                let vis_of_target = if let Some(vec) = Some(visibilities) {
                                     vec.iter()
-                                        .map(|(vis, name)| {
-                                            use crate::lsp::salsa::Visibility::*;
-                                            match vis {
-                                                Global => {
-                                                    let source = &def_ann.full_text;
-                                                    let span = def_ann.text_location.byte_range();
-                                                    annotate_snippets::Snippet::source(source)
-                                                        .origin(def_uri.path().as_str())
-                                                        .annotations([
-                                                            annotate_snippets::Level::Info
-                                                                .span(span.clone())
-                                                                .label("has global name"),
-                                                            annotate_snippets::Level::Info
-                                                                .span(span)
-                                                                .label(name),
-                                                        ])
-                                                }
-                                                Inside(scope) => {
-                                                    let source = scope.cst(db).text(db);
-                                                    let uri = scope.uri(db);
-                                                    let span = scope.node(db).byte_range();
-                                                    annotate_snippets::Snippet::source(source)
-                                                        .origin(uri.path().as_str())
-                                                        .annotations([
-                                                            annotate_snippets::Level::Info
-                                                                .span(span.clone())
-                                                                .label("has local name here"),
-                                                            annotate_snippets::Level::Info
-                                                                .span(span)
-                                                                .label(name),
-                                                        ])
-                                                }
-                                                Temp(scope) => {
-                                                    let source = scope.cst(db).text(db);
-                                                    let uri = scope.uri(db);
-                                                    let span = scope.node(db).byte_range();
-                                                    annotate_snippets::Snippet::source(source)
-                                                        .origin(uri.path().as_str())
-                                                        .annotations([
-                                                            annotate_snippets::Level::Info
-                                                                .span(span.clone())
-                                                                .label("has temp name here"),
-                                                            annotate_snippets::Level::Info
-                                                                .span(span)
-                                                                .label(name),
-                                                        ])
-                                                }
+                                        .map(|(vis, name)| match *vis {
+                                            "global" => {
+                                                let source = &def_ann.full_text;
+                                                let span = def_ann.text_location.byte_range();
+                                                annotate_snippets::Snippet::source(source)
+                                                    .origin(def_uri.path().as_str())
+                                                    .annotations([
+                                                        annotate_snippets::Level::Info
+                                                            .span(span.clone())
+                                                            .label("has global name"),
+                                                        annotate_snippets::Level::Info
+                                                            .span(span)
+                                                            .label(name),
+                                                    ])
                                             }
+                                            "inside" => {
+                                                let source = todo!("scope.cst(db).text(db)");
+                                                let uri = todo!("scope.uri(db)");
+                                                let span = todo!("scope.node(db).byte_range()");
+                                                annotate_snippets::Snippet::source(source)
+                                                    .origin(uri)
+                                                    .annotations([
+                                                        annotate_snippets::Level::Info
+                                                            .span(span)
+                                                            .label("has local name here"),
+                                                        annotate_snippets::Level::Info
+                                                            .span(span)
+                                                            .label(name),
+                                                    ])
+                                            }
+                                            "temp" => {
+                                                let source = todo!("scope.cst(db).text(db)");
+                                                let uri = todo!("scope.uri(db)");
+                                                let span = todo!("scope.node(db).byte_range()");
+                                                annotate_snippets::Snippet::source(source)
+                                                    .origin(uri)
+                                                    .annotations([
+                                                        annotate_snippets::Level::Info
+                                                            .span(span)
+                                                            .label("has temp name here"),
+                                                        annotate_snippets::Level::Info
+                                                            .span(span)
+                                                            .label(name),
+                                                    ])
+                                            }
+                                            _ => todo!(),
                                         })
                                         .collect_vec()
                                 } else {
@@ -706,10 +575,6 @@ mod tests {
                     for message in messages {
                         eprintln!("{}", renderer.render(message));
                     }
-                    eprintln!(
-                        "all names: {:#?}",
-                        workspace_definitions_by_name(db, state.workspace)
-                    );
                     // eprintln!(
                     //     "all names: {:#?}",
                     //     workspace_definitions_by_name(db, state.workspace)

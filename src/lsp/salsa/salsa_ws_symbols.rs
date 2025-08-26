@@ -1,24 +1,27 @@
-use crate::ink_syntax::{
-    types::{AllNamed, GlobalKeyword},
-    VisitInstruction, Visitor,
+use crate::{
+    ink_syntax::{
+        types::{AllNamed, GlobalKeyword},
+        VisitInstruction, Visitor,
+    },
+    lsp::document::InkDocument,
 };
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
 use type_sitter_lib::{IncorrectKindCause, Node};
 
-use super::{salsa_doc_symbols::lsp_range, Db, Doc};
+use super::salsa_doc_symbols::lsp_range;
 
 pub(super) struct WorkspaceSymbols<'a> {
-    db: &'a dyn Db,
-    doc: Doc,
+    uri: &'a Uri,
+    doc: &'a InkDocument,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
     pub(super) sym: Vec<WorkspaceSymbol>,
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    pub(crate) fn new(db: &'a dyn Db, doc: Doc) -> Self {
+    pub(crate) fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
         Self {
-            db,
+            uri,
             doc,
             knot: None,
             stitch: None,
@@ -60,15 +63,15 @@ impl<'a> WorkspaceSymbols<'a> {
     }
 
     fn uri(&self) -> &Uri {
-        self.doc.uri(self.db)
+        &self.uri
     }
 
     fn lsp_range(&self, range: &tree_sitter::Range) -> lsp_types::Range {
-        lsp_range(self.doc.lines(self.db), self.doc.enc(self.db), range)
+        lsp_range(&self.doc.lines, self.doc.enc, range)
     }
 
     fn text(&self, byte_range: std::ops::Range<usize>) -> &'a str {
-        &self.doc.text(self.db)[byte_range]
+        &self.doc.text[byte_range]
     }
 }
 

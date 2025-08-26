@@ -32,16 +32,16 @@ impl From<GotoDefinitionError> for ResponseError {
 
 type Response<T> = Result<T, ResponseError>;
 
-impl RequestHandler for request::HoverRequest {
-    fn execute(_params: Self::Params, _state: &SharedState) -> Response<Self::Result> {
-        Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(
-                "You are indeed hovering".to_owned(),
-            )),
-            range: None,
-        }))
-    }
-}
+// impl RequestHandler for request::HoverRequest {
+//     fn execute(_params: Self::Params, _state: &SharedState) -> Response<Self::Result> {
+//         Ok(Some(Hover {
+//             contents: HoverContents::Scalar(MarkedString::String(
+//                 "You are indeed hovering".to_owned(),
+//             )),
+//             range: None,
+//         }))
+//     }
+// }
 
 impl RequestHandler for request::DocumentSymbolRequest {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
@@ -61,42 +61,42 @@ impl RequestHandler for request::WorkspaceSymbolRequest {
     }
 }
 
-impl RequestHandler for request::Completion {
-    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-        let completions = state.lock()?.completions(
-            params.text_document_position.text_document.uri,
-            params.text_document_position.position,
-        )?;
-        Ok(completions.map(CompletionResponse::Array))
-    }
-}
+// impl RequestHandler for request::Completion {
+//     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+//         let completions = state.lock()?.completions(
+//             params.text_document_position.text_document.uri,
+//             params.text_document_position.position,
+//         )?;
+//         Ok(completions.map(CompletionResponse::Array))
+//     }
+// }
 
-impl RequestHandler for request::GotoDefinition {
-    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-        use lsp_types::GotoDefinitionResponse::*;
-        let defs = state.lock()?.goto_definition(
-            &params.text_document_position_params.text_document.uri,
-            params.text_document_position_params.position,
-        )?;
-        let response = match defs.len() {
-            0 => None,
-            1 => Some(Scalar(defs.into_iter().next().unwrap())),
-            _ => Some(Array(defs)),
-        };
-        Ok(response)
-    }
-}
+// impl RequestHandler for request::GotoDefinition {
+//     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+//         use lsp_types::GotoDefinitionResponse::*;
+//         let defs = state.lock()?.goto_definition(
+//             &params.text_document_position_params.text_document.uri,
+//             params.text_document_position_params.position,
+//         )?;
+//         let response = match defs.len() {
+//             0 => None,
+//             1 => Some(Scalar(defs.into_iter().next().unwrap())),
+//             _ => Some(Array(defs)),
+//         };
+//         Ok(response)
+//     }
+// }
 
-impl RequestHandler for request::References {
-    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-        let refs = state.lock()?.goto_references(
-            &params.text_document_position.text_document.uri,
-            params.text_document_position.position,
-        )?;
-        let response = match refs.len() {
-            0 => None,
-            _ => Some(refs),
-        };
-        Ok(response)
-    }
-}
+// impl RequestHandler for request::References {
+//     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+//         let refs = state.lock()?.goto_references(
+//             &params.text_document_position.text_document.uri,
+//             params.text_document_position.position,
+//         )?;
+//         let response = match refs.len() {
+//             0 => None,
+//             _ => Some(refs),
+//         };
+//         Ok(response)
+//     }
+// }

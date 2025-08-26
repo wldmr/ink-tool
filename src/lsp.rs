@@ -84,11 +84,11 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
     }
 
     ServerCapabilities {
-        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        hover_provider: None, //Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
-        definition_provider: Some(OneOf::Left(true)),
-        references_provider: Some(OneOf::Left(true)),
+        definition_provider: None, //Some(OneOf::Left(true)),
+        references_provider: None, //Some(OneOf::Left(true)),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -98,15 +98,15 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
                 save: None,
             },
         )),
-        completion_provider: Some(CompletionOptions {
-            resolve_provider: Some(false),
-            trigger_characters: Some(vec!["->", "-> "].into_iter().map(str::to_string).collect()),
-            all_commit_characters: None,
-            work_done_progress_options: WorkDoneProgressOptions {
-                work_done_progress: Some(false),
-            },
-            completion_item: None,
-        }),
+        completion_provider: None, /*Some(CompletionOptions {
+                                       resolve_provider: Some(false),
+                                       trigger_characters: Some(vec!["->", "-> "].into_iter().map(str::to_string).collect()),
+                                       all_commit_characters: None,
+                                       work_done_progress_options: WorkDoneProgressOptions {
+                                           work_done_progress: Some(false),
+                                       },
+                                       completion_item: None,
+                                   })*/
         position_encoding: find_utf8(params).or(Some(PositionEncodingKind::UTF16)),
         ..Default::default()
     }
@@ -125,12 +125,12 @@ fn force_server_file_watcher(client_info: &ClientInfo) -> bool {
 fn handle_request(request: Request, state: &SharedState) -> Result<Response, Request> {
     use request::*;
     try_request_handlers! { request, state =>
-        HoverRequest,
+        // HoverRequest,
         DocumentSymbolRequest,
         WorkspaceSymbolRequest,
-        Completion,
-        GotoDefinition,
-        References,
+        // Completion,
+        // GotoDefinition,
+        // References,
     }
 }
 
