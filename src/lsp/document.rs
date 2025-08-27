@@ -158,7 +158,7 @@ impl InkDocument {
     fn input_edit(&self, range: lsp_types::Range, new_text: &str) -> tree_sitter::InputEdit {
         let start_byte = self.to_byte(range.start);
         let old_end_byte = self.to_byte(range.end);
-        let new_end_byte = start_byte + new_text.bytes().len();
+        let new_end_byte = start_byte + new_text.len();
 
         tree_sitter::InputEdit {
             start_byte,
@@ -176,7 +176,7 @@ impl InkDocument {
         }
     }
 
-    fn to_byte_maybe(&self, pos: lsp_types::Position) -> Option<usize> {
+    fn to_byte(&self, pos: lsp_types::Position) -> usize {
         let lsp_types::Position {
             line,
             character: col,
@@ -188,11 +188,9 @@ impl InkDocument {
         } else {
             LineCol { line, col }
         };
-        self.lines.offset(pos).map(|it| it.into())
-    }
-
-    fn to_byte(&self, pos: lsp_types::Position) -> usize {
-        self.to_byte_maybe(pos)
+        self.lines
+            .offset(pos)
+            .map(|it| it.into())
             .expect("LineCol must correspond to an offset")
     }
 
