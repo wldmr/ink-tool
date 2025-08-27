@@ -1,6 +1,6 @@
 use crate::ink_syntax::types::{AllNamed, Condition, DivertTarget, Eval, Expr, Redirect};
 use crate::lsp::location::{self, specification::LocationThat};
-use crate::lsp::salsa::{GetNodeError, Workspace};
+use crate::lsp::salsa::GetNodeError;
 use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
@@ -18,6 +18,12 @@ pub(crate) struct InkDocument {
     pub(crate) parser: tree_sitter::Parser,
     pub(crate) enc: Option<WideEncoding>,
     pub(crate) lines: line_index::LineIndex,
+}
+
+impl Default for InkDocument {
+    fn default() -> Self {
+        InkDocument::new_empty(None) // NOTE: Workaround for `Default` requirement. Must set actual encoding before editing!
+    }
 }
 
 impl std::fmt::Debug for InkDocument {
@@ -264,7 +270,7 @@ impl InkDocument {
         pos: lsp_types::Position,
     ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
         let lines = &self.lines;
-        let line_col = if let Some(enc) = self.enc(db) {
+        let line_col = if let Some(enc) = self.enc {
             let wide = line_index::WideLineCol {
                 line: pos.line,
                 col: pos.character,
@@ -284,10 +290,6 @@ impl InkDocument {
             .ok_or_else(|| InvalidPosition(pos))?
             .into();
         Ok((point, byte))
-    }
-
-    fn enc(&self, db: &impl Db) -> Option<WideEncoding> {
-        *db.get(&Workspace)
     }
 
     pub fn ts_range(

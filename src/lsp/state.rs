@@ -3,17 +3,19 @@ use super::{
     location::{self, specification::LocationThat, Location},
     salsa::Workspace,
 };
-use crate::lsp::salsa::{workspace_symbols, Docs, My};
+use crate::lsp::salsa::{workspace_symbols, DocId, Docs};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
 };
 use milc::{Db, InMemory};
+use std::collections::BTreeSet;
 use tap::Tap as _;
 
 pub(crate) struct State {
     db: InMemory,
+    enc: Option<WideEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
@@ -32,20 +34,20 @@ pub(crate) enum GotoDefinitionError {
 }
 
 impl State {
-    pub fn new(wide_encoding: Option<WideEncoding>, qualified_names: bool) -> Self {
-        let mut db = milc::InMemory::new();
-        Workspace::new(&mut db, wide_encoding);
-        Self { db }
+    pub fn new(enc: Option<WideEncoding>, qualified_names: bool) -> Self {
+        let db = milc::InMemory::new();
+        Self { db, enc }
     }
 
-    pub fn uris(&self) -> Vec<Uri> {
-        self.db.get::<Docs>(&Workspace).keys().cloned().collect()
+    pub fn docs(&self) -> BTreeSet<DocId> {
+        self.db.get::<Docs>(&Workspace).clone()
     }
 
     pub fn common_file_prefix(&self) -> String {
-        self.uris()
+        // TODO: Perfect candite for caching
+        self.docs()
             .into_iter()
-            .map(|it| it.path().to_string())
+            .map(|it| it.uri().path().to_string())
             .reduce(|acc, next| {
                 acc.chars()
                     .zip(next.chars())
@@ -58,43 +60,44 @@ impl State {
     }
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        self.db
-            .get::<Docs>(&Workspace)
-            .get(&uri)
-            .map(|it| it.text.clone())
-            .ok_or_else(|| DocumentNotFound(uri))
+        let docid = uri.into();
+        if self.docs().contains(&docid) {
+            Ok(self.db.get::<InkDocument>(&docid).text.clone())
+        } else {
+            Err(DocumentNotFound(docid.uri().clone()))
+        }
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
-        let enc = *self.db.get::<Option<WideEncoding>>(&Workspace);
-        // TODO: Move away from caching all parsers in one map
-        // This means every edit invalidates all documents
-        self.db.mutate(&Workspace, move |docs: &mut Docs| {
-            let doc = docs
-                .entry(uri)
-                .or_insert_with(|| InkDocument::new_empty(enc));
-            doc.edit(edits);
+        let uri = DocId::from(uri);
+        self.db.mutate(&uri, |doc: &mut InkDocument| {
+            doc.enc = self.enc; // NOTE: Workaround because we can't set real encoding in `Default` impl :-/
+            doc.edit(edits)
         });
+        self.db
+            .mutate_if(&Workspace, |docs: &mut Docs| docs.insert(uri.clone()));
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
+        let docid = uri.into();
         let removed = self
             .db
-            .mutate_if(&Workspace, |docs: &mut Docs| docs.remove(&uri).is_some());
+            .mutate_if(&Workspace, |docs: &mut Docs| docs.remove(&docid));
         if removed {
             Ok(())
         } else {
-            Err(DocumentNotFound(uri))
+            Err(DocumentNotFound(docid.into()))
         }
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        if self.db.get::<Docs>(&Workspace).contains_key(&uri) {
-            let symbol = self.db.get::<Option<DocumentSymbol>>(&My(uri));
+        let docid = uri.into();
+        if self.db.get::<Docs>(&Workspace).contains(&docid) {
+            let symbol = self.db.get::<Option<DocumentSymbol>>(&docid);
             Ok(symbol.clone())
         } else {
-            Err(DocumentNotFound(uri))
+            Err(DocumentNotFound(docid.into()))
         }
     }
 
@@ -149,12 +152,10 @@ impl State {
     }
 
     #[cfg(test)]
-    fn to_ts_range(&self, from_uri: &Uri, loc: lsp_types::Range) -> tree_sitter::Range {
-        // only used in tests, so we'll crash liberally
+    fn to_ts_range(&self, docid: &DocId, loc: lsp_types::Range) -> tree_sitter::Range {
+        // only used in tests, so we'll crash liberally!
         self.db
-            .get::<Docs>(&Workspace)
-            .get(from_uri)
-            .expect("why would you call this with a made-up URI?")
+            .get::<InkDocument>(docid)
             .ts_range(&self.db, loc)
             .expect("don't call this with an invalid location")
     }
@@ -266,11 +267,14 @@ mod tests {
     }
 
     mod links {
-        use std::{collections::HashMap, str::FromStr};
+        use std::{collections::HashMap, ops::Deref, str::FromStr};
 
         use super::{new_state, set_content, State};
         use crate::{
-            lsp::salsa::{Docs, Workspace},
+            lsp::{
+                document::InkDocument,
+                salsa::{DocId, Docs, Workspace},
+            },
             test_utils::{
                 self,
                 text_annotations::{Annotation, AnnotationScanner},
@@ -397,10 +401,11 @@ mod tests {
                     let found_definitions = state
                         .goto_definition(&usage_uri, usage_lsp_position.start)
                         .expect("we should be within range");
+                    let my_usage_uri = usage_uri.deref().clone().into();
                     if *reference_kind == ReferenceKind::Unresolved {
                         if !found_definitions.is_empty() {
                             for def in found_definitions {
-                                let ts_range = state.to_ts_range(&usage_uri, usage_lsp_position);
+                                let ts_range = state.to_ts_range(&my_usage_uri, usage_lsp_position);
                                 let byte_range = ts_range.start_byte..ts_range.end_byte;
                                 // have to use def_uri, because we can't return a reference to def.uri from this function.
                                 let (def_uri, def_src) = inks.get_key_value(&def.uri).unwrap();
@@ -450,7 +455,8 @@ mod tests {
                                 let other_references = found_definitions
                                     .iter()
                                     .map(|other| {
-                                        let span = db.get::<Docs>(&Workspace)[&other.uri]
+                                        let span = db
+                                            .get::<InkDocument>(&DocId::from(other.uri.clone()))
                                             .ts_range(db, other.range)
                                             .map(|it| it.start_byte..it.end_byte)
                                             .unwrap();
@@ -662,7 +668,7 @@ mod tests {
                 // parse actual links via tree-sitter (i.e. normally)
                 set_content(&mut state, uri.clone(), contents);
                 // parse expected links via annotations
-                checks.add_annotations(uri, annotation_scanner.scan(contents))
+                checks.add_annotations(&uri, annotation_scanner.scan(contents))
             }
 
             if checks.failed(&state) {

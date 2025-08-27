@@ -6,7 +6,6 @@ use axum::{
     Router,
 };
 use itertools::Itertools;
-use lsp_types::Uri;
 use std::{future::Future, str::FromStr};
 use tap::Pipe;
 
@@ -68,9 +67,9 @@ async fn root(State(state): State<SharedState>) -> impl IntoResponse {
                 menu.list_item(|li| {
                     li.text("Files");
                     li.unordered_list(|ul| {
-                        for uri in state.uris() {
+                        for docid in state.docs() {
                             ul.list_item(|li| {
-                                let path = uri.path().segments().join("/");
+                                let path = docid.uri().path().segments().join("/");
                                 li.anchor(|a| {
                                     a.href(format!("/file/{path}",))
                                         .text(path.replace(&common_prefix, ""))
