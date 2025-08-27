@@ -73,6 +73,6 @@ impl Query<Option<Vec<WorkspaceSymbol>>> for DocId {
 pub type Name = String;
 
 pub struct LspDiagnostic {
-    doc: InkDocument,
+    doc: DocId,
     diagnostic: lsp_types::Diagnostic,
 }

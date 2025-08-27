@@ -11,7 +11,7 @@ impl From<DocumentNotFound> for ResponseError {
         Self {
             code: lsp_server::ErrorCode::RequestFailed as i32,
             message: value.to_string(),
-            data: serde_json::to_value(value.0.as_str()).ok(),
+            data: serde_json::to_value(value.0.uri().as_str()).ok(),
         }
     }
 }

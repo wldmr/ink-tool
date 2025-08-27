@@ -19,8 +19,8 @@ pub(crate) struct State {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
-#[display("Document not found: `{}`", _0.path())]
-pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
+#[display("Document not found: `{}`", _0.uri().path())]
+pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) DocId);
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 #[display("Not a valid position: {}:{}", _0.line, _0.character)]
@@ -64,7 +64,7 @@ impl State {
         if self.docs().contains(&docid) {
             Ok(self.db.get::<InkDocument>(&docid).text.clone())
         } else {
-            Err(DocumentNotFound(docid.uri().clone()))
+            Err(DocumentNotFound(docid))
         }
     }
 
@@ -86,7 +86,7 @@ impl State {
         if removed {
             Ok(())
         } else {
-            Err(DocumentNotFound(docid.into()))
+            Err(DocumentNotFound(docid))
         }
     }
 
@@ -97,7 +97,7 @@ impl State {
             let symbol = self.db.get::<Option<DocumentSymbol>>(&docid);
             Ok(symbol.clone())
         } else {
-            Err(DocumentNotFound(docid.into()))
+            Err(DocumentNotFound(docid))
         }
     }
 
