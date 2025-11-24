@@ -1,10 +1,10 @@
 use crate::ink_syntax::types::{AllNamed, Condition, DivertTarget, Eval, Expr, Redirect};
 use crate::lsp::location::{self, specification::LocationThat};
-use crate::lsp::salsa::GetNodeError;
+use crate::lsp::salsa::{GetNodeError, Ops};
 use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
-use milc::Db;
+use mini_milc::Db;
 use tap::Pipe as _;
 use tree_sitter::Parser;
 use type_sitter_lib::Node;
@@ -234,7 +234,7 @@ impl InkDocument {
 
     pub fn get_node_at<'a, T>(
         &'a self,
-        db: &'a impl Db,
+        db: &'a impl Db<Ops>,
         pos: lsp_types::Position,
     ) -> Result<T, GetNodeError>
     where
@@ -251,7 +251,7 @@ impl InkDocument {
 
     pub fn named_cst_node_at(
         &self,
-        db: &impl Db,
+        db: &impl Db<Ops>,
         pos: lsp_types::Position,
     ) -> Result<AllNamed<'_>, InvalidPosition> {
         let (point, _byte) = self.ts_point(db, pos)?;
@@ -264,7 +264,7 @@ impl InkDocument {
 
     pub fn ts_point(
         &self,
-        db: &impl Db,
+        _db: &impl Db<Ops>,
         pos: lsp_types::Position,
     ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
         let lines = &self.lines;
@@ -292,7 +292,7 @@ impl InkDocument {
 
     pub fn ts_range(
         &self,
-        db: &impl Db,
+        db: &impl Db<Ops>,
         range: lsp_types::Range,
     ) -> Result<tree_sitter::Range, InvalidPosition> {
         let (start_point, start_byte) = self.ts_point(db, range.start)?;

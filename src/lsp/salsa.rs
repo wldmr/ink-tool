@@ -3,12 +3,16 @@ use crate::{
     ink_syntax::Visitor,
     lsp::{
         document::InkDocument,
-        salsa::{salsa_doc_symbols::DocumentSymbols, salsa_ws_symbols::WorkspaceSymbols},
+        salsa::{
+            salsa_doc_symbols::DocumentSymbols as DocSymVisitor,
+            salsa_ws_symbols::WorkspaceSymbols as WsSymVisitor,
+        },
     },
 };
+use itertools::Itertools;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
-use milc::{Db, Input, Query};
-use std::collections::BTreeSet;
+use mini_milc::{composite_query, subquery, Db};
+use std::collections::HashSet;
 
 mod salsa_doc_symbols;
 mod salsa_ws_symbols;
@@ -21,53 +25,71 @@ pub enum GetNodeError {
     PositionOutOfBounds(InvalidPosition),
 }
 
-pub(crate) type Docs = BTreeSet<DocId>;
+pub(crate) type DocId = Uri;
+#[derive(Default, Debug, derive_more::Deref, derive_more::DerefMut)]
+pub(crate) struct Docs(HashSet<DocId>);
 
-#[derive(Debug, Hash, Clone, Copy)]
-pub(crate) struct Workspace;
+composite_query! {
+    #[derive(Hash)]
+    pub(crate) enum Ops -> OpsV;
 
-impl Input<Docs> for Workspace {}
+    #[derive(Hash)]
+    struct Workspace -> Docs {;}
 
-/// Ad-hoc wrapper for foreign types so we can implement queries for them.
-#[derive(
-    Debug, Hash, Clone, PartialEq, Eq, PartialOrd, Ord, derive_more::From, derive_more::Into,
-)]
-pub(crate) struct DocId(Uri);
+    #[derive(Hash)]
+    struct Document -> InkDocument {(pub DocId);}
 
-impl DocId {
-    pub(crate) fn uri(&self) -> &Uri {
-        &self.0
+    #[derive(Hash)]
+    struct DocumentSymbols -> Option<DocumentSymbol> {(pub DocId);}
+
+    #[derive(Hash)]
+    struct WorkspaceSymbols -> Option<Vec<WorkspaceSymbol>> {(pub DocId);}
+}
+
+impl PartialEq for Docs {
+    fn eq(&self, other: &Self) -> bool {
+        // :(
+        self.0
+            .iter()
+            .sorted_unstable()
+            .zip(other.0.iter().sorted_unstable())
+            .all(|(a, b)| a == b)
     }
 }
 
-impl Input<InkDocument> for DocId {}
+subquery!(Ops, Workspace, Docs);
+subquery!(Ops, Document, InkDocument);
 
-impl Query<Option<DocumentSymbol>> for DocId {
-    fn value(&self, db: &impl Db) -> Option<DocumentSymbol> {
-        let doc = db.get::<InkDocument>(self);
-        let mut syms = DocumentSymbols::new(&doc, false);
+subquery!(Ops, DocumentSymbols, Option<DocumentSymbol>, |self, db| {
+    let doc = db.get(Document(self.0.clone()));
+    let mut syms = DocSymVisitor::new(&*doc, false);
+    let mut cursor = doc.tree.root_node().walk();
+    let syms = syms.traverse(&mut cursor).unwrap();
+    syms.sym
+});
+
+subquery!(
+    Ops,
+    WorkspaceSymbols,
+    Option<Vec<WorkspaceSymbol>>,
+    |self, db| {
+        let ws = db.get(Workspace);
+        let doc = db.get(Document(self.0.clone()));
+        let uri = ws.get(&self.0).unwrap();
+        let mut syms = WsSymVisitor::new(uri, &*doc);
         let mut cursor = doc.tree.root_node().walk();
-        let syms = syms.traverse(&mut cursor)?;
-        syms.sym
-    }
-}
+        syms.traverse(&mut cursor);
 
-pub(crate) fn workspace_symbols<'d>(db: &'d impl Db) -> Vec<WorkspaceSymbol> {
-    db.get::<Docs>(&Workspace)
-        .iter()
-        .flat_map(|docid| db.get::<Option<Vec<WorkspaceSymbol>>>(docid).clone())
-        .flat_map(|them| them)
-        .collect()
-}
-
-impl Query<Option<Vec<WorkspaceSymbol>>> for DocId {
-    fn value(&self, db: &impl Db) -> Option<Vec<WorkspaceSymbol>> {
-        let doc = db.get::<InkDocument>(self);
-        let mut syms = WorkspaceSymbols::new(&self.0, &doc);
-        let mut cursor = doc.tree.root_node().walk();
-        syms.traverse(&mut cursor); // TODO: inconsistent usage with document symbols
         Some(syms.sym)
     }
+);
+
+pub(crate) fn workspace_symbols(db: &impl Db<Ops>) -> Vec<WorkspaceSymbol> {
+    db.get(Workspace)
+        .iter()
+        .flat_map(|uri| db.get(WorkspaceSymbols(uri.clone())).clone())
+        .flat_map(|them| them)
+        .collect()
 }
 
 pub type Name = String;

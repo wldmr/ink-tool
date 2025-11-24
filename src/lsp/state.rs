@@ -3,24 +3,28 @@ use super::{
     location::{self, specification::LocationThat, Location},
     salsa::Workspace,
 };
-use crate::lsp::salsa::{workspace_symbols, DocId, Docs};
+#[cfg(test)]
+use crate::lsp::salsa::DocId;
+use crate::lsp::salsa::{self, workspace_symbols, Docs, Ops};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
 };
-use milc::{Db, InMemory};
-use std::collections::BTreeSet;
+use mini_milc::{salsa::Salsa, Cached, Db};
+use std::collections::HashMap;
 use tap::Tap as _;
 
+type InkSalsa = Salsa<Ops, Ops, HashMap<Ops, mini_milc::salsa::Slot<Ops, Ops>>>;
+
 pub(crate) struct State {
-    db: InMemory,
+    db: InkSalsa,
     enc: Option<WideEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
-#[display("Document not found: `{}`", _0.uri().path())]
-pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) DocId);
+#[display("Document not found: `{}`", _0.path())]
+pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 #[display("Not a valid position: {}:{}", _0.line, _0.character)]
@@ -34,20 +38,22 @@ pub(crate) enum GotoDefinitionError {
 }
 
 impl State {
-    pub fn new(enc: Option<WideEncoding>, qualified_names: bool) -> Self {
-        let db = milc::InMemory::new();
-        Self { db, enc }
+    pub fn new(enc: Option<WideEncoding>, _qualified_names: bool) -> Self {
+        Self {
+            db: mini_milc::salsa_hashmap(),
+            enc,
+        }
     }
 
-    pub fn docs(&self) -> BTreeSet<DocId> {
-        self.db.get::<Docs>(&Workspace).clone()
+    pub fn docs(&self) -> Cached<'_, Ops, Docs> {
+        self.db.get(Workspace)
     }
 
     pub fn common_file_prefix(&self) -> String {
         // TODO: Perfect candite for caching
         self.docs()
-            .into_iter()
-            .map(|it| it.uri().path().to_string())
+            .iter()
+            .map(|it| it.path().to_string())
             .reduce(|acc, next| {
                 acc.chars()
                     .zip(next.chars())
@@ -60,29 +66,29 @@ impl State {
     }
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        let docid = uri.into();
-        if self.docs().contains(&docid) {
-            Ok(self.db.get::<InkDocument>(&docid).text.clone())
+        if self.docs().contains(&uri) {
+            Ok(self.db.get(salsa::Document(uri)).text.clone())
         } else {
-            Err(DocumentNotFound(docid))
+            Err(DocumentNotFound(uri))
         }
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
-        let uri = DocId::from(uri);
-        self.db.mutate(&uri, |doc: &mut InkDocument| {
-            doc.enc = self.enc; // NOTE: Workaround because we can't set real encoding in `Default` impl :-/
-            doc.edit(edits)
+        self.db.update(salsa::Document(uri.clone()), |doc| {
+            let mut doc = doc.unwrap_or_else(|| InkDocument::new_empty(self.enc));
+            doc.edit(edits);
+            mini_milc::Updated::Changed(doc)
         });
-        self.db
-            .mutate_if(&Workspace, |docs: &mut Docs| docs.insert(uri.clone()));
+        self.db.update(salsa::Workspace, |old| {
+            old.update_in_place(|it| it.insert(uri), Docs::default)
+        });
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
         let docid = uri.into();
-        let removed = self
-            .db
-            .mutate_if(&Workspace, |docs: &mut Docs| docs.remove(&docid));
+        let removed = self.db.update(salsa::Workspace, |docs| {
+            docs.update_in_place(|it| it.remove(&docid), Default::default)
+        });
         if removed {
             Ok(())
         } else {
@@ -93,8 +99,8 @@ impl State {
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
         let docid = uri.into();
-        if self.db.get::<Docs>(&Workspace).contains(&docid) {
-            let symbol = self.db.get::<Option<DocumentSymbol>>(&docid);
+        if self.db.get(Workspace).contains(&docid) {
+            let symbol = self.db.get(salsa::DocumentSymbols(docid));
             Ok(symbol.clone())
         } else {
             Err(DocumentNotFound(docid))
@@ -136,7 +142,7 @@ impl State {
         todo!()
     }
 
-    fn find_locations(&self, spec: LocationThat) -> impl Iterator<Item = location::Location> {
+    fn find_locations(&self, _spec: LocationThat) -> impl Iterator<Item = location::Location> {
         // let mut locs = Vec::new();
         // for (_uri, &doc) in self.workspace.docs(&self.db) {
         //     let doc_locs = locations(&self.db, doc)
@@ -154,8 +160,9 @@ impl State {
     #[cfg(test)]
     fn to_ts_range(&self, docid: &DocId, loc: lsp_types::Range) -> tree_sitter::Range {
         // only used in tests, so we'll crash liberally!
+        use crate::lsp::salsa::Document;
         self.db
-            .get::<InkDocument>(docid)
+            .get(Document(docid.clone()))
             .ts_range(&self.db, loc)
             .expect("don't call this with an invalid location")
     }
@@ -271,10 +278,7 @@ mod tests {
 
         use super::{new_state, set_content, State};
         use crate::{
-            lsp::{
-                document::InkDocument,
-                salsa::{DocId, Docs, Workspace},
-            },
+            lsp::salsa::{self},
             test_utils::{
                 self,
                 text_annotations::{Annotation, AnnotationScanner},
@@ -284,9 +288,8 @@ mod tests {
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
-        use milc::Db as _;
+        use mini_milc::Db as _;
         use test_case::test_case;
-        use type_sitter_lib::Node;
 
         #[derive(Debug, Default)]
         struct LinkCheck<'a> {
@@ -393,7 +396,7 @@ mod tests {
                 };
 
                 // kind of breaks encapsulation, but just to get going:
-                let visibilities_of_definitions = todo!();
+                // let visibilities_of_definitions = todo!();
 
                 let mut messages = Vec::new();
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
@@ -401,11 +404,10 @@ mod tests {
                     let found_definitions = state
                         .goto_definition(&usage_uri, usage_lsp_position.start)
                         .expect("we should be within range");
-                    let my_usage_uri = usage_uri.deref().clone().into();
                     if *reference_kind == ReferenceKind::Unresolved {
                         if !found_definitions.is_empty() {
                             for def in found_definitions {
-                                let ts_range = state.to_ts_range(&my_usage_uri, usage_lsp_position);
+                                let ts_range = state.to_ts_range(&usage_uri, usage_lsp_position);
                                 let byte_range = ts_range.start_byte..ts_range.end_byte;
                                 // have to use def_uri, because we can't return a reference to def.uri from this function.
                                 let (def_uri, def_src) = inks.get_key_value(&def.uri).unwrap();
@@ -456,7 +458,7 @@ mod tests {
                                     .iter()
                                     .map(|other| {
                                         let span = db
-                                            .get::<InkDocument>(&DocId::from(other.uri.clone()))
+                                            .get(salsa::Document(other.uri.clone()))
                                             .ts_range(db, other.range)
                                             .map(|it| it.start_byte..it.end_byte)
                                             .unwrap();
