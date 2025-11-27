@@ -9,7 +9,7 @@ use crate::{
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
 use type_sitter_lib::{IncorrectKindCause, Node};
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub(in crate::lsp::salsa) struct WorkspaceSymbolsQ(pub DocId);
 
 impl mini_milc::Subquery<super::Ops, Option<Vec<WorkspaceSymbol>>> for WorkspaceSymbolsQ {
@@ -18,16 +18,14 @@ impl mini_milc::Subquery<super::Ops, Option<Vec<WorkspaceSymbol>>> for Workspace
         db: &impl mini_milc::Db<super::Ops>,
         old: mini_milc::Old<Option<Vec<WorkspaceSymbol>>>,
     ) -> mini_milc::Updated<Option<Vec<WorkspaceSymbol>>> {
-        old.update({
-            use crate::lsp::salsa::InkGetters as _;
-            let docs = db.docs();
-            let doc = db.document(self.0.clone());
-            let uri = docs.get(&self.0).unwrap();
-            let mut syms = WorkspaceSymbols::new(uri, &*doc);
-            let mut cursor = doc.tree.root_node().walk();
-            syms.traverse(&mut cursor);
-            Some(syms.sym)
-        })
+        use crate::lsp::salsa::InkGetters as _;
+        let docs = db.docs();
+        let doc = db.document(self.0.clone());
+        let uri = docs.get(self.0).unwrap();
+        let mut syms = WorkspaceSymbols::new(uri, &*doc);
+        let mut cursor = doc.tree.root_node().walk();
+        syms.traverse(&mut cursor);
+        old.update(Some(syms.sym))
     }
 }
 
@@ -36,7 +34,7 @@ struct WorkspaceSymbols<'a> {
     doc: &'a InkDocument,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
-    pub(super) sym: Vec<WorkspaceSymbol>,
+    sym: Vec<WorkspaceSymbol>,
 }
 
 impl<'a> WorkspaceSymbols<'a> {

@@ -12,7 +12,7 @@ use type_sitter_lib::{IncorrectKindCause, Node as _};
 
 // IDEA: Maybe this shouldn't return LSP types?
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub(in crate::lsp::salsa) struct DocumentSymbolsQ(pub DocId);
 
 impl mini_milc::Subquery<super::Ops, Option<DocumentSymbol>> for DocumentSymbolsQ {

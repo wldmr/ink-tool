@@ -2,7 +2,7 @@ use super::{
     document::{DocumentEdit, InkDocument},
     location::{self, specification::LocationThat, Location},
 };
-use crate::lsp::salsa::{self, Docs, InkGetters, InkSetters, Ops};
+use crate::lsp::salsa::{self, DocId, Docs, InkGetters, InkSetters, Ops};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
@@ -56,7 +56,7 @@ impl State {
         // TODO: Perfect candite for caching
         self.db
             .docs()
-            .iter()
+            .values()
             .map(|it| it.path().to_string())
             .reduce(|acc, next| {
                 acc.chars()
@@ -70,20 +70,26 @@ impl State {
     }
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if self.db.docs().contains(&uri) {
-            Ok(self.db.document(uri).text.clone())
+        if let Some(id) = self.db.docs().get_id(&uri) {
+            Ok(self.db.document(id).text.clone())
         } else {
             Err(DocumentNotFound(uri))
         }
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
+        // Ensure the document is registered.
+        let id: Option<DocId> = self.db.docs().get_id(&uri).clone();
+        let id: DocId = id.unwrap_or_else(|| {
+            self.db.modify_docs(|docs| docs.insert(uri.clone()));
+            self.db.docs().get_id(&uri).unwrap()
+        });
+        // Now actually modify it.
         self.db.modify_document(
-            uri.clone(),
+            id,
             || InkDocument::new_empty(self.enc),
             |doc| doc.edit(edits),
         );
-        self.db.modify_docs(|docs| docs.insert(uri));
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
@@ -97,8 +103,8 @@ impl State {
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        if self.db.docs().contains(&uri) {
-            Ok(self.db.document_symbols(uri).clone())
+        if let Some(id) = self.db.docs().get_id(&uri) {
+            Ok(self.db.document_symbols(id).clone())
         } else {
             Err(DocumentNotFound(uri))
         }
@@ -109,10 +115,17 @@ impl State {
         let should_filter = !query.is_empty();
         self.db
             .docs()
-            .iter()
-            .flat_map(|uri| self.db.workspace_symbols(uri.clone()).clone())
-            .flat_map(|them| them)
-            .filter(|sym| should_filter && sym.name.to_lowercase().contains(&query))
+            .ids()
+            .flat_map(|uri| {
+                if let Some(syms) = &*self.db.workspace_symbols(uri) {
+                    syms.iter()
+                        .filter(|sym| should_filter && sym.name.to_lowercase().contains(&query))
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            })
             .collect()
     }
 
@@ -156,10 +169,15 @@ impl State {
     }
 
     #[cfg(test)]
-    fn to_ts_range(&self, docid: Uri, loc: lsp_types::Range) -> tree_sitter::Range {
+    fn to_ts_range(&self, uri: Uri, loc: lsp_types::Range) -> tree_sitter::Range {
         // only used in tests, so we'll crash liberally!
+        let id = self
+            .db
+            .docs()
+            .get_id(&uri)
+            .expect("don't call with with a non-existent document");
         self.db
-            .document(docid.clone())
+            .document(id)
             .ts_range(&self.db, loc)
             .expect("don't call this with an invalid location")
     }
@@ -455,8 +473,10 @@ mod tests {
                                 let other_references = found_definitions
                                     .iter()
                                     .map(|other| {
+                                        let docid =
+                                            db.docs().get_id(&other.uri).expect("must exist");
                                         let span = db
-                                            .document(other.uri.clone())
+                                            .document(docid)
                                             .ts_range(db, other.range)
                                             .map(|it| it.start_byte..it.end_byte)
                                             .unwrap();

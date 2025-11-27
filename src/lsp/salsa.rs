@@ -1,12 +1,16 @@
 use super::state::InvalidPosition;
 use crate::lsp::{
     document::InkDocument,
-    salsa::{salsa_doc_symbols::DocumentSymbolsQ, salsa_ws_symbols::WorkspaceSymbolsQ},
+    salsa::{
+        idset::{Id, IdSet},
+        salsa_doc_symbols::DocumentSymbolsQ,
+        salsa_ws_symbols::WorkspaceSymbolsQ,
+    },
 };
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
-use std::collections::HashSet;
 
+mod idset;
 mod salsa_doc_symbols;
 mod salsa_ws_symbols;
 
@@ -18,14 +22,14 @@ pub enum GetNodeError {
     PositionOutOfBounds(InvalidPosition),
 }
 
-pub(crate) type DocId = Uri;
-pub(crate) type Docs = HashSet<DocId>;
+pub(crate) type DocId = Id<Uri>;
+pub(crate) type Docs = IdSet<Uri>;
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 struct WorkspaceDocsQ;
 
 composite_query! {
-    #[derive(Hash)]
+    #[derive(Hash, Copy)]
     pub enum Ops -> OpsV;
 
     use DocId -> InkDocument,
@@ -72,7 +76,7 @@ pub trait InkSetters: Db<Ops> {
         self.modify_with_default(id, default, update)
     }
 }
-impl<D: Db<Ops>> InkSetters for D {}
+impl<D: InkGetters> InkSetters for D {}
 
 pub struct LspDiagnostic {
     doc: DocId,

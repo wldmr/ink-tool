@@ -30,6 +30,7 @@ tree-sitter = "0.23"
 tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit = 'f632cbc'}
 walkdir = "2.5.0"
 mini-milc = { git = "ssh://git@codeberg.org/wldmr/milc.git", commit = 'b61397626b'}
+indexmap = "2.12.1"
 
 [dev-dependencies]
 annotate-snippets = "0.11.5"

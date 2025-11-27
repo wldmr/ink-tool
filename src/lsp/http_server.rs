@@ -67,9 +67,9 @@ async fn root(State(state): State<SharedState>) -> impl IntoResponse {
                 menu.list_item(|li| {
                     li.text("Files");
                     li.unordered_list(|ul| {
-                        for docid in state.docs().iter() {
+                        for uri in state.docs().values() {
                             ul.list_item(|li| {
-                                let path = docid.path().segments().join("/");
+                                let path = uri.path().segments().join("/");
                                 li.anchor(|a| {
                                     a.href(format!("/file/{path}",))
                                         .text(path.replace(&common_prefix, ""))
