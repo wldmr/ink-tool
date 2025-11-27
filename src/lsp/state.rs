@@ -1,25 +1,28 @@
 use super::{
     document::{DocumentEdit, InkDocument},
     location::{self, specification::LocationThat, Location},
-    salsa::Workspace,
 };
-#[cfg(test)]
-use crate::lsp::salsa::DocId;
-use crate::lsp::salsa::{self, workspace_symbols, Docs, Ops};
+use crate::lsp::salsa::{self, Docs, InkGetters, InkSetters, Ops};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
 };
-use mini_milc::{salsa::Salsa, Cached, Db};
-use std::collections::HashMap;
 use tap::Tap as _;
 
-type InkSalsa = Salsa<Ops, Ops, HashMap<Ops, mini_milc::salsa::Slot<Ops, Ops>>>;
+// This is quite an abomination, but we have to deal with it.
+type DbType = mini_milc::salsa::Salsa<
+    // Query
+    salsa::Ops,
+    // Storagage Index
+    salsa::Ops,
+    // Storage impl
+    mini_milc::storage_impls::HashMapStorage<salsa::Ops>,
+>;
 
 pub(crate) struct State {
-    db: InkSalsa,
-    enc: Option<WideEncoding>,
+    pub(crate) db: DbType,
+    pub(crate) enc: Option<WideEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
@@ -45,13 +48,14 @@ impl State {
         }
     }
 
-    pub fn docs(&self) -> Cached<'_, Ops, Docs> {
-        self.db.get(Workspace)
+    pub fn docs(&self) -> mini_milc::Cached<'_, Ops, Docs> {
+        self.db.docs()
     }
 
     pub fn common_file_prefix(&self) -> String {
         // TODO: Perfect candite for caching
-        self.docs()
+        self.db
+            .docs()
             .iter()
             .map(|it| it.path().to_string())
             .reduce(|acc, next| {
@@ -66,56 +70,50 @@ impl State {
     }
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if self.docs().contains(&uri) {
-            Ok(self.db.get(salsa::Document(uri)).text.clone())
+        if self.db.docs().contains(&uri) {
+            Ok(self.db.document(uri).text.clone())
         } else {
             Err(DocumentNotFound(uri))
         }
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
-        self.db.update(salsa::Document(uri.clone()), |doc| {
-            let mut doc = doc.unwrap_or_else(|| InkDocument::new_empty(self.enc));
-            doc.edit(edits);
-            mini_milc::Updated::Changed(doc)
-        });
-        self.db.update(salsa::Workspace, |old| {
-            old.update_in_place(|it| it.insert(uri), Docs::default)
-        });
+        self.db.modify_document(
+            uri.clone(),
+            || InkDocument::new_empty(self.enc),
+            |doc| doc.edit(edits),
+        );
+        self.db.modify_docs(|docs| docs.insert(uri));
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        let docid = uri.into();
-        let removed = self.db.update(salsa::Workspace, |docs| {
-            docs.update_in_place(|it| it.remove(&docid), Default::default)
-        });
+        let removed = self.db.modify_docs(|it| it.remove(&uri));
         if removed {
             Ok(())
         } else {
-            Err(DocumentNotFound(docid))
+            Err(DocumentNotFound(uri))
         }
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        let docid = uri.into();
-        if self.db.get(Workspace).contains(&docid) {
-            let symbol = self.db.get(salsa::DocumentSymbols(docid));
-            Ok(symbol.clone())
+        if self.db.docs().contains(&uri) {
+            Ok(self.db.document_symbols(uri).clone())
         } else {
-            Err(DocumentNotFound(docid))
+            Err(DocumentNotFound(uri))
         }
     }
 
     pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
-        let mut symbols = workspace_symbols(&self.db);
-        if query.is_empty() {
-            symbols
-        } else {
-            let query = query.to_lowercase();
-            symbols.retain(|sym| sym.name.to_lowercase().contains(&query));
-            symbols
-        }
+        let query = query.to_lowercase();
+        let should_filter = !query.is_empty();
+        self.db
+            .docs()
+            .iter()
+            .flat_map(|uri| self.db.workspace_symbols(uri.clone()).clone())
+            .flat_map(|them| them)
+            .filter(|sym| should_filter && sym.name.to_lowercase().contains(&query))
+            .collect()
     }
 
     pub fn completions(
@@ -158,11 +156,10 @@ impl State {
     }
 
     #[cfg(test)]
-    fn to_ts_range(&self, docid: &DocId, loc: lsp_types::Range) -> tree_sitter::Range {
+    fn to_ts_range(&self, docid: Uri, loc: lsp_types::Range) -> tree_sitter::Range {
         // only used in tests, so we'll crash liberally!
-        use crate::lsp::salsa::Document;
         self.db
-            .get(Document(docid.clone()))
+            .document(docid.clone())
             .ts_range(&self.db, loc)
             .expect("don't call this with an invalid location")
     }
@@ -274,11 +271,11 @@ mod tests {
     }
 
     mod links {
-        use std::{collections::HashMap, ops::Deref, str::FromStr};
+        use std::{collections::HashMap, str::FromStr};
 
         use super::{new_state, set_content, State};
         use crate::{
-            lsp::salsa::{self},
+            lsp::salsa::{self, InkGetters},
             test_utils::{
                 self,
                 text_annotations::{Annotation, AnnotationScanner},
@@ -407,7 +404,8 @@ mod tests {
                     if *reference_kind == ReferenceKind::Unresolved {
                         if !found_definitions.is_empty() {
                             for def in found_definitions {
-                                let ts_range = state.to_ts_range(&usage_uri, usage_lsp_position);
+                                let ts_range =
+                                    state.to_ts_range((*usage_uri).clone(), usage_lsp_position);
                                 let byte_range = ts_range.start_byte..ts_range.end_byte;
                                 // have to use def_uri, because we can't return a reference to def.uri from this function.
                                 let (def_uri, def_src) = inks.get_key_value(&def.uri).unwrap();
@@ -458,7 +456,7 @@ mod tests {
                                     .iter()
                                     .map(|other| {
                                         let span = db
-                                            .get(salsa::Document(other.uri.clone()))
+                                            .document(other.uri.clone())
                                             .ts_range(db, other.range)
                                             .map(|it| it.start_byte..it.end_byte)
                                             .unwrap();

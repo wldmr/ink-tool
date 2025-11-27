@@ -3,14 +3,34 @@ use crate::{
         types::{AllNamed, GlobalKeyword},
         VisitInstruction, Visitor,
     },
-    lsp::document::InkDocument,
+    lsp::{document::InkDocument, salsa::DocId},
 };
 use builder::SymbolBuilder;
 use line_index::{LineCol, LineIndex, WideEncoding};
 use lsp_types::{DocumentSymbol, SymbolKind};
 use type_sitter_lib::{IncorrectKindCause, Node as _};
 
-pub(crate) mod builder {
+// IDEA: Maybe this shouldn't return LSP types?
+
+#[derive(PartialEq, Eq, Clone, Hash)]
+pub(in crate::lsp::salsa) struct DocumentSymbolsQ(pub DocId);
+
+impl mini_milc::Subquery<super::Ops, Option<DocumentSymbol>> for DocumentSymbolsQ {
+    fn value(
+        &self,
+        db: &impl mini_milc::Db<super::Ops>,
+        old: mini_milc::Old<Option<DocumentSymbol>>,
+    ) -> mini_milc::Updated<Option<DocumentSymbol>> {
+        use crate::lsp::salsa::InkGetters as _;
+        let doc = db.document(self.0.clone());
+        let mut syms = DocumentSymbols::new(&*doc, false);
+        let mut cursor = doc.tree.root_node().walk();
+        let syms = syms.traverse(&mut cursor).unwrap();
+        old.update(syms.sym)
+    }
+}
+
+mod builder {
     use lsp_types::{DocumentSymbol, Range, SymbolKind};
     use std::marker::PhantomData;
 

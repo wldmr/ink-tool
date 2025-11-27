@@ -1,17 +1,10 @@
 use super::state::InvalidPosition;
-use crate::{
-    ink_syntax::Visitor,
-    lsp::{
-        document::InkDocument,
-        salsa::{
-            salsa_doc_symbols::DocumentSymbols as DocSymVisitor,
-            salsa_ws_symbols::WorkspaceSymbols as WsSymVisitor,
-        },
-    },
+use crate::lsp::{
+    document::InkDocument,
+    salsa::{salsa_doc_symbols::DocumentSymbolsQ, salsa_ws_symbols::WorkspaceSymbolsQ},
 };
-use itertools::Itertools;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
-use mini_milc::{composite_query, subquery, Db};
+use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
 use std::collections::HashSet;
 
 mod salsa_doc_symbols;
@@ -26,73 +19,60 @@ pub enum GetNodeError {
 }
 
 pub(crate) type DocId = Uri;
-#[derive(Default, Debug, derive_more::Deref, derive_more::DerefMut)]
-pub(crate) struct Docs(HashSet<DocId>);
+pub(crate) type Docs = HashSet<DocId>;
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+struct WorkspaceDocsQ;
 
 composite_query! {
     #[derive(Hash)]
-    pub(crate) enum Ops -> OpsV;
+    pub enum Ops -> OpsV;
 
-    #[derive(Hash)]
-    struct Workspace -> Docs {;}
-
-    #[derive(Hash)]
-    struct Document -> InkDocument {(pub DocId);}
-
-    #[derive(Hash)]
-    struct DocumentSymbols -> Option<DocumentSymbol> {(pub DocId);}
-
-    #[derive(Hash)]
-    struct WorkspaceSymbols -> Option<Vec<WorkspaceSymbol>> {(pub DocId);}
+    use DocId -> InkDocument,
+        WorkspaceDocsQ -> Docs,
+        DocumentSymbolsQ -> Option<DocumentSymbol>,
+        WorkspaceSymbolsQ -> Option<Vec<WorkspaceSymbol>>;
 }
 
-impl PartialEq for Docs {
-    fn eq(&self, other: &Self) -> bool {
-        // :(
-        self.0
-            .iter()
-            .sorted_unstable()
-            .zip(other.0.iter().sorted_unstable())
-            .all(|(a, b)| a == b)
+// Inputs
+subquery!(Ops, DocId, InkDocument);
+subquery!(Ops, WorkspaceDocsQ, Docs);
+
+// Extension traits
+pub trait InkGetters: Db<Ops> {
+    fn docs(&self) -> Cached<'_, Ops, Docs> {
+        self.get(WorkspaceDocsQ)
+    }
+
+    fn document(&self, id: DocId) -> Cached<'_, Ops, InkDocument> {
+        self.get(id)
+    }
+
+    fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<DocumentSymbol>> {
+        self.get(salsa_doc_symbols::DocumentSymbolsQ(id))
+    }
+
+    fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<Vec<WorkspaceSymbol>>> {
+        self.get(salsa_ws_symbols::WorkspaceSymbolsQ(id))
     }
 }
+impl<D: Db<Ops>> InkGetters for D {}
 
-subquery!(Ops, Workspace, Docs);
-subquery!(Ops, Document, InkDocument);
-
-subquery!(Ops, DocumentSymbols, Option<DocumentSymbol>, |self, db| {
-    let doc = db.get(Document(self.0.clone()));
-    let mut syms = DocSymVisitor::new(&*doc, false);
-    let mut cursor = doc.tree.root_node().walk();
-    let syms = syms.traverse(&mut cursor).unwrap();
-    syms.sym
-});
-
-subquery!(
-    Ops,
-    WorkspaceSymbols,
-    Option<Vec<WorkspaceSymbol>>,
-    |self, db| {
-        let ws = db.get(Workspace);
-        let doc = db.get(Document(self.0.clone()));
-        let uri = ws.get(&self.0).unwrap();
-        let mut syms = WsSymVisitor::new(uri, &*doc);
-        let mut cursor = doc.tree.root_node().walk();
-        syms.traverse(&mut cursor);
-
-        Some(syms.sym)
+pub trait InkSetters: Db<Ops> {
+    fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut Docs) -> C) -> bool {
+        self.modify(WorkspaceDocsQ, f)
     }
-);
 
-pub(crate) fn workspace_symbols(db: &impl Db<Ops>) -> Vec<WorkspaceSymbol> {
-    db.get(Workspace)
-        .iter()
-        .flat_map(|uri| db.get(WorkspaceSymbols(uri.clone())).clone())
-        .flat_map(|them| them)
-        .collect()
+    fn modify_document<C: HasChanged>(
+        &mut self,
+        id: DocId,
+        default: impl FnOnce() -> InkDocument,
+        update: impl FnOnce(&mut InkDocument) -> C,
+    ) -> bool {
+        self.modify_with_default(id, default, update)
+    }
 }
-
-pub type Name = String;
+impl<D: Db<Ops>> InkSetters for D {}
 
 pub struct LspDiagnostic {
     doc: DocId,

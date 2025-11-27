@@ -1025,7 +1025,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "mini-milc"
 version = "0.1.0"
-source = "git+ssh://git@codeberg.org/wldmr/milc.git#13a834fe9eaf643af9ed9acdeae65f01bc2c52b2"
+source = "git+ssh://git@codeberg.org/wldmr/milc.git#b61397626b8e7e062b7dd8b9eb9b8ad44e99ea7a"
 
 [[package]]
 name = "miniz_oxide"
