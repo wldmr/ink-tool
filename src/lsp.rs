@@ -11,6 +11,7 @@ use std::{ops::Not, path::Path};
 mod document;
 mod file_watching;
 mod http_server;
+mod idset;
 mod location;
 mod notification_handlers;
 mod request_handlers;

@@ -1,11 +1,11 @@
 //! Our own kind of “interning”, so that we can use the IDs (which are [`Copy`]),
 //! instead of the values themselves.
 
-use indexmap::IndexSet;
+use indexmap::{Equivalent, IndexSet};
 use std::{hash::Hash, marker::PhantomData};
 
 /// A typed ID.
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Id<T>(usize, PhantomData<T>);
 
@@ -46,7 +46,7 @@ impl<T: Eq + Hash> IdSet<T> {
         self.get(id).is_some()
     }
 
-    pub fn contains(&self, item: &T) -> bool {
+    pub fn contains<Q: Hash + Equivalent<T>>(&self, item: &Q) -> bool {
         self.0.contains(item)
     }
 
@@ -70,11 +70,27 @@ impl<T: Eq + Hash> IdSet<T> {
         self.0.iter()
     }
 
-    pub fn remove(&mut self, value: &T) -> bool {
+    pub fn remove<Q: Hash + Equivalent<T>>(&mut self, value: &Q) -> bool {
         self.0.shift_remove(value)
     }
 
     pub fn remove_id(&mut self, id: Id<T>) -> Option<T> {
         self.0.swap_remove_index(id.0)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use quickcheck::Arbitrary;
+
+    impl<T: 'static> Arbitrary for Id<T> {
+        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+            id(usize::arbitrary(g))
+        }
+
+        fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+            Box::new((self.0).shrink().map(id))
+        }
     }
 }

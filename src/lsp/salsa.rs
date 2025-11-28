@@ -1,17 +1,14 @@
 use super::state::InvalidPosition;
 use crate::lsp::{
     document::InkDocument,
-    salsa::{
-        doc_symbols::DocumentSymbolsQ,
-        idset::{Id, IdSet},
-        ws_symbols::WorkspaceSymbolsQ,
-    },
+    idset::{Id, IdSet},
+    salsa::{doc_symbols::DocumentSymbolsQ, ws_symbols::WorkspaceSymbolsQ},
 };
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
 
 mod doc_symbols;
-mod idset;
+mod names;
 mod ws_symbols;
 
 #[derive(Debug, Clone, derive_more::Display, derive_more::Error, derive_more::From)]
