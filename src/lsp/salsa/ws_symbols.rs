@@ -1,4 +1,4 @@
-use super::salsa_doc_symbols::lsp_range;
+use super::doc_symbols::lsp_range;
 use crate::{
     ink_syntax::{
         types::{AllNamed, GlobalKeyword},

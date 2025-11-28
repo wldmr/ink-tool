@@ -2,17 +2,17 @@ use super::state::InvalidPosition;
 use crate::lsp::{
     document::InkDocument,
     salsa::{
+        doc_symbols::DocumentSymbolsQ,
         idset::{Id, IdSet},
-        salsa_doc_symbols::DocumentSymbolsQ,
-        salsa_ws_symbols::WorkspaceSymbolsQ,
+        ws_symbols::WorkspaceSymbolsQ,
     },
 };
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
 
+mod doc_symbols;
 mod idset;
-mod salsa_doc_symbols;
-mod salsa_ws_symbols;
+mod ws_symbols;
 
 #[derive(Debug, Clone, derive_more::Display, derive_more::Error, derive_more::From)]
 #[display("Could not go to node.")]
@@ -53,11 +53,11 @@ pub trait InkGetters: Db<Ops> {
     }
 
     fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<DocumentSymbol>> {
-        self.get(salsa_doc_symbols::DocumentSymbolsQ(id))
+        self.get(doc_symbols::DocumentSymbolsQ(id))
     }
 
     fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<Vec<WorkspaceSymbol>>> {
-        self.get(salsa_ws_symbols::WorkspaceSymbolsQ(id))
+        self.get(ws_symbols::WorkspaceSymbolsQ(id))
     }
 }
 impl<D: Db<Ops>> InkGetters for D {}
