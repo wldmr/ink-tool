@@ -1,4 +1,5 @@
 use crate::AppResult;
+use futures::FutureExt as _;
 use line_index::WideEncoding;
 use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
@@ -9,9 +10,12 @@ use std::{ops::Not, path::Path};
 
 mod document;
 mod file_watching;
+mod http_server;
+mod idset;
 mod location;
 mod notification_handlers;
 mod request_handlers;
+mod salsa;
 mod shared;
 mod state;
 
@@ -52,7 +56,7 @@ macro_rules! try_notification_handlers {
                 return Ok(());
             }
             NotificationHandlerResult::Failure(err) => {
-                eprintln!("{err:?}");
+                log::debug!("{err:?}");
                 return Ok(());
             }
         };
@@ -81,9 +85,11 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
     }
 
     ServerCapabilities {
-        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        hover_provider: None, //Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
+        definition_provider: None, //Some(OneOf::Left(true)),
+        references_provider: None, //Some(OneOf::Left(true)),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -93,15 +99,15 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
                 save: None,
             },
         )),
-        completion_provider: Some(CompletionOptions {
-            resolve_provider: Some(true),
-            trigger_characters: Some(vec!["->", "-> "].into_iter().map(str::to_string).collect()),
-            all_commit_characters: None,
-            work_done_progress_options: WorkDoneProgressOptions {
-                work_done_progress: Some(false),
-            },
-            completion_item: None,
-        }),
+        completion_provider: None, /*Some(CompletionOptions {
+                                       resolve_provider: Some(false),
+                                       trigger_characters: Some(vec!["->", "-> "].into_iter().map(str::to_string).collect()),
+                                       all_commit_characters: None,
+                                       work_done_progress_options: WorkDoneProgressOptions {
+                                           work_done_progress: Some(false),
+                                       },
+                                       completion_item: None,
+                                   })*/
         position_encoding: find_utf8(params).or(Some(PositionEncodingKind::UTF16)),
         ..Default::default()
     }
@@ -120,10 +126,12 @@ fn force_server_file_watcher(client_info: &ClientInfo) -> bool {
 fn handle_request(request: Request, state: &SharedState) -> Result<Response, Request> {
     use request::*;
     try_request_handlers! { request, state =>
-        HoverRequest,
+        // HoverRequest,
         DocumentSymbolRequest,
         WorkspaceSymbolRequest,
-        Completion,
+        // Completion,
+        // GotoDefinition,
+        // References,
     }
 }
 
@@ -154,8 +162,6 @@ enum NotificationHandlerResult {
 }
 
 pub fn run_lsp() -> AppResult<()> {
-    // Note that  we must have our logging only write out to stderr.
-
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
     let (client_connection, client_io_threads) = Connection::stdio();
@@ -190,14 +196,14 @@ pub fn run_lsp() -> AppResult<()> {
     };
     let init_result = serde_json::to_value(&init_result)?;
 
-    eprintln!(
-        "init params: {}",
-        serde_json::to_string_pretty(&init_params).unwrap()
-    );
-    eprintln!(
-        "init result: {}",
-        serde_json::to_string_pretty(&init_result).unwrap()
-    );
+    // log::debug!(
+    //     "init params: {}",
+    //     serde_json::to_string_pretty(&init_params).unwrap()
+    // );
+    // log::debug!(
+    //     "init result: {}",
+    //     serde_json::to_string_pretty(&init_result).unwrap()
+    // );
 
     let qualified_names = init_params
         .capabilities
@@ -243,7 +249,7 @@ pub fn run_lsp() -> AppResult<()> {
         .map(|it| Path::new(&it).to_path_buf())
         .collect();
 
-    eprintln!("Workspace Folders: {workspace_folders:?}");
+    log::debug!("Workspace Folders: {workspace_folders:?}");
     for path in workspace_folders.iter() {
         file_watching::read_initial_files(&path, &state)?;
     }
@@ -260,24 +266,33 @@ pub fn run_lsp() -> AppResult<()> {
         .map(force_server_file_watcher)
         .unwrap_or(false);
     let file_watcher = if client_can_watch_files && !force_server_side_watching {
-        eprintln!("relying on client for file watching");
+        log::info!("relying on lsp client for file watching");
         file_watching::register_file_change_notification(&client_connection, workspace_folders)
             .expect(
                 "If this doesn't work, it means sending doesn't work at all. No need to go on.",
             );
         None
     } else {
-        eprintln!("relying on server for file watching");
+        log::warn!("ink-tool language server will watch files. \
+            However, the spec recommends clients do this: \
+            <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workspace_didChangeWatchedFiles>");
         Some(file_watching::start_file_watcher(
             state.clone(),
             workspace_folders,
         ))
     };
 
+    let http_state = state.clone();
+    let (shutdown, shutdown_notification) = tokio::sync::oneshot::channel::<()>();
+    // http server doesn't care about rcv-errors, so we just swallow it:
+    let shutdown_notification = shutdown_notification.map(|_| ());
+    let http_handle = std::thread::spawn(|| http_server::start(http_state, shutdown_notification));
+
     // Ladies and gentlemen, the main loop:
     while let Ok(msg) = client_connection.receiver.recv() {
         if let Message::Request(ref req) = msg {
             if client_connection.handle_shutdown(req)? {
+                log::debug!("started shutdown procedure");
                 continue;
             }
         }
@@ -287,15 +302,26 @@ pub fn run_lsp() -> AppResult<()> {
         }
     }
 
+    log::trace!("sending shutdown signal");
+    if let Err(_) = shutdown.send(()) {
+        log::error!("shutdown signal failed ¯\\_(ツ)_/¯");
+    };
+
     // Shut down gracefully.
     if file_watcher.is_some() {
-        eprintln!("shutting down file watcher");
+        log::trace!("shutting down file watcher");
         drop(file_watcher);
     }
-    eprintln!("shutting down client connection");
-    client_io_threads.join()?;
-    eprintln!("shutting down server state");
 
+    log::trace!("waiting for shutdown of view server");
+    _ = http_handle.join();
+
+    log::trace!("dropping_client_connection");
+    drop(client_connection);
+    log::trace!("shutting down client connection");
+    client_io_threads.join()?;
+
+    log::trace!("shutdown complete");
     Ok(())
 }
 
@@ -305,25 +331,25 @@ pub(crate) fn handle_message(
 ) -> Option<lsp_server::Message> {
     match msg {
         Message::Request(req) => {
-            // eprintln!("got request: {req:?}");
+            // log::debug!("got request: {req:?}");
             match handle_request(req, state).into() {
                 Ok(response) => Some(Message::Response(response)),
                 Err(req) => {
-                    eprintln!("unhandled request {req:?}");
+                    log::warn!("unhandled request {req:?}");
                     None
                 }
             }
         }
         Message::Response(resp) => {
-            eprintln!("got response: {resp:?}");
+            log::debug!("got response: {resp:?}");
             None
         }
         Message::Notification(not) => {
-            // eprintln!("got notification: {not:?}");
+            // log::debug!("got notification: {not:?}");
             match handle_notification(not, state) {
                 Ok(()) => None,
                 Err(not) => {
-                    eprintln!("unhandled notification {not:?}");
+                    log::warn!("unhandled notification {not:?}");
                     None
                 }
             }

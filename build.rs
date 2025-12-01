@@ -131,18 +131,74 @@ fn compile_type_sitter() {
 
     let mut node_map = NodeTypeMap::try_from(tree_sitter_ink::NODE_TYPES)
         .expect("generating nodes should work, otherwise the feature is pointless");
-    let (named, unnamed): (Vec<_>, Vec<_>) = node_map
+    let named: Vec<_> = node_map
         .values()
+        // Ignore implicit nodes (i.e. supertypes).
+        // Including supertypes would lead to ambiguities (different possible typed nodes) when iterating over the tree.
+        .filter(|it| it.name.is_named && !it.name.is_implicit())
         .map(|node| node.name.clone())
-        .partition(|name| name.is_named);
-    let named = node_map
-        .add_custom_supertype("_all_named", named)
+        .collect();
+    _ = node_map
+        .add_custom_supertype("_all_named", named.clone())
         .expect("this shouldn't already exist");
-    let unnamed = node_map
-        .add_custom_supertype("_all_unnamed", unnamed)
+    let scope_block = node_map
+        .add_custom_supertype(
+            "_scope_block",
+            named
+                .iter()
+                .filter(|it| matches!(it.sexp_name.as_str(), "ink" | "knot_block" | "stitch_block"))
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
         .expect("this shouldn't already exist");
-    node_map
-        .add_custom_supertype("_all_nodes", vec![named, unnamed])
+    let flow_block = node_map
+        .add_custom_supertype(
+            "_flow_block",
+            named
+                .iter()
+                .filter(|it| matches!(it.sexp_name.as_str(), "choice_block" | "gather_block"))
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .expect("this shouldn't already exist");
+    let block = node_map
+        .add_custom_supertype("_block", vec![scope_block, flow_block])
+        .expect("this shouldn't already exist");
+    let definitions = node_map
+        .add_custom_supertype(
+            "_definitions",
+            named
+                .iter()
+                .filter(|it| {
+                    matches!(
+                        it.sexp_name.as_str(),
+                        "external"
+                            | "global"
+                            | "knot"
+                            | "label"
+                            | "list"
+                            | "list_value_def"
+                            | "param"
+                            | "stitch"
+                            | "temp_def"
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .expect("this shouldn't already exist");
+    let usages = node_map
+        .add_custom_supertype(
+            "_usages",
+            named
+                .iter()
+                .filter(|it| matches!(it.sexp_name.as_str(), "qualified_name" | "identifier"))
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .expect("this shouldn't already exist");
+    let _of_interest = node_map
+        .add_custom_supertype("_of_interest", vec![definitions, usages, block])
         .expect("this shouldn't already exist");
     let type_sitter_ink_types = generate_nodes(node_map)
         .expect("generating rust code should work, otherwise the feature is pointless")

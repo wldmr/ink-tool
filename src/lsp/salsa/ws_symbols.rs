@@ -1,24 +1,44 @@
+use super::doc_symbols::lsp_range;
+use crate::{
+    ink_syntax::{
+        types::{AllNamed, GlobalKeyword},
+        VisitInstruction, Visitor,
+    },
+    lsp::{document::InkDocument, salsa::DocId},
+};
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
-
 use type_sitter_lib::{IncorrectKindCause, Node};
 
-use crate::ink_syntax::{
-    types::{AllNamed, GlobalKeyword},
-    VisitInstruction, Visitor,
-};
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+pub(in crate::lsp::salsa) struct WorkspaceSymbolsQ(pub DocId);
 
-use crate::lsp::document::InkDocument;
+impl mini_milc::Subquery<super::Ops, Option<Vec<WorkspaceSymbol>>> for WorkspaceSymbolsQ {
+    fn value(
+        &self,
+        db: &impl mini_milc::Db<super::Ops>,
+        old: mini_milc::Old<Option<Vec<WorkspaceSymbol>>>,
+    ) -> mini_milc::Updated<Option<Vec<WorkspaceSymbol>>> {
+        use crate::lsp::salsa::InkGetters as _;
+        let docs = db.docs();
+        let doc = db.document(self.0.clone());
+        let uri = docs.get(self.0).unwrap();
+        let mut syms = WorkspaceSymbols::new(uri, &*doc);
+        let mut cursor = doc.tree.root_node().walk();
+        syms.traverse(&mut cursor);
+        old.update(Some(syms.sym))
+    }
+}
 
-pub(crate) struct WorkspaceSymbols<'a> {
+struct WorkspaceSymbols<'a> {
     uri: &'a Uri,
     doc: &'a InkDocument,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
-    pub(crate) sym: Vec<WorkspaceSymbol>,
+    sym: Vec<WorkspaceSymbol>,
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    pub(crate) fn new(doc: &'a InkDocument, uri: &'a Uri) -> Self {
+    pub(crate) fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
         Self {
             uri,
             doc,
@@ -37,10 +57,10 @@ impl<'a> WorkspaceSymbols<'a> {
         }
     }
 
-    pub fn location(&self, range: tree_sitter::Range) -> OneOf<Location, WorkspaceLocation> {
+    fn location(&self, range: tree_sitter::Range) -> OneOf<Location, WorkspaceLocation> {
         OneOf::Left(Location {
-            uri: self.uri.clone(),
-            range: self.doc.lsp_range(&range),
+            uri: self.uri().clone(),
+            range: self.lsp_range(&range),
         })
     }
 
@@ -60,11 +80,23 @@ impl<'a> WorkspaceSymbols<'a> {
             data: None,
         });
     }
+
+    fn uri(&self) -> &Uri {
+        &self.uri
+    }
+
+    fn lsp_range(&self, range: &tree_sitter::Range) -> lsp_types::Range {
+        lsp_range(&self.doc.lines, self.doc.enc, range)
+    }
+
+    fn text(&self, byte_range: std::ops::Range<usize>) -> &'a str {
+        &self.doc.text[byte_range]
+    }
 }
 
 impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
     fn visit(&mut self, node: AllNamed) -> VisitInstruction<Self> {
-        // eprintln!("visiting: {}", node.kind());
+        // log::trace!("visiting: {}", node.kind());
         use VisitInstruction::*;
         match node {
             // recurse into these without creating a new level
@@ -87,21 +119,17 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             | AllNamed::ChoiceMark(_)
             | AllNamed::ChoiceMarks(_)
             | AllNamed::ChoiceOnly(_)
-            | AllNamed::CodeStmt(_)
-            | AllNamed::Comment(_)
             | AllNamed::CondArm(_)
             | AllNamed::CondBlock(_)
             | AllNamed::Condition(_)
             | AllNamed::ConditionalText(_)
             | AllNamed::Divert(_)
-            | AllNamed::DivertTarget(_)
             | AllNamed::Else(_)
             | AllNamed::Eol(_)
             | AllNamed::Eval(_)
             | AllNamed::Expr(_)
             | AllNamed::GatherMark(_)
             | AllNamed::GatherMarks(_)
-            | AllNamed::GlobalKeyword(_)
             | AllNamed::Glue(_)
             | AllNamed::Identifier(_)
             | AllNamed::Include(_)
@@ -110,22 +138,19 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             | AllNamed::ListValueDef(_)
             | AllNamed::ListValueDefs(_)
             | AllNamed::ListValues(_)
-            | AllNamed::Logic(_)
             | AllNamed::MultilineAlternatives(_)
             | AllNamed::Number(_)
             | AllNamed::Paragraph(_)
             | AllNamed::Param(_)
-            | AllNamed::ParamValue(_)
             | AllNamed::Params(_)
             | AllNamed::Paren(_)
             | AllNamed::Path(_)
             | AllNamed::Postfix(_)
             | AllNamed::QualifiedName(_)
-            | AllNamed::Redirect(_)
             | AllNamed::Return(_)
             | AllNamed::String(_)
             | AllNamed::Tag(_)
-            | AllNamed::Temp(_)
+            | AllNamed::TempDef(_)
             | AllNamed::Text(_)
             | AllNamed::Thread(_)
             | AllNamed::TodoComment(_)
@@ -134,7 +159,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             // Symbols (== levels) to be created
             AllNamed::Ink(ink) => {
-                let name = std::path::Path::new(self.uri.path().as_str())
+                let name = std::path::Path::new(self.uri().path().as_str())
                     .file_name()
                     .expect("there should be a filename")
                     .to_string_lossy()
@@ -150,7 +175,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     SymbolKind::CLASS
                 };
                 let name_node = knot.name().unwrap();
-                let local_name = &self.doc.text[name_node.byte_range()];
+                let local_name = self.text(name_node.byte_range());
                 self.add_sym(kind, local_name, None, self.location(name_node.range()));
                 self.knot = Some(local_name);
                 self.stitch = None;
@@ -159,7 +184,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             AllNamed::Stitch(stitch) => {
                 let name_node = stitch.name().unwrap();
-                let local_name = &self.doc.text[name_node.byte_range()];
+                let local_name = self.text(name_node.byte_range());
                 self.add_sym(
                     SymbolKind::CLASS,
                     local_name,
@@ -173,7 +198,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
             AllNamed::Choice(choice) => {
                 if let Some(Ok(label)) = choice.label() {
                     let name_node = label.name().unwrap();
-                    let local_name = &self.doc.text[name_node.byte_range()];
+                    let local_name = self.text(name_node.byte_range());
                     self.add_sym(
                         SymbolKind::KEY,
                         local_name,
@@ -189,7 +214,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                     let name_node = label.name().unwrap();
                     self.add_sym(
                         SymbolKind::KEY,
-                        &self.doc.text[name_node.byte_range()],
+                        self.text(name_node.byte_range()),
                         self.namespace(),
                         self.location(name_node.range()),
                     );
@@ -205,7 +230,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 let name_node = &global.name().unwrap();
                 self.add_sym(
                     kind,
-                    &self.doc.text[name_node.byte_range()],
+                    self.text(name_node.byte_range()),
                     None,
                     self.location(name_node.range()),
                 );
@@ -214,7 +239,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             AllNamed::List(list) => {
                 let name_node = list.name().unwrap();
-                let list_name = &self.doc.text[name_node.byte_range()];
+                let list_name = self.text(name_node.byte_range());
                 self.add_sym(
                     SymbolKind::ENUM,
                     list_name,
@@ -229,7 +254,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                         .filter_map(|def| def.name().ok())
                         .map(|identifier| identifier);
                     for identifier in list_values {
-                        let value_name = &self.doc.text[identifier.byte_range()];
+                        let value_name = self.text(identifier.byte_range());
                         self.add_sym(
                             SymbolKind::ENUM_MEMBER,
                             value_name,
@@ -245,7 +270,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
                 if let Ok(name_node) = external.name() {
                     self.add_sym(
                         SymbolKind::INTERFACE,
-                        &self.doc.text[name_node.byte_range()],
+                        self.text(name_node.byte_range()),
                         None,
                         self.location(name_node.range()),
                     );

@@ -55,7 +55,7 @@ pub(crate) fn register_file_change_notification(
             registrations: vec![watch_files],
         })?,
     };
-    eprintln!(
+    log::debug!(
         "dynamic registration request: {}",
         serde_json::to_string_pretty(&request)?
     );
@@ -102,20 +102,20 @@ pub(crate) fn start_file_watcher(
                         let result = std::fs::read_to_string(path)
                             .map(|text| state.edit(uri, vec![(None, text)]));
                         if let Err(err) = result {
-                            eprintln!("document read error: {err:?}");
+                            log::error!("document read error: {err:?}");
                             continue;
                         }
                     }
                     WatchEventKind::Forget => {
                         if let Err(err) = state.forget(uri) {
-                            eprintln!("document remove error: {err:?}");
+                            log::error!("document remove error: {err:?}");
                             continue;
                         }
                     }
                 };
             }
         }
-        Err(e) => eprintln!("watch error: {:?}", e),
+        Err(e) => log::error!("watch error: {:?}", e),
     })?;
     for path in roots {
         watcher.watch(&path, notify::RecursiveMode::Recursive)?;

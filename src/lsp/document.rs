@@ -1,16 +1,11 @@
-mod locations;
-mod symbols;
-
-use super::location::Location;
-use crate::ink_syntax::{
-    types::{Condition, DivertTarget, Eval, Expr, Redirect},
-    Visitor as _,
-};
+use crate::ink_syntax::types::{AllNamed, Condition, DivertTarget, Eval, Expr, Redirect};
 use crate::lsp::location::{self, specification::LocationThat};
+use crate::lsp::salsa::{GetNodeError, Ops};
+use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use locations::Locations;
-use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
-use symbols::{document_symbol::DocumentSymbols, workspace_symbol::WorkspaceSymbols};
+use lsp_types::Position;
+use mini_milc::Db;
+use tap::Pipe as _;
 use tree_sitter::Parser;
 use type_sitter_lib::Node;
 
@@ -18,16 +13,42 @@ use type_sitter_lib::Node;
 // Everthing else works in terms of LSP types.
 
 pub(crate) struct InkDocument {
-    tree: tree_sitter::Tree,
-    text: String,
-    parser: tree_sitter::Parser,
-    enc: Option<WideEncoding>,
-    lines: line_index::LineIndex,
-    doc_symbols_cache: Option<DocumentSymbol>,
-    ws_symbols_cache: Option<Vec<WorkspaceSymbol>>,
+    pub(crate) tree: tree_sitter::Tree,
+    pub(crate) text: String,
+    pub(crate) parser: tree_sitter::Parser,
+    pub(crate) enc: Option<WideEncoding>,
+    pub(crate) lines: line_index::LineIndex,
 }
 
-pub(crate) type DocumentEdit = (Option<lsp_types::Range>, String);
+impl Default for InkDocument {
+    fn default() -> Self {
+        InkDocument::new_empty(None) // NOTE: Workaround for `Default` requirement. Must set actual encoding before editing!
+    }
+}
+
+impl std::fmt::Debug for InkDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InkDocument")
+            .field("tree", &self.tree)
+            .field("text", &format!("[{} bytes]", self.text.len()))
+            .field("enc", &self.enc)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for InkDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl std::hash::Hash for InkDocument {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+    }
+}
+
+pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
 /// Public API
 impl InkDocument {
@@ -46,22 +67,24 @@ impl InkDocument {
             lines,
             enc,
             text,
-            doc_symbols_cache: None,
-            ws_symbols_cache: None,
         }
     }
 
-    pub(crate) fn edit(&mut self, edits: Vec<DocumentEdit>) {
-        // eprintln!("applying {} edits", edits.len());
+    pub(crate) fn new_empty(enc: Option<WideEncoding>) -> Self {
+        Self::new(String::new(), enc)
+    }
+
+    pub(crate) fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
+        // log::trace!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
-            let edit = range.map(|range| self.input_edit(range, &new_text));
+            let edit = range.map(|range| self.input_edit(range, new_text.as_ref()));
             let modified_tree = if let Some(edit) = edit {
                 self.text
-                    .replace_range(edit.start_byte..edit.old_end_byte, &new_text);
+                    .replace_range(edit.start_byte..edit.old_end_byte, new_text.as_ref());
                 self.tree.edit(&edit);
                 Some(&self.tree)
             } else {
-                self.text = new_text;
+                self.text = new_text.into();
                 None
             };
             self.tree = self
@@ -70,33 +93,9 @@ impl InkDocument {
                 .expect("parsing must work");
             self.lines = LineIndex::new(&self.text);
         }
-        self.doc_symbols_cache = None;
-        self.ws_symbols_cache = None;
     }
 
-    pub(crate) fn symbols(&mut self, qualified_symbol_names: bool) -> Option<DocumentSymbol> {
-        if self.doc_symbols_cache.is_none() {
-            let new = DocumentSymbols::new(&self, qualified_symbol_names)
-                .traverse(&mut self.tree.walk())
-                .and_then(|it| it.sym);
-            self.doc_symbols_cache = new;
-        }
-        self.doc_symbols_cache.clone()
-    }
-
-    pub(crate) fn workspace_symbols(
-        &mut self,
-        uri: &lsp_types::Uri,
-    ) -> Option<Vec<WorkspaceSymbol>> {
-        if self.ws_symbols_cache.is_none() {
-            let mut symbols = WorkspaceSymbols::new(self, uri);
-            symbols.traverse(&mut self.tree.walk());
-            self.ws_symbols_cache = Some(symbols.sym);
-        }
-        self.ws_symbols_cache.clone()
-    }
-
-    pub fn possible_completions(
+    pub(crate) fn possible_completions(
         &self,
         position: Position,
     ) -> Option<(lsp_types::Range, location::specification::LocationThat)> {
@@ -111,17 +110,19 @@ impl InkDocument {
                 Some("") => break,   // we're at the beginning of the file; nothing to complete here
                 None => continue,    // we're inside a multibyte sequence
                 Some(_other) => {
-                    // eprintln!("The character left of offset {offset} is `{_other}`");
+                    // log::debug!("The character left of offset {offset} is `{_other}`");
                 }
             };
 
             let node = root
                 .descendant_for_byte_range(offset, offset)
                 .expect("the offset must lie within the file, so there must be a node here");
-            eprintln!("found {node} at offset {offset}");
+            // log::debug!("found {node} at offset {offset}");
 
             if node.is_error() || node.is_missing() {
                 let text = &self.text[node.byte_range()];
+                log::error!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
+                // so that the client also sees it:
                 eprintln!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
             } else if let Ok(target) = DivertTarget::try_from_raw(node) {
                 let target = Self::widen_to_full_name(target);
@@ -150,12 +151,6 @@ impl InkDocument {
         // For-loop hasn't produced anything, so:
         None
     }
-
-    pub(crate) fn locations(&self, uri: &Uri) -> impl Iterator<Item = Location> {
-        let mut locations = Locations::new(uri, &self);
-        locations.traverse(&mut self.tree.root_node().walk());
-        locations.locs.into_iter()
-    }
 }
 
 /// Private Helpers
@@ -163,7 +158,7 @@ impl InkDocument {
     fn input_edit(&self, range: lsp_types::Range, new_text: &str) -> tree_sitter::InputEdit {
         let start_byte = self.to_byte(range.start);
         let old_end_byte = self.to_byte(range.end);
-        let new_end_byte = start_byte + new_text.bytes().len();
+        let new_end_byte = start_byte + new_text.len();
 
         tree_sitter::InputEdit {
             start_byte,
@@ -195,8 +190,8 @@ impl InkDocument {
         };
         self.lines
             .offset(pos)
+            .map(|it| it.into())
             .expect("LineCol must correspond to an offset")
-            .into()
     }
 
     fn lsp_position(&self, point: tree_sitter::Point) -> lsp_types::Position {
@@ -219,7 +214,7 @@ impl InkDocument {
         }
     }
 
-    fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
+    pub(super) fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(node.start_point);
         let end = self.lsp_position(node.end_point);
         lsp_types::Range { start, end }
@@ -236,24 +231,95 @@ impl InkDocument {
             this
         }
     }
-}
 
+    pub fn get_node_at<'a, T>(
+        &'a self,
+        db: &'a impl Db<Ops>,
+        pos: lsp_types::Position,
+    ) -> Result<T, GetNodeError>
+    where
+        T: type_sitter_lib::Node<'a>,
+    {
+        let (point, _byte) = self.ts_point(db, pos)?;
+        self.tree
+            .root_node()
+            .named_descendant_for_point_range(point, point)
+            .ok_or_else(|| InvalidPosition(pos))?
+            .pipe(T::try_from_raw)
+            .map_err(|_| GetNodeError::InvalidType)
+    }
+
+    pub fn named_cst_node_at(
+        &self,
+        db: &impl Db<Ops>,
+        pos: lsp_types::Position,
+    ) -> Result<AllNamed<'_>, InvalidPosition> {
+        let (point, _byte) = self.ts_point(db, pos)?;
+        self.tree
+            .root_node()
+            .named_descendant_for_point_range(point, point)
+            .and_then(|node| AllNamed::try_from_raw(node).ok())
+            .ok_or_else(|| InvalidPosition(pos))
+    }
+
+    pub fn ts_point(
+        &self,
+        _db: &impl Db<Ops>,
+        pos: lsp_types::Position,
+    ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
+        let lines = &self.lines;
+        let line_col = if let Some(enc) = self.enc {
+            let wide = line_index::WideLineCol {
+                line: pos.line,
+                col: pos.character,
+            };
+            lines
+                .to_utf8(enc, wide)
+                .ok_or_else(|| InvalidPosition(pos))?
+        } else {
+            line_index::LineCol {
+                line: pos.line,
+                col: pos.character,
+            }
+        };
+        let point = tree_sitter::Point::new(pos.line as usize, pos.character as usize);
+        let byte = lines
+            .offset(line_col)
+            .ok_or_else(|| InvalidPosition(pos))?
+            .into();
+        Ok((point, byte))
+    }
+
+    pub fn ts_range(
+        &self,
+        db: &impl Db<Ops>,
+        range: lsp_types::Range,
+    ) -> Result<tree_sitter::Range, InvalidPosition> {
+        let (start_point, start_byte) = self.ts_point(db, range.start)?;
+        let (end_point, end_byte) = self.ts_point(db, range.end)?;
+        Ok(tree_sitter::Range {
+            start_byte,
+            end_byte,
+            start_point,
+            end_point,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
+    use super::{DocumentEdit, InkDocument};
+    use crate::lsp::location;
+    use crate::test_utils::Compact;
     use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
     use test_case::test_case;
-
-    use crate::lsp::location;
-
-    use super::{DocumentEdit, InkDocument};
 
     /// The important thing here is that each edit's coordinates is relative to the previous edit,
     /// not the initial document.
     #[test]
     fn multiple_edits() {
         let text = "hello world\nhow's it hanging?".to_string();
-        let mut document = InkDocument::new(text, None);
+        let mut document = new_doc(text, None);
         document.edit(vec![
             edit((0, 0), (0, 1), "H"),      // Hello world
             edit((0, 1), (0, 5), "i"),      // Hi world
@@ -267,14 +333,13 @@ mod tests {
     #[test]
     fn giving_no_range_means_replace_all_text() {
         let text = "some text".to_string();
-        let mut document = InkDocument::new(text, None);
+        let mut document = new_doc(text, None);
         document.edit(vec![
             (
                 None,
-                "some ignored text\nthis will be completely overwritted\nby the next edit"
-                    .to_string(),
+                "some ignored text\nthis will be completely overwritted\nby the next edit",
             ),
-            (None, "final version".to_string()),
+            (None, "final version"),
         ]);
         assert_str_eq!(document.text, "final version");
     }
@@ -284,7 +349,7 @@ mod tests {
         // We'll freely mix Windows and Unix newlines.
         // No \r, because I don't expect old Macs will use this language server.
         let text = "line one\r\nline two\nline three".to_string();
-        let mut document = InkDocument::new(text, None);
+        let mut document = new_doc(text, None);
         document.edit(vec![
             edit((0, 5), (0, 8), "1"),
             edit((1, 5), (1, 8), "2"),
@@ -301,7 +366,7 @@ mod tests {
     #[test_case(Some(WideEncoding::Utf32), 1; "Width of emoji in UTF-32")]
     fn wide_encodings(enc: Option<WideEncoding>, code_units: u32) {
         let text = "🥺🥺".to_string();
-        let mut document = InkDocument::new(text, enc);
+        let mut document = new_doc(text, enc);
         document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
     }
@@ -366,7 +431,7 @@ mod tests {
         }
     }
 
-    fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit {
+    fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit<&str> {
         (
             Some(lsp_types::Range {
                 start: lsp_types::Position {
@@ -378,7 +443,7 @@ mod tests {
                     character: to.1,
                 },
             }),
-            text.to_owned(),
+            text,
         )
     }
 
@@ -395,7 +460,7 @@ mod tests {
                     let pos = lsp_types::Position::new(row, col);
                     let mut output = input.to_string();
                     output.remove(idx);
-                    return (InkDocument::new(output, None), pos);
+                    return (new_doc(output, None), pos);
                 }
                 '\n' => {
                     row += 1;
@@ -409,17 +474,7 @@ mod tests {
         panic!("There should have been an '@' in there somewhere.");
     }
 
-    /// Wrapper to enable a more compact debug representation for tests.
-    #[derive(PartialEq)]
-    struct Compact<T>(T);
-
-    impl std::fmt::Debug for Compact<lsp_types::Range> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "{}:{}-{}:{}",
-                self.0.start.line, self.0.start.character, self.0.end.line, self.0.end.character
-            )
-        }
+    fn new_doc(text: impl Into<String>, enc: Option<WideEncoding>) -> InkDocument {
+        InkDocument::new(text.into(), enc)
     }
 }

@@ -1,47 +1,60 @@
-use crate::lsp::document::InkDocument;
 use crate::{
     ink_syntax::{types::AllNamed, VisitInstruction, Visitor},
     lsp::location::{Location, LocationKind},
 };
 use lsp_types::Uri;
-use std::ops::Range;
 use type_sitter_lib::{IncorrectKindCause, Node};
 
-pub(crate) struct Locations<'a> {
-    pub(crate) doc: &'a InkDocument,
-    pub(crate) uri: &'a Uri,
-    pub(crate) namespace: Option<String>,
+use super::salsa_doc_symbols::lsp_range;
+use super::{Db, Doc};
+
+pub(super) struct LocationVisitor<'a> {
+    db: &'a dyn Db,
+    doc: Doc,
+    namespace: Option<String>,
     pub(crate) locs: Vec<Location>,
 }
 
-impl<'a> Locations<'a> {
-    pub(crate) fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
+impl<'a> LocationVisitor<'a> {
+    pub(super) fn new(db: &'a dyn Db, doc: Doc) -> Self {
         Self {
-            uri,
+            db,
             doc,
             namespace: None,
             locs: Vec::new(),
         }
     }
 
-    fn new_loc(&mut self, kind: LocationKind, name: String, byte_range: Range<usize>) -> Self {
-        self.locs.push(Location {
-            file: self.uri.clone(),
+    fn new_loc(&mut self, kind: LocationKind, name: String, range: tree_sitter::Range) -> Self {
+        self.locs.push(Location::new(
+            self.uri().clone(),
+            self.lsp_range(&range),
             name,
-            namespace: self.namespace.clone(),
-            byte_range,
+            self.namespace.clone(),
             kind,
-        });
+        ));
         Self {
-            uri: self.uri,
+            db: self.db,
             doc: self.doc,
             namespace: self.namespace.clone(),
             locs: Vec::new(),
         }
     }
+
+    fn uri(&self) -> &Uri {
+        self.doc.uri(self.db)
+    }
+
+    fn lsp_range(&self, range: &tree_sitter::Range) -> lsp_types::Range {
+        lsp_range(self.doc.lines(self.db), self.doc.enc(self.db), range)
+    }
+
+    fn text(&self, byte_range: std::ops::Range<usize>) -> &'a str {
+        &self.doc.text(self.db)[byte_range]
+    }
 }
 
-impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
+impl<'tree> Visitor<'tree, AllNamed<'tree>> for LocationVisitor<'tree> {
     fn visit(&mut self, node: AllNamed) -> VisitInstruction<Self> {
         use VisitInstruction::*;
         match node {
@@ -69,38 +82,31 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
             | AllNamed::ChoiceMark(_)
             | AllNamed::ChoiceMarks(_)
             | AllNamed::ChoiceOnly(_)
-            | AllNamed::CodeStmt(_)
-            | AllNamed::Comment(_)
             | AllNamed::CondArm(_)
             | AllNamed::CondBlock(_)
             | AllNamed::Condition(_)
             | AllNamed::ConditionalText(_)
             | AllNamed::Divert(_)
-            | AllNamed::DivertTarget(_)
             | AllNamed::Else(_)
             | AllNamed::Eol(_)
             | AllNamed::Eval(_)
             | AllNamed::Expr(_)
             | AllNamed::GatherMark(_)
             | AllNamed::GatherMarks(_)
-            | AllNamed::GlobalKeyword(_)
             | AllNamed::Glue(_)
             | AllNamed::Identifier(_)
             | AllNamed::Include(_)
             | AllNamed::LineComment(_)
             | AllNamed::ListValues(_)
-            | AllNamed::Logic(_)
             | AllNamed::MultilineAlternatives(_)
             | AllNamed::Number(_)
             | AllNamed::Paragraph(_)
             | AllNamed::Param(_)
-            | AllNamed::ParamValue(_)
             | AllNamed::Params(_)
             | AllNamed::Paren(_)
             | AllNamed::Path(_)
             | AllNamed::Postfix(_)
             | AllNamed::QualifiedName(_)
-            | AllNamed::Redirect(_)
             | AllNamed::Return(_)
             | AllNamed::String(_)
             | AllNamed::Tag(_)
@@ -121,8 +127,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                     // dirty trick to get the params in there. We should do this better
                     byte_range.end = params.end_byte();
                 }
-                let name = self.doc.text[byte_range.clone()].to_string();
-                let mut new_loc = self.new_loc(kind, name.clone(), byte_range);
+                let name = self.text(byte_range.clone()).to_string();
+                let mut new_loc = self.new_loc(kind, name.clone(), knot.name().range());
                 new_loc.namespace = Some(name);
                 Return(new_loc)
             }
@@ -133,8 +139,9 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                     // dirty trick to get the params in there. We should do this better
                     byte_range.end = params.end_byte();
                 }
-                let name = self.doc.text[byte_range.clone()].to_string();
-                let mut new_loc = self.new_loc(LocationKind::Stitch, name.clone(), byte_range);
+                let name = self.text(byte_range.clone()).to_string();
+                let mut new_loc =
+                    self.new_loc(LocationKind::Stitch, name.clone(), stitch.name().range());
                 new_loc.namespace = if let Some(ref knot) = self.namespace {
                     Some(format!("{knot}.{name}"))
                 } else {
@@ -149,42 +156,43 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for Locations<'tree> {
                     // dirty trick to get the params in there. We should do this better
                     byte_range.end = params.end_byte();
                 }
-                let name = self.doc.text[byte_range.clone()].to_string();
-                Return(self.new_loc(LocationKind::Function, name, byte_range))
+                let name = self.text(byte_range.clone()).to_string();
+                Return(self.new_loc(LocationKind::Function, name, external.name().range()))
             }
 
             AllNamed::Label(label) => {
                 let byte_range = label.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_string();
-                Return(self.new_loc(LocationKind::Label, name, byte_range))
+                let name = self.text(byte_range.clone()).to_string();
+                Return(self.new_loc(LocationKind::Label, name, label.name().range()))
             }
 
             AllNamed::Global(global) => {
                 let byte_range = global.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_owned();
-                let mut new_loc = self.new_loc(LocationKind::Variable, name, byte_range);
+                let name = self.text(byte_range.clone()).to_owned();
+                let mut new_loc = self.new_loc(LocationKind::Variable, name, global.name().range());
                 new_loc.namespace = None;
                 Return(new_loc)
             }
 
             AllNamed::List(list) => {
                 let byte_range = list.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_owned();
-                let mut new_loc = self.new_loc(LocationKind::Variable, name.clone(), byte_range);
+                let name = self.text(byte_range.clone()).to_owned();
+                let mut new_loc =
+                    self.new_loc(LocationKind::Variable, name.clone(), list.name().range());
                 new_loc.namespace = Some(name);
                 DescendWith(new_loc)
             }
 
             AllNamed::ListValueDef(def) => {
                 let byte_range = def.name().byte_range();
-                let name = self.doc.text[byte_range.clone().clone()].to_owned();
-                Return(self.new_loc(LocationKind::Variable, name, byte_range))
+                let name = self.text(byte_range.clone().clone()).to_owned();
+                Return(self.new_loc(LocationKind::Variable, name, def.name().range()))
             }
 
-            AllNamed::Temp(temp) => {
+            AllNamed::TempDef(temp) => {
                 let byte_range = temp.name().byte_range();
-                let name = self.doc.text[byte_range.clone()].to_owned();
-                Return(self.new_loc(LocationKind::Variable, name, byte_range))
+                let name = self.text(byte_range.clone()).to_owned();
+                Return(self.new_loc(LocationKind::Variable, name, temp.name().range()))
             }
         }
     }

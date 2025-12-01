@@ -1,13 +1,10 @@
 use super::{Location, LocationKind};
+use crate::lsp::idset;
 use itertools::Itertools;
 use lsp_types::Uri;
-use std::{
-    ops::{BitAnd, BitOr},
-    str::FromStr as _,
-};
 
 // Ord impls are used for normalization
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 #[cfg_attr(
     test,
     derive(strum::EnumDiscriminants),
@@ -18,7 +15,7 @@ pub(crate) enum LocationThat {
     And(Vec<Self>),
     Or(Vec<Self>),
     // IDEA: Not(Box<Self>)
-    IsInFile(String),
+    IsInFile(idset::Id<Uri>),
     IsLocation(LocationKind),
     HasParameters,
     MatchesName(String),
@@ -39,7 +36,7 @@ impl std::fmt::Display for LocationThat {
                 1 => items[0].fmt(f),
                 _ => write!(f, "({})", items.iter().join(" | ")),
             },
-            IsInFile(file) => write!(f, "file={}", file),
+            IsInFile(file) => write!(f, "file={:?}", file),
             IsLocation(kind) => match kind {
                 LocationKind::Knot => f.write_str("knot"),
                 LocationKind::Stitch => f.write_str("stitch"),
@@ -123,6 +120,10 @@ impl std::ops::BitOrAssign for LocationThat {
 
 /// Construction
 impl LocationThat {
+    pub(crate) fn is_in_file(file: idset::Id<Uri>) -> Self {
+        Self::IsInFile(file)
+    }
+
     pub(crate) fn is_knot() -> LocationThat {
         Self::IsLocation(LocationKind::Knot)
     }
@@ -161,7 +162,10 @@ impl LocationThat {
 // NOTE: This isn't proper normalization (neither DNF nor CNF), it just sorts and deduplicates the existing structure.
 // Together with our ad-hoc merging during construction this seems to work well enough for now.
 // I suspect that'll change once we introduce negation.
+#[cfg(test)]
 pub(crate) fn simplified(spec: LocationThat) -> LocationThat {
+    use std::ops::{BitAnd, BitOr};
+
     match spec {
         // Same pattern for And and Or: Sort and deduplicate like items.
         LocationThat::And(items) => items
@@ -183,17 +187,17 @@ pub(crate) fn simplified(spec: LocationThat) -> LocationThat {
 }
 
 /// All the URIs in `spec`, if any.
-pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<Uri>> {
+pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<idset::Id<Uri>>> {
     match spec {
         LocationThat::And(items) | LocationThat::Or(items) => {
-            let merged: Vec<Uri> = items.iter().filter_map(extract_uris).flatten().collect();
+            let merged: Vec<_> = items.iter().filter_map(extract_uris).flatten().collect();
             if merged.is_empty() {
                 None
             } else {
                 Some(merged)
             }
         }
-        LocationThat::IsInFile(path) => Some(vec![Uri::from_str(&path).unwrap()]),
+        LocationThat::IsInFile(path) => Some(vec![*path]),
 
         LocationThat::IsLocation(_)
         | LocationThat::HasParameters
@@ -215,7 +219,7 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
             .map(|spec| rank_match(spec, loc))
             .max()
             .unwrap_or(0),
-        LocationThat::IsInFile(uri) => usize::from(uri == loc.file.as_str()),
+        LocationThat::IsInFile(uri) => usize::from(loc.file_range.file == *uri),
         LocationThat::IsLocation(kind) => usize::from(loc.kind == *kind),
         LocationThat::MatchesName(query) => {
             if loc.qualified_name().contains(query) {
@@ -227,6 +231,10 @@ pub(crate) fn rank_match(spec: &LocationThat, loc: &Location) -> usize {
         LocationThat::VisibleInNamespace(_) => todo!(),
         LocationThat::HasParameters => usize::from(loc.name.ends_with(")")), // OMG, so dirty.
     }
+}
+
+pub(crate) fn matches(spec: &LocationThat, loc: &Location) -> bool {
+    rank_match(spec, loc) != 0
 }
 
 #[cfg(test)]
@@ -242,7 +250,7 @@ impl quickcheck::Arbitrary for LocationThat {
             LocationThatDiscriminants::Or => {
                 LocationThat::arbitrary(g) | LocationThat::arbitrary(g)
             }
-            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(String::arbitrary(g)),
+            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(idset::Id::arbitrary(g)),
             LocationThatDiscriminants::IsLocation => {
                 LocationThat::IsLocation(LocationKind::arbitrary(g))
             }
@@ -257,6 +265,7 @@ impl quickcheck::Arbitrary for LocationThat {
     }
 
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        use std::ops::{BitAnd, BitOr};
         use LocationThat::*;
         match self {
             And(items) => Box::new(
@@ -280,23 +289,11 @@ impl quickcheck::Arbitrary for LocationThat {
 #[cfg(test)]
 pub(crate) mod tests {
     mod simplification {
-        use crate::lsp::location::specification::{simplified, LocationThat};
+        use crate::{
+            lsp::location::specification::{simplified, LocationThat},
+            test_utils::check_eq,
+        };
         use quickcheck::{quickcheck, TestResult};
-
-        macro_rules! check_eq {
-            ($a:expr, $b:expr) => {
-                if $a == $b {
-                    quickcheck::TestResult::passed()
-                } else {
-                    quickcheck::TestResult::error(format!(
-                        "Expected\n{}\n  to equal\n{}\n  but found that\n{:?}\n  is not equal to\n{:?}",
-                        stringify!($a).replace(".clone()", ""),
-                        stringify!($b).replace(".clone()", ""),
-                        $a, $b
-                    ))
-                }
-            };
-        }
 
         quickcheck! {
             fn order_doesnt_matter_and(a: LocationThat, b: LocationThat) -> TestResult {
