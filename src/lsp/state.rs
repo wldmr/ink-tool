@@ -1,13 +1,11 @@
-use super::{
-    document::{DocumentEdit, InkDocument},
-    location::{self, specification::LocationThat, Location},
+use super::document::{DocumentEdit, InkDocument};
+use crate::lsp::{
+    idset::Id,
+    salsa::{self, DocId, Docs, InkGetters, InkSetters, Ops},
 };
-use crate::lsp::salsa::{self, DocId, Docs, InkGetters, InkSetters, Ops};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
-use lsp_types::{
-    CompletionItem, CompletionItemKind, DocumentSymbol, Position, Uri, WorkspaceSymbol,
-};
+use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use tap::Tap as _;
 
 // This is quite an abomination, but we have to deal with it.
@@ -142,7 +140,10 @@ impl State {
         from_uri: &Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
-        todo!()
+        let doc_id = self.doc_id(&from_uri)?;
+        let doc = self.db.document(doc_id);
+        let node = doc.definitions_of(from_position);
+        Ok(Vec::new())
     }
 
     pub fn goto_references(
@@ -151,21 +152,6 @@ impl State {
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
         todo!()
-    }
-
-    fn find_locations(&self, _spec: LocationThat) -> impl Iterator<Item = location::Location> {
-        // let mut locs = Vec::new();
-        // for (_uri, &doc) in self.workspace.docs(&self.db) {
-        //     let doc_locs = locations(&self.db, doc)
-        //         .into_iter()
-        //         .map(|loc| (rank_match(&spec, &loc), loc))
-        //         .filter(|(rank, _)| *rank > 0);
-        //     locs.extend(doc_locs);
-        // }
-        // locs.sort_unstable_by_key(|(rank, _)| *rank);
-        // locs.into_iter().map(|(_, location)| location)
-        todo!();
-        Vec::new().into_iter()
     }
 
     #[cfg(test)]
@@ -178,40 +164,15 @@ impl State {
             .expect("don't call with with a non-existent document");
         self.db
             .document(id)
-            .ts_range(&self.db, loc)
+            .ts_range(loc)
             .expect("don't call this with an invalid location")
     }
-}
 
-fn to_completion_item(_range: lsp_types::Range, loc: Location) -> CompletionItem {
-    CompletionItem {
-        label: loc.name.clone(),
-        detail: match loc.namespace {
-            Some(ref ns) => Some(format!("{:?}: {ns}", loc)),
-            None => Some(format!("{:?}", loc)),
-        },
-        kind: Some(match loc.kind {
-            location::LocationKind::Knot => CompletionItemKind::CLASS,
-            location::LocationKind::Stitch => CompletionItemKind::METHOD,
-            location::LocationKind::Label => CompletionItemKind::FIELD,
-            location::LocationKind::Variable => CompletionItemKind::VARIABLE,
-            location::LocationKind::Function => CompletionItemKind::FUNCTION,
-        }),
-        label_details: None,
-        documentation: None,
-        deprecated: None,
-        preselect: None,
-        sort_text: None,
-        filter_text: None,
-        insert_text: None,
-        insert_text_format: None,
-        insert_text_mode: None,
-        text_edit: None,
-        additional_text_edits: None,
-        command: None,
-        commit_characters: None,
-        data: None,
-        tags: None,
+    fn doc_id(&self, uri: &Uri) -> Result<Id<Uri>, DocumentNotFound> {
+        self.db
+            .docs()
+            .get_id(uri)
+            .ok_or_else(|| DocumentNotFound(uri.clone()))
     }
 }
 
@@ -293,7 +254,7 @@ mod tests {
 
         use super::{new_state, set_content, State};
         use crate::{
-            lsp::salsa::{self, InkGetters},
+            lsp::salsa::InkGetters,
             test_utils::{
                 self,
                 text_annotations::{Annotation, AnnotationScanner},
@@ -303,7 +264,6 @@ mod tests {
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
-        use mini_milc::Db as _;
         use test_case::test_case;
 
         #[derive(Debug, Default)]
@@ -477,7 +437,7 @@ mod tests {
                                             db.docs().get_id(&other.uri).expect("must exist");
                                         let span = db
                                             .document(docid)
-                                            .ts_range(db, other.range)
+                                            .ts_range(other.range)
                                             .map(|it| it.start_byte..it.end_byte)
                                             .unwrap();
                                         let (uri, source) = inks.get_key_value(&other.uri).unwrap();

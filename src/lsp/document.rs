@@ -1,10 +1,8 @@
-use crate::ink_syntax::types::{AllNamed, Condition, DivertTarget, Eval, Expr, Redirect};
-use crate::lsp::location::{self, specification::LocationThat};
-use crate::lsp::salsa::{GetNodeError, Ops};
+use crate::ink_syntax::types::{AllNamed, DivertTarget};
+use crate::lsp::salsa::GetNodeError;
 use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
-use mini_milc::Db;
 use tap::Pipe as _;
 use tree_sitter::Parser;
 use type_sitter_lib::Node;
@@ -22,6 +20,7 @@ pub(crate) struct InkDocument {
 
 impl Default for InkDocument {
     fn default() -> Self {
+        // TODO: This will silently lead to errors. We should panic instead.
         InkDocument::new_empty(None) // NOTE: Workaround for `Default` requirement. Must set actual encoding before editing!
     }
 }
@@ -49,6 +48,18 @@ impl std::hash::Hash for InkDocument {
 }
 
 pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PointOfInterest {
+    bytes: (usize, usize),
+}
+
+pub enum DefinionsSearch<'a> {
+    /// This thing has the following local definion(s)
+    Local(Vec<lsp_types::Range>),
+    /// This thing is not locally defined, look for this &str globally.
+    Global(&'a str),
+}
 
 /// Public API
 impl InkDocument {
@@ -95,61 +106,13 @@ impl InkDocument {
         }
     }
 
-    pub(crate) fn possible_completions(
-        &self,
-        position: Position,
-    ) -> Option<(lsp_types::Range, location::specification::LocationThat)> {
-        let offset_at_cursor = self.to_byte(position);
-        let root = self.tree.root_node();
-
-        // simply walk to the left (whithin reason) until we hit something the tells us what to complete
-        for offset in (0..=offset_at_cursor).rev() {
-            // Some special behavior based on the character left of the search position:
-            match self.text.get(offset.saturating_sub(1)..offset) {
-                Some("\n") => break, // only look until the start of the line, at most
-                Some("") => break,   // we're at the beginning of the file; nothing to complete here
-                None => continue,    // we're inside a multibyte sequence
-                Some(_other) => {
-                    // log::debug!("The character left of offset {offset} is `{_other}`");
-                }
-            };
-
-            let node = root
-                .descendant_for_byte_range(offset, offset)
-                .expect("the offset must lie within the file, so there must be a node here");
-            // log::debug!("found {node} at offset {offset}");
-
-            if node.is_error() || node.is_missing() {
-                let text = &self.text[node.byte_range()];
-                log::error!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
-                // so that the client also sees it:
-                eprintln!("Completion: unhandled `{node}` for `{text}`. Please file a bug.");
-            } else if let Ok(target) = DivertTarget::try_from_raw(node) {
-                let target = Self::widen_to_full_name(target);
-                // Determine the parent. We only complete in very specific cases:
-                let parent = target.parent()?;
-                let mut result = if Redirect::try_from_raw(*parent.raw()).is_ok() {
-                    LocationThat::is_divert_target()
-                } else if Expr::try_from_raw(*parent.raw()).is_ok()
-                    | Eval::try_from_raw(*parent.raw()).is_ok()
-                    | Condition::try_from_raw(*parent.raw()).is_ok()
-                {
-                    LocationThat::is_named()
-                } else {
-                    return None;
-                };
-                if let DivertTarget::Call(call) = target {
-                    result &= LocationThat::has_parameters();
-                    result &= LocationThat::matches_name(&self.text[call.name().byte_range()]);
-                } else {
-                    result &= LocationThat::matches_name(&self.text[target.byte_range()]);
-                }
-                let range = self.lsp_range(&target.range());
-                return Some((range, result));
-            }
-        }
-        // For-loop hasn't produced anything, so:
-        None
+    pub fn definitions_of(&self, pos: Position) -> Option<DefinionsSearch> {
+        let byte = self.to_byte(pos);
+        let node = self
+            .tree
+            .root_node()
+            .named_descendant_for_byte_range(byte, byte)?;
+        todo!()
     }
 }
 
@@ -232,15 +195,11 @@ impl InkDocument {
         }
     }
 
-    pub fn get_node_at<'a, T>(
-        &'a self,
-        db: &'a impl Db<Ops>,
-        pos: lsp_types::Position,
-    ) -> Result<T, GetNodeError>
+    pub fn get_node_at<'a, T>(&'a self, pos: lsp_types::Position) -> Result<T, GetNodeError>
     where
         T: type_sitter_lib::Node<'a>,
     {
-        let (point, _byte) = self.ts_point(db, pos)?;
+        let (point, _byte) = self.ts_point(pos)?;
         self.tree
             .root_node()
             .named_descendant_for_point_range(point, point)
@@ -251,10 +210,9 @@ impl InkDocument {
 
     pub fn named_cst_node_at(
         &self,
-        db: &impl Db<Ops>,
         pos: lsp_types::Position,
     ) -> Result<AllNamed<'_>, InvalidPosition> {
-        let (point, _byte) = self.ts_point(db, pos)?;
+        let (point, _byte) = self.ts_point(pos)?;
         self.tree
             .root_node()
             .named_descendant_for_point_range(point, point)
@@ -264,7 +222,6 @@ impl InkDocument {
 
     pub fn ts_point(
         &self,
-        _db: &impl Db<Ops>,
         pos: lsp_types::Position,
     ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
         let lines = &self.lines;
@@ -290,13 +247,9 @@ impl InkDocument {
         Ok((point, byte))
     }
 
-    pub fn ts_range(
-        &self,
-        db: &impl Db<Ops>,
-        range: lsp_types::Range,
-    ) -> Result<tree_sitter::Range, InvalidPosition> {
-        let (start_point, start_byte) = self.ts_point(db, range.start)?;
-        let (end_point, end_byte) = self.ts_point(db, range.end)?;
+    pub fn ts_range(&self, range: lsp_types::Range) -> Result<tree_sitter::Range, InvalidPosition> {
+        let (start_point, start_byte) = self.ts_point(range.start)?;
+        let (end_point, end_byte) = self.ts_point(range.end)?;
         Ok(tree_sitter::Range {
             start_byte,
             end_byte,
@@ -308,8 +261,6 @@ impl InkDocument {
 #[cfg(test)]
 mod tests {
     use super::{DocumentEdit, InkDocument};
-    use crate::lsp::location;
-    use crate::test_utils::Compact;
     use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
     use test_case::test_case;
@@ -369,53 +320,6 @@ mod tests {
         let mut document = new_doc(text, enc);
         document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
-    }
-
-    // The @ symbol signifies where the cursor is.
-    // Random test names for quick re-runs; ugly, but less cumbersome than descriptive or sequential names
-    // Many strange corner cases, but the upshot is: We only complete when the cursor is adjacent to identifier characters
-    // If we complete, then we narrow it down to divert targets if preceded by a redirect marker.
-    // IDEA: We could
-    use super::location::specification::LocationThat as Loc;
-    #[test_case("@{}", None; "bsj")]
-    #[test_case("{@}", None; "lkc")]
-    #[test_case("hi{@}", None; "gkf")]
-    #[test_case("hi@{}", None; "dpf")]
-    #[test_case("{ @}", None; "ixk")]
-    #[test_case("{ @ }", None; "ina")]
-    #[test_case("{}@", None; "fay")]
-    #[test_case("{@x}", Some((range((0, 1), (0, 2)), Loc::is_named() & Loc::matches_name("x"))); "rmo")]
-    #[test_case("{x@}", Some((range((0, 1), (0, 2)), Loc::is_named() & Loc::matches_name("x"))); "ivb")]
-    #[test_case("{a == @}", None; "pqf")]
-    #[test_case("{a + b@}", Some((range((0, 5), (0, 6)), Loc::is_named() & Loc::matches_name("b"))); "hea")]
-    #[test_case("{a@ == b}", Some((range((0, 1), (0, 2)), Loc::is_named() & Loc::matches_name("a"))); "qpd")]
-    #[test_case("-@>", None; "yug")]
-    #[test_case("->@", None; "qgi")]
-    #[test_case("-> @", None; "oak")]
-    #[test_case("-> @ab", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "pgf")]
-    #[test_case("-> ab@", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "uad")]
-    #[test_case("-> a@b", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "djg")]
-    #[test_case("<- @ab", Some((range((0, 3), (0, 5)), Loc::is_divert_target() & Loc::matches_name("ab"))); "izf")]
-    #[test_case("->-> ab@", Some((range((0, 5), (0, 7)), Loc::is_divert_target() & Loc::matches_name("ab"))); "tqz")]
-    #[test_case("-> @aa.bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "hpp")]
-    #[test_case("-> aa@.bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "mvz")]
-    #[test_case("-> aa.@bb", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "glq")]
-    #[test_case("-> aa.b@b", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "uon")]
-    #[test_case("-> aa.bb@", Some((range((0, 3), (0, 8)), Loc::is_divert_target() & Loc::matches_name("aa.bb"))); "npt")]
-    #[test_case("-> aa.bb()@", Some((range((0, 3), (0, 10)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::has_parameters())); "sgs")]
-    #[test_case("-> aa.b@b(some, param)", Some((range((0, 3), (0, 21)), Loc::is_divert_target() & Loc::matches_name("aa.bb") & Loc::has_parameters())); "xbo")]
-    #[test_case("->@\n== knot", None; "iqu")]
-    #[test_case("->@\ntext", None; "aho")]
-    #[test_case("== text@", None; "no completion in knots")]
-    #[test_case("= text@", None; "no completion in stitches")]
-    #[test_case("* {text@}", Some((range((0, 3), (0, 7)), Loc::is_named() & Loc::matches_name("text"))); "we do complete in choice conditions")]
-    fn completions(txt: &str, expected: Option<(lsp_types::Range, Loc)>) {
-        let (doc, caret) = doc_with_caret(txt);
-        let actual = doc
-            .possible_completions(caret)
-            .map(|(r, s)| (Compact(r), location::specification::simplified(s)));
-        let expected = expected.map(|(r, s)| (Compact(r), location::specification::simplified(s)));
-        pretty_assertions::assert_eq!(actual, expected, "Ink source:\n```\n{txt}\n```");
     }
 
     fn range(from: (u32, u32), to: (u32, u32)) -> lsp_types::Range {

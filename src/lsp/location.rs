@@ -5,8 +5,6 @@ use derive_more::{derive::Display, Debug};
 use lsp_types::{Range, Uri};
 use std::ops::RangeBounds;
 
-pub mod specification;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(derive_quickcheck_arbitrary::Arbitrary))]
 pub(crate) struct Location {
