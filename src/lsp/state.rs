@@ -187,8 +187,8 @@ fn to_completion_item(_range: lsp_types::Range, loc: Location) -> CompletionItem
     CompletionItem {
         label: loc.name.clone(),
         detail: match loc.namespace {
-            Some(ref ns) => Some(format!("{}: {ns}", loc.path_as_str())),
-            None => Some(loc.path_as_str().to_owned()),
+            Some(ref ns) => Some(format!("{:?}: {ns}", loc)),
+            None => Some(format!("{:?}", loc)),
         },
         kind: Some(match loc.kind {
             location::LocationKind::Knot => CompletionItemKind::CLASS,

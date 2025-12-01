@@ -1,4 +1,5 @@
-use super::{FileId, Location, LocationKind};
+use super::{Location, LocationKind};
+use crate::lsp::idset;
 use itertools::Itertools;
 use lsp_types::Uri;
 
@@ -14,7 +15,7 @@ pub(crate) enum LocationThat {
     And(Vec<Self>),
     Or(Vec<Self>),
     // IDEA: Not(Box<Self>)
-    IsInFile(FileId),
+    IsInFile(idset::Id<Uri>),
     IsLocation(LocationKind),
     HasParameters,
     MatchesName(String),
@@ -35,7 +36,7 @@ impl std::fmt::Display for LocationThat {
                 1 => items[0].fmt(f),
                 _ => write!(f, "({})", items.iter().join(" | ")),
             },
-            IsInFile(file) => write!(f, "file={}", file.0),
+            IsInFile(file) => write!(f, "file={:?}", file),
             IsLocation(kind) => match kind {
                 LocationKind::Knot => f.write_str("knot"),
                 LocationKind::Stitch => f.write_str("stitch"),
@@ -119,8 +120,8 @@ impl std::ops::BitOrAssign for LocationThat {
 
 /// Construction
 impl LocationThat {
-    pub(crate) fn is_in_file(file: impl Into<FileId>) -> Self {
-        Self::IsInFile(file.into())
+    pub(crate) fn is_in_file(file: idset::Id<Uri>) -> Self {
+        Self::IsInFile(file)
     }
 
     pub(crate) fn is_knot() -> LocationThat {
@@ -186,17 +187,17 @@ pub(crate) fn simplified(spec: LocationThat) -> LocationThat {
 }
 
 /// All the URIs in `spec`, if any.
-pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<Uri>> {
+pub(crate) fn extract_uris(spec: &LocationThat) -> Option<Vec<idset::Id<Uri>>> {
     match spec {
         LocationThat::And(items) | LocationThat::Or(items) => {
-            let merged: Vec<Uri> = items.iter().filter_map(extract_uris).flatten().collect();
+            let merged: Vec<_> = items.iter().filter_map(extract_uris).flatten().collect();
             if merged.is_empty() {
                 None
             } else {
                 Some(merged)
             }
         }
-        LocationThat::IsInFile(path) => Some(vec![path.into()]),
+        LocationThat::IsInFile(path) => Some(vec![*path]),
 
         LocationThat::IsLocation(_)
         | LocationThat::HasParameters
@@ -249,7 +250,7 @@ impl quickcheck::Arbitrary for LocationThat {
             LocationThatDiscriminants::Or => {
                 LocationThat::arbitrary(g) | LocationThat::arbitrary(g)
             }
-            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(FileId::arbitrary(g)),
+            LocationThatDiscriminants::IsInFile => LocationThat::IsInFile(idset::Id::arbitrary(g)),
             LocationThatDiscriminants::IsLocation => {
                 LocationThat::IsLocation(LocationKind::arbitrary(g))
             }

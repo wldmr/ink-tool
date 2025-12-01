@@ -1,8 +1,9 @@
 #![allow(dead_code)] // TODO: remove this once we've settled on a design
 
+use crate::lsp::idset::Id;
 use derive_more::{derive::Display, Debug};
 use lsp_types::{Range, Uri};
-use std::{ops::RangeBounds, str::FromStr};
+use std::ops::RangeBounds;
 
 pub mod specification;
 
@@ -17,15 +18,11 @@ pub(crate) struct Location {
 
 impl Location {
     pub(crate) fn id(&self) -> FileTextRange {
-        self.file_range.clone()
-    }
-
-    pub(crate) fn path_as_str(&self) -> &str {
-        &self.file_range.file.0
+        self.file_range
     }
 
     pub(crate) fn new(
-        uri: Uri,
+        uri: Id<Uri>,
         range: Range,
         name: String,
         namespace: Option<String>,
@@ -48,11 +45,6 @@ impl Location {
 }
 
 // We mimic some basic LSP types to get around the orphan rule.
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
-// IDEA: Maybe don't store the whole path here and instead just make this an index. Pro: it would become Copy. Con: We could only say what the path is at the Workspace level.
-#[debug("{_0}")]
-pub(crate) struct FileId(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 #[debug("{start:?}..{end:?}")]
@@ -110,17 +102,17 @@ pub(crate) struct TextPos {
     character: u32,
 }
 
-#[derive(Debug, Display, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Display, Clone, Copy, PartialEq, Eq, Hash)]
 #[display("{file:?}:{range:?}")]
 pub(crate) struct FileTextRange {
-    file: FileId,
+    file: Id<Uri>,
     range: TextRange,
 }
 
 impl FileTextRange {
-    pub(crate) fn new(uri: impl Into<FileId>, range: impl Into<TextRange>) -> Self {
+    pub(crate) fn new(file: Id<Uri>, range: impl Into<TextRange>) -> Self {
         Self {
-            file: uri.into(),
+            file,
             range: range.into(),
         }
     }
@@ -137,8 +129,8 @@ impl FileTextRange {
         self.file == other.file && self.range.contains(&other.range)
     }
 
-    pub(crate) fn is_in_file(&self, file: &FileId) -> bool {
-        self.file == *file
+    pub(crate) fn is_in_file(&self, file: Id<Uri>) -> bool {
+        self.file == file
     }
 }
 
@@ -203,18 +195,6 @@ impl From<TextRange> for Range {
             start: value.start.into(),
             end: value.end.into(),
         }
-    }
-}
-
-impl From<lsp_types::Uri> for FileId {
-    fn from(value: lsp_types::Uri) -> Self {
-        Self(value.as_str().to_string())
-    }
-}
-
-impl From<&FileId> for lsp_types::Uri {
-    fn from(value: &FileId) -> Self {
-        lsp_types::Uri::from_str(&value.0).expect("This should have been created from a valid URI")
     }
 }
 
@@ -308,7 +288,8 @@ mod tests {
 
 #[cfg(test)]
 pub(crate) mod arbitrary {
-    use super::{FileId, FileTextRange, TextPos, TextRange};
+    use super::{FileTextRange, TextPos, TextRange};
+    use crate::lsp::idset;
     use quickcheck::Arbitrary;
 
     impl Arbitrary for TextPos {
@@ -346,20 +327,10 @@ pub(crate) mod arbitrary {
         }
     }
 
-    impl Arbitrary for FileId {
-        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-            Self(String::arbitrary(g))
-        }
-
-        fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-            Box::new(self.0.shrink().map(Self))
-        }
-    }
-
     impl Arbitrary for FileTextRange {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
-                file: FileId::arbitrary(g),
+                file: idset::Id::arbitrary(g),
                 range: TextRange::arbitrary(g),
             }
         }
