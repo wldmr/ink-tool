@@ -67,7 +67,7 @@ async fn root(State(state): State<SharedState>) -> impl IntoResponse {
                 menu.list_item(|li| {
                     li.text("Files");
                     li.unordered_list(|ul| {
-                        for uri in state.docs().values() {
+                        for uri in state.doc_uris() {
                             ul.list_item(|li| {
                                 let path = uri.path().segments().join("/");
                                 li.anchor(|a| {

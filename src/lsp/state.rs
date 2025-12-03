@@ -1,7 +1,7 @@
 use super::document::{DocumentEdit, InkDocument};
 use crate::lsp::{
-    idset::Id,
-    salsa::{self, DocId, Docs, InkGetters, InkSetters, Ops},
+    idset::{Id, IdMap},
+    salsa::{self, InkGetters},
 };
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
@@ -19,8 +19,9 @@ type DbType = mini_milc::salsa::Salsa<
 >;
 
 pub(crate) struct State {
-    pub(crate) db: DbType,
-    pub(crate) enc: Option<WideEncoding>,
+    docs: IdMap<Uri, InkDocument>,
+    db: DbType,
+    enc: Option<WideEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
@@ -41,13 +42,14 @@ pub(crate) enum GotoDefinitionError {
 impl State {
     pub fn new(enc: Option<WideEncoding>, _qualified_names: bool) -> Self {
         Self {
+            docs: IdMap::default(),
             db: mini_milc::salsa_hashmap(),
             enc,
         }
     }
 
-    pub fn docs(&self) -> mini_milc::Cached<'_, Ops, Docs> {
-        self.db.docs()
+    pub fn doc_uris(&self) -> impl Iterator<Item = &Uri> {
+        self.docs.keys()
     }
 
     pub fn common_file_prefix(&self) -> String {
@@ -67,31 +69,27 @@ impl State {
             .tap(|it| log::debug!("Common file name prefix: `{it}``"))
     }
 
-    pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if let Some(id) = self.db.docs().get_id(&uri) {
-            Ok(self.db.document(id).text.clone())
+    pub fn text(&self, uri: Uri) -> Result<&String, DocumentNotFound> {
+        if let Some(doc) = self.docs.get_by_key(&uri) {
+            Ok(&doc.text)
         } else {
             Err(DocumentNotFound(uri))
         }
     }
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
-        // Ensure the document is registered.
-        let id: Option<DocId> = self.db.docs().get_id(&uri).clone();
-        let id: DocId = id.unwrap_or_else(|| {
-            self.db.modify_docs(|docs| docs.insert(uri.clone()));
-            self.db.docs().get_id(&uri).unwrap()
-        });
-        // Now actually modify it.
-        self.db.modify_document(
-            id,
-            || InkDocument::new_empty(self.enc),
-            |doc| doc.edit(edits),
-        );
+        let doc = self
+            .docs
+            .get_mut_or_insert(uri, || InkDocument::new_empty(self.enc));
+        let old_tree = doc.tree.clone();
+        doc.edit(edits);
+        for range in old_tree.changed_ranges(&doc.tree) {
+            // TODO: Update db
+        }
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        let removed = self.db.modify_docs(|it| it.remove(&uri));
+        let removed = self.docs.remove(&uri).is_some();
         if removed {
             Ok(())
         } else {
