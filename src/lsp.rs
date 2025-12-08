@@ -88,7 +88,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         hover_provider: None, //Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
-        definition_provider: None, //Some(OneOf::Left(true)),
+        definition_provider: Some(OneOf::Left(true)),
         references_provider: None, //Some(OneOf::Left(true)),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
@@ -130,7 +130,7 @@ fn handle_request(request: Request, state: &SharedState) -> Result<Response, Req
         DocumentSymbolRequest,
         WorkspaceSymbolRequest,
         // Completion,
-        // GotoDefinition,
+        GotoDefinition,
         // References,
     }
 }

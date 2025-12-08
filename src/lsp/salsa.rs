@@ -1,13 +1,21 @@
+#![allow(non_camel_case_types)]
+
 use super::state::InvalidPosition;
-use crate::lsp::{
-    document::InkDocument,
-    idset::{Id, IdSet},
-    salsa::{doc_symbols::DocumentSymbolsQ, ws_symbols::WorkspaceSymbolsQ},
+use crate::{
+    ink_syntax::Visitor,
+    lsp::{
+        document::InkDocument,
+        idset::{Id, IdSet},
+        salsa::{doc_symbols::DocumentSymbolsQ, ws_symbols::WorkspaceSymbolsQ},
+    },
 };
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
+use names::Meta;
+use std::collections::HashMap;
 
 mod doc_symbols;
+pub mod names;
 mod ws_symbols;
 
 #[derive(Debug, Clone, derive_more::Display, derive_more::Error, derive_more::From)]
@@ -19,28 +27,56 @@ pub enum GetNodeError {
 }
 
 pub(crate) type DocId = Id<Uri>;
-pub(crate) type Docs = IdSet<Uri>;
-
+pub(crate) type DocIds = IdSet<Uri>;
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 struct WorkspaceDocsQ;
+
+type Names = Vec<(String, Meta)>;
+type WorkspaceNames = HashMap<String, Vec<Meta>>;
 
 composite_query! {
     #[derive(Hash, Copy)]
     pub enum Ops -> OpsV;
 
     use DocId -> InkDocument,
-        WorkspaceDocsQ -> Docs,
+        WorkspaceDocsQ -> DocIds,
         DocumentSymbolsQ -> Option<DocumentSymbol>,
         WorkspaceSymbolsQ -> Option<Vec<WorkspaceSymbol>>;
+
+    #[derive(Hash, Copy)]
+    struct document_names -> Names {(DocId);}
+
+    #[derive(Hash, Copy)]
+    struct workspace_names -> WorkspaceNames {;}
 }
 
 // Inputs
 subquery!(Ops, DocId, InkDocument);
-subquery!(Ops, WorkspaceDocsQ, Docs);
+subquery!(Ops, WorkspaceDocsQ, DocIds);
+
+subquery!(Ops, document_names, Names, |self, db| {
+    let doc = db.document(self.0);
+    let to_lsp_range = |r| doc.lsp_range(&r);
+    let mut visitor = names::Names::new(self.0, &doc.text, &to_lsp_range);
+    visitor.traverse(&mut doc.tree.root_node().walk());
+    visitor.into_names()
+});
+
+subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
+    let mut names = WorkspaceNames::new();
+    // liberally clone the things, because we don’t expect many global name clashes
+    // (that is, we will mostly encounter each string once and must clone anyway).
+    for id in db.doc_ids().ids() {
+        for (name, meta) in db.document_names(id).iter().cloned() {
+            names.entry(name).or_default().push(meta);
+        }
+    }
+    names
+});
 
 // Extension traits
 pub trait InkGetters: Db<Ops> {
-    fn docs(&self) -> Cached<'_, Ops, Docs> {
+    fn doc_ids(&self) -> Cached<'_, Ops, DocIds> {
         self.get(WorkspaceDocsQ)
     }
 
@@ -55,11 +91,19 @@ pub trait InkGetters: Db<Ops> {
     fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<Vec<WorkspaceSymbol>>> {
         self.get(ws_symbols::WorkspaceSymbolsQ(id))
     }
+
+    fn document_names(&self, id: DocId) -> Cached<'_, Ops, Names> {
+        self.get(document_names(id))
+    }
+
+    fn workspace_names(&self) -> Cached<'_, Ops, WorkspaceNames> {
+        self.get(workspace_names)
+    }
 }
 impl<D: Db<Ops>> InkGetters for D {}
 
 pub trait InkSetters: Db<Ops> {
-    fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut Docs) -> C) -> bool {
+    fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut DocIds) -> C) -> bool {
         self.modify(WorkspaceDocsQ, f)
     }
 

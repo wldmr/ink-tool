@@ -1,11 +1,12 @@
 use super::document::{DocumentEdit, InkDocument};
 use crate::lsp::{
     idset::Id,
-    salsa::{self, DocId, Docs, InkGetters, InkSetters, Ops},
+    salsa::{self, names::NameKind, DocId, DocIds, InkGetters, InkSetters, Ops},
 };
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
+use mini_milc::Cached;
 use tap::Tap as _;
 
 // This is quite an abomination, but we have to deal with it.
@@ -46,15 +47,14 @@ impl State {
         }
     }
 
-    pub fn docs(&self) -> mini_milc::Cached<'_, Ops, Docs> {
-        self.db.docs()
+    pub fn uris(&self) -> Vec<Uri> {
+        self.db.doc_ids().values().cloned().collect()
     }
 
     pub fn common_file_prefix(&self) -> String {
         // TODO: Perfect candite for caching
-        self.db
-            .docs()
-            .values()
+        self.uris()
+            .into_iter()
             .map(|it| it.path().to_string())
             .reduce(|acc, next| {
                 acc.chars()
@@ -68,7 +68,7 @@ impl State {
     }
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if let Some(id) = self.db.docs().get_id(&uri) {
+        if let Some(id) = self.db.doc_ids().get_id(&uri) {
             Ok(self.db.document(id).text.clone())
         } else {
             Err(DocumentNotFound(uri))
@@ -77,10 +77,10 @@ impl State {
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
         // Ensure the document is registered.
-        let id: Option<DocId> = self.db.docs().get_id(&uri).clone();
+        let id: Option<DocId> = self.db.doc_ids().get_id(&uri).clone();
         let id: DocId = id.unwrap_or_else(|| {
             self.db.modify_docs(|docs| docs.insert(uri.clone()));
-            self.db.docs().get_id(&uri).unwrap()
+            self.db.doc_ids().get_id(&uri).unwrap()
         });
         // Now actually modify it.
         self.db.modify_document(
@@ -101,7 +101,7 @@ impl State {
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        if let Some(id) = self.db.docs().get_id(&uri) {
+        if let Some(id) = self.db.doc_ids().get_id(&uri) {
             Ok(self.db.document_symbols(id).clone())
         } else {
             Err(DocumentNotFound(uri))
@@ -112,7 +112,7 @@ impl State {
         let query = query.to_lowercase();
         let should_filter = !query.is_empty();
         self.db
-            .docs()
+            .doc_ids()
             .ids()
             .flat_map(|uri| {
                 if let Some(syms) = &*self.db.workspace_symbols(uri) {
@@ -137,13 +137,37 @@ impl State {
 
     pub fn goto_definition(
         &self,
-        from_uri: &Uri,
-        from_position: Position,
+        uri: Uri,
+        pos: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
-        let doc_id = self.doc_id(&from_uri)?;
-        let doc = self.db.document(doc_id);
-        let node = doc.definitions_of(from_position);
-        Ok(Vec::new())
+        let docs = self.db.doc_ids();
+        let Some(docid) = docs.get_id(&uri) else {
+            return Err(DocumentNotFound(uri).into());
+        };
+        let doc = self.db.document(docid);
+
+        let Some(search_terms) = doc.usage_at(pos) else {
+            return Ok(Vec::new());
+        };
+
+        let ws_names = self.db.workspace_names();
+        let mut result = Vec::new();
+
+        for term in search_terms {
+            let Some(metas) = ws_names.get(term) else {
+                continue;
+            };
+            let visible = metas.iter().filter(|it| it.visible_at(docid, pos));
+            for meta in visible {
+                if matches!(meta.kind, NameKind::Stitch) {}
+                result.push(lsp_types::Location {
+                    uri: docs[meta.file].clone(),
+                    range: meta.site,
+                })
+            }
+        }
+
+        return Ok(result);
     }
 
     pub fn goto_references(
@@ -159,20 +183,13 @@ impl State {
         // only used in tests, so we'll crash liberally!
         let id = self
             .db
-            .docs()
+            .doc_ids()
             .get_id(&uri)
             .expect("don't call with with a non-existent document");
         self.db
             .document(id)
             .ts_range(loc)
             .expect("don't call this with an invalid location")
-    }
-
-    fn doc_id(&self, uri: &Uri) -> Result<Id<Uri>, DocumentNotFound> {
-        self.db
-            .docs()
-            .get_id(uri)
-            .ok_or_else(|| DocumentNotFound(uri.clone()))
     }
 }
 
@@ -377,7 +394,7 @@ mod tests {
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
                     let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
                     let found_definitions = state
-                        .goto_definition(&usage_uri, usage_lsp_position.start)
+                        .goto_definition((*usage_uri).clone(), usage_lsp_position.start)
                         .expect("we should be within range");
                     if *reference_kind == ReferenceKind::Unresolved {
                         if !found_definitions.is_empty() {
@@ -434,7 +451,7 @@ mod tests {
                                     .iter()
                                     .map(|other| {
                                         let docid =
-                                            db.docs().get_id(&other.uri).expect("must exist");
+                                            db.doc_ids().get_id(&other.uri).expect("must exist");
                                         let span = db
                                             .document(docid)
                                             .ts_range(other.range)

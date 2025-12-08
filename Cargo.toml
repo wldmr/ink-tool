@@ -26,7 +26,7 @@ serde = "1"
 serde_json = "1"
 tap = "1"
 tokio = { version = "1.43.0", features = ["rt"] }
-tree-sitter = "0.23"
+tree-sitter = "0.25"
 tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit = 'f632cbc'}
 walkdir = "2.5.0"
 mini-milc = { git = "ssh://git@codeberg.org/wldmr/milc.git", commit = 'b61397626b'}
@@ -47,15 +47,15 @@ derive_builder = "0.20.0"
 markdown = "1.0.0-alpha.17"
 tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit = 'f632cbc'}
 
-[dependencies.type-sitter-lib]
-version = "^0"
+[dependencies.type-sitter]
+version = "0.8"
 # path = "../type-sitter/type-sitter-lib"
 # git = "https://github.com/wldmr/type-sitter.git"
 git = "https://github.com/jakobeha/type-sitter.git"
 # branch = "main"
 
 [build-dependencies.type-sitter-gen]
-version = "^0"
+version = "0.8"
 # path = "../type-sitter/type-sitter-gen"
 # git = "https://github.com/wldmr/type-sitter.git"
 git = "https://github.com/jakobeha/type-sitter.git"

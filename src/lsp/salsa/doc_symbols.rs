@@ -8,7 +8,7 @@ use crate::{
 use builder::SymbolBuilder;
 use line_index::{LineCol, LineIndex, WideEncoding};
 use lsp_types::{DocumentSymbol, SymbolKind};
-use type_sitter_lib::{IncorrectKindCause, Node as _};
+use type_sitter::{IncorrectKindCause, Node as _};
 
 // IDEA: Maybe this shouldn't return LSP types?
 
@@ -439,7 +439,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
         }
     }
 
-    fn visit_error(&mut self, err: type_sitter_lib::IncorrectKind) -> VisitInstruction<Self> {
+    fn visit_error(&mut self, err: type_sitter::IncorrectKind) -> VisitInstruction<Self> {
         match err.cause() {
             // Error nodes might have children
             IncorrectKindCause::Error => VisitInstruction::Descend,

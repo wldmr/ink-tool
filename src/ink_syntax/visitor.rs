@@ -1,5 +1,5 @@
 use tree_sitter::TreeCursor;
-use type_sitter_lib::{IncorrectKind, Node, NodeResult};
+use type_sitter::{IncorrectKind, Node, NodeResult};
 
 pub(crate) enum Visit<T> {
     Enter(T),
