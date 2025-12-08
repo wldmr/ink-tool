@@ -5,9 +5,16 @@ use indexmap::{Equivalent, IndexMap, IndexSet};
 use std::{hash::Hash, marker::PhantomData, ops::Index};
 
 /// A typed ID.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Id<T>(usize, PhantomData<T>);
+
+impl<T> std::fmt::Debug for Id<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = std::any::type_name::<T>();
+        write!(f, "Id<{name}>({})", &self.0)
+    }
+}
 
 pub(crate) fn id<T>(n: usize) -> Id<T> {
     Id(n, PhantomData)

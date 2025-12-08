@@ -1,12 +1,8 @@
 use super::document::{DocumentEdit, InkDocument};
-use crate::lsp::{
-    idset::Id,
-    salsa::{self, names::NameKind, DocId, DocIds, InkGetters, InkSetters, Ops},
-};
+use crate::lsp::salsa::{self, names::Meta, DocId, InkGetters, InkSetters};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
-use mini_milc::Cached;
 use tap::Tap as _;
 
 // This is quite an abomination, but we have to deal with it.
@@ -157,13 +153,28 @@ impl State {
             let Some(metas) = ws_names.get(term) else {
                 continue;
             };
-            let visible = metas.iter().filter(|it| it.visible_at(docid, pos));
-            for meta in visible {
-                if matches!(meta.kind, NameKind::Stitch) {}
-                result.push(lsp_types::Location {
-                    uri: docs[meta.file].clone(),
-                    range: meta.site,
-                })
+
+            let (globals, locals): (Vec<&Meta>, Vec<&Meta>) = metas
+                .iter()
+                .filter(|it| it.visible_at(docid, pos))
+                .partition(|it| it.extent.is_none());
+
+            if locals.is_empty() {
+                // We "allow" ambiguity for globals, since we can't know which definition the user meant
+                // (there'll be an error message and they'll have to fix it).
+                result.extend(
+                    globals
+                        .into_iter()
+                        .map(|it| lsp_types::Location::new(docs[it.file].clone(), it.site)),
+                );
+            } else {
+                // Find "most local" thing.
+                let def = locals
+                    .into_iter()
+                    .copied()
+                    .min_by(|a, b| a.cmp_extent(b))
+                    .expect("We checked that this is nonempty");
+                result.push(lsp_types::Location::new(docs[def.file].clone(), def.site));
             }
         }
 
@@ -267,8 +278,6 @@ mod tests {
     }
 
     mod links {
-        use std::{collections::HashMap, str::FromStr};
-
         use super::{new_state, set_content, State};
         use crate::{
             lsp::salsa::InkGetters,
@@ -281,6 +290,7 @@ mod tests {
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
+        use std::{collections::HashMap, str::FromStr};
         use test_case::test_case;
 
         #[derive(Debug, Default)]
@@ -578,38 +588,6 @@ mod tests {
                     for message in messages {
                         eprintln!("{}", renderer.render(message));
                     }
-                    // eprintln!(
-                    //     "all names: {:#?}",
-                    //     workspace_definitions_by_name(db, state.workspace)
-                    //         .iter()
-                    //         .flat_map(move |(name, defs)| defs
-                    //             .into_iter()
-                    //             .map(|def| (name.clone(), def)))
-                    //         .map(|(name, def)| format!(
-                    //             "{name} ({})",
-                    //             match def.0 {
-                    //                 crate::lsp::salsa::Visibility::Global => "global".to_string(),
-                    //                 crate::lsp::salsa::Visibility::Inside(scope) => format!(
-                    //                     "local in {}",
-                    //                     scope.global_name(db).unwrap_or_else(|| def
-                    //                         .1
-                    //                         .uri(db)
-                    //                         .path()
-                    //                         .to_string())
-                    //                 ),
-                    //                 crate::lsp::salsa::Visibility::Temp(scope) => format!(
-                    //                     "temp in {}",
-                    //                     scope.global_name(db).unwrap_or_else(|| def
-                    //                         .1
-                    //                         .uri(db)
-                    //                         .path()
-                    //                         .to_string())
-                    //                 ),
-                    //             }
-                    //         ))
-                    //         .sorted_unstable()
-                    //         .collect_vec()
-                    // );
                     true
                 }
             }

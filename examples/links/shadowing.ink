@@ -9,7 +9,9 @@ The rules for clashing names are:
 2. If there is at least one clashing VAR, it doesn't compile.
 3. If there is a clashing CONST, the CONST value is used everywhere.
 4. Parameters and temps freely overwrite each other, globally. Whichever param/temp was last visited wins.
-
+   UNLESS you return from tunnels using `->->`, because tunnels actually take care to be "hygienic" that way.
+   But simply navigating by `->` will clober your environment.
+   
 That said, ink-tool treats all params as local (visible in sub-scopes, and shadowable by sub-scopes) and temps as very-local (not visible in sub-scopes), like you would expect from a "normal" programming language.
 Non-local surprises can be pointed out by diagnostics.
 
@@ -18,21 +20,22 @@ CONST name = "default"
 
 My {name} is default.
 //  ^^^^ references global
-//  ^^^^ references-not param param2
+//  ^^^^ references-not knotparam stitchparam
 
 === knot(name) ===
-//       ^^^^ defines param
+//       ^^^^ defines knotparam
 
 - (bypass)
 
 My {name} is good, and what that says depends on how we got here.
-//  ^^^^ references param global
-//  ^^^^ references-not param2
+//  ^^^^ references knotparam
+//  ^^^^ references-not global stitchparam
 
 = stitch(name)
-//       ^^^^ defines param2
+//       ^^^^ defines stitchparam
 
 - (bypass2)
 
 My {name} is confusing, and what that says depends on how we got here.
-//  ^^^^ references param2 param global
+//  ^^^^ references stitchparam
+//  ^^^^ references-not knotparam global

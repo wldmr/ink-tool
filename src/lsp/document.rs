@@ -105,12 +105,12 @@ impl InkDocument {
     }
 
     pub fn usage_at(&self, pos: Position) -> Option<DefinionsSearch<'_>> {
-        let pos = self.to_byte(pos);
+        let byte_pos = self.to_byte(pos);
         let node = self
             .tree
             .root_node()
-            .named_descendant_for_byte_range(pos, pos)?;
-        let node = UntypedNode::try_from_raw(node).ok()?;
+            .named_descendant_for_byte_range(byte_pos, byte_pos)
+            .map(UntypedNamedNode::try_from_raw)?;
         let node = traversal::parent::<_, Usages>(node).last()?;
         let mut search = DefinionsSearch::default();
         match node {
@@ -128,7 +128,7 @@ impl InkDocument {
                 let start = qname.start_byte();
                 for ident in qname.identifiers(&mut qname.walk()) {
                     let end = ident.end_byte();
-                    if end >= pos {
+                    if end >= byte_pos {
                         search.push(&self.text[start..end]);
                     }
                 }

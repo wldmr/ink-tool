@@ -1,13 +1,12 @@
 use crate::{
     ink_syntax::{
-        self,
-        types::{AllNamed, ScopeBlock, StitchBlock},
+        types::{AllNamed, ScopeBlock},
         VisitInstruction, Visitor,
     },
     lsp::salsa::DocId,
 };
 use lsp_types::{Position, Range};
-use type_sitter::{HasChildren, Node};
+use type_sitter::Node;
 
 pub type Name = String;
 
@@ -24,6 +23,22 @@ impl Meta {
         match self.extent {
             Some(Range { start, end }) => doc == self.file && start <= pos && pos <= end,
             None => true,
+        }
+    }
+
+    pub(crate) fn cmp_extent(&self, other: &Meta) -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        match (self.extent, other.extent) {
+            (Some(here), Some(there)) => {
+                let here_lines = here.end.line - here.start.line;
+                let there_lines = there.end.line - there.start.line;
+                // this is a little fragile as it depends on the fact that
+                // scopes are tied to lines and are strictly nested!
+                here_lines.cmp(&there_lines)
+            }
+            (None, None) => Equal,
+            (None, Some(_)) => Greater, // self extent is global, i.e. "greater"
+            (Some(_), None) => Less,
         }
     }
 }
@@ -206,25 +221,24 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             }
 
             Label(label) => {
-                let name_node = label.name();
-                let site = self.lsp_range(name_node);
-                let label_text = self.text(name_node);
-                let l = &label_text;
+                let name = label.name();
+                let site = self.lsp_range(name);
+                let l = self.text(name);
                 let kind = NameKind::Label;
                 match (&self.knot, &self.stitch) {
-                    (None, None) => self.names.push(self.global(name_node, kind)),
+                    (None, None) => self.names.push(self.global(name, kind)),
                     (None, Some(stitch)) => {
                         let s = &stitch.name;
                         self.names.extend([
-                            self.local(label, stitch.extent, kind),
+                            self.local(name, stitch.extent, kind),
                             self.name(format!("{s}.{l}"), site, Some(stitch.extent), kind),
                         ]);
                     }
                     (Some(knot), None) => {
                         let k = &knot.name;
                         self.names.extend([
-                            self.local(label, knot.extent, kind),
-                            self.name(format!("{k}.{l}"), site, Some(knot.extent), kind),
+                            self.local(name, knot.extent, kind),
+                            self.name(format!("{k}.{l}"), site, None, kind),
                         ]);
                     }
                     (Some(knot), Some(stitch)) => {
@@ -232,7 +246,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                         // name, but allow for an optional stitch name.
                         let k = &knot.name;
                         let s = &stitch.name;
-                        let l = &label_text;
+                        let l = &self.text(name);
                         self.names.extend([
                             self.name(format!("{k}.{l}"), site, None, kind),
                             self.name(format!("{k}.{s}.{l}"), site, None, kind),
@@ -265,7 +279,8 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     (_, Some(stitch)) => stitch.temp_extent,
                     (Some(knot), _) => knot.temp_extent,
                 };
-                self.local(temp.name(), extent, NameKind::Temp);
+                self.names
+                    .push(self.local(temp.name(), extent, NameKind::Temp));
                 Ignore
             }
 

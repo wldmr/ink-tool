@@ -1,7 +1,6 @@
 Temp variables are visible _only_ at the exact level they are defined in.
 That means they aren't visible in higher levels, NOR in lower levels.
-(That last one is a bit unusual; in other programming languages
-<> local variables are visible in enclosed scopes.)
+(That last one is a bit unusual; in other programming languages local variables are visible in enclosed scopes.)
 
 ~ temp t = "temporarily"
 //     ^ defines toplevel
