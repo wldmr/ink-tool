@@ -154,12 +154,16 @@ impl State {
                 continue;
             };
 
-            let (globals, locals): (Vec<&Meta>, Vec<&Meta>) = metas
+            let (locals, globals): (Vec<&Meta>, Vec<&Meta>) = metas
                 .iter()
                 .filter(|it| it.visible_at(docid, pos))
-                .partition(|it| it.extent.is_none());
+                .partition(|it| it.extent.is_some());
 
-            if locals.is_empty() {
+            // Find "most local" thing.
+            let local = locals.into_iter().min_by(|a, b| a.cmp_extent(b));
+            if let Some(def) = local {
+                result.push(lsp_types::Location::new(docs[def.file].clone(), def.site));
+            } else {
                 // We "allow" ambiguity for globals, since we can't know which definition the user meant
                 // (there'll be an error message and they'll have to fix it).
                 result.extend(
@@ -167,14 +171,6 @@ impl State {
                         .into_iter()
                         .map(|it| lsp_types::Location::new(docs[it.file].clone(), it.site)),
                 );
-            } else {
-                // Find "most local" thing.
-                let def = locals
-                    .into_iter()
-                    .copied()
-                    .min_by(|a, b| a.cmp_extent(b))
-                    .expect("We checked that this is nonempty");
-                result.push(lsp_types::Location::new(docs[def.file].clone(), def.site));
             }
         }
 
@@ -290,7 +286,10 @@ mod tests {
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
-        use std::{collections::HashMap, str::FromStr};
+        use std::{
+            collections::{BTreeSet, HashMap},
+            str::FromStr,
+        };
         use test_case::test_case;
 
         #[derive(Debug, Default)]
@@ -360,20 +359,13 @@ mod tests {
             fn failed(&'a self, state: &'a State) -> bool {
                 // Insurance against some obviously bad test definitions:
                 {
-                    let defined_names = self
-                        .definitions
-                        .keys()
-                        .map(|it| *it)
-                        .sorted_unstable()
-                        .unique()
-                        .collect::<Vec<_>>();
+                    let defined_names = self.definitions.keys().copied().collect::<BTreeSet<_>>();
                     let referenced_names = self
                         .references
                         .iter()
-                        .flat_map(|(_, _, _, names)| names.iter().map(|it| *it))
-                        .sorted_unstable()
-                        .unique()
-                        .collect::<Vec<_>>();
+                        .flat_map(|(_, _, _, names)| names.iter())
+                        .copied()
+                        .collect::<BTreeSet<_>>();
                     assert!(
                         defined_names == referenced_names,
                         "We don't want dangling references or definitions in tests."
@@ -473,60 +465,6 @@ mod tests {
                                             .annotation(annotate_snippets::Level::Info.span(span))
                                     })
                                     .collect_vec();
-                                let visibilities: Vec<(&str, &str)> = Vec::new(); // TODO: Fill this in.
-                                let vis_of_target = if let Some(vec) = Some(visibilities) {
-                                    vec.iter()
-                                        .map(|(vis, name)| match *vis {
-                                            "global" => {
-                                                let source = &def_ann.full_text;
-                                                let span = def_ann.text_location.byte_range();
-                                                annotate_snippets::Snippet::source(source)
-                                                    .origin(def_uri.path().as_str())
-                                                    .annotations([
-                                                        annotate_snippets::Level::Info
-                                                            .span(span.clone())
-                                                            .label("has global name"),
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label(name),
-                                                    ])
-                                            }
-                                            "inside" => {
-                                                let source = todo!("scope.cst(db).text(db)");
-                                                let uri = todo!("scope.uri(db)");
-                                                let span = todo!("scope.node(db).byte_range()");
-                                                annotate_snippets::Snippet::source(source)
-                                                    .origin(uri)
-                                                    .annotations([
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label("has local name here"),
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label(name),
-                                                    ])
-                                            }
-                                            "temp" => {
-                                                let source = todo!("scope.cst(db).text(db)");
-                                                let uri = todo!("scope.uri(db)");
-                                                let span = todo!("scope.node(db).byte_range()");
-                                                annotate_snippets::Snippet::source(source)
-                                                    .origin(uri)
-                                                    .annotations([
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label("has temp name here"),
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label(name),
-                                                    ])
-                                            }
-                                            _ => todo!(),
-                                        })
-                                        .collect_vec()
-                                } else {
-                                    Vec::new()
-                                };
                                 messages.push(
                                     annotate_snippets::Level::Error
                                         .title("Required reference not found")
@@ -549,14 +487,6 @@ mod tests {
                                             annotate_snippets::Level::Error
                                                 .title("But it only links to these locations:")
                                                 .snippets(other_references)
-                                        })
-                                        .footer(if vis_of_target.is_empty() {
-                                            annotate_snippets::Level::Error
-                                                .title("The intended target is not visible anywhere.")
-                                        } else {
-                                            annotate_snippets::Level::Note
-                                                .title("The intended target has the following visibilities:")
-                                                .snippets(vis_of_target)
                                         }),
                                 );
                             } else if *reference_kind == ReferenceKind::None && does_reference {
