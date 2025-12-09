@@ -55,30 +55,9 @@ impl std::hash::Hash for InkDocument {
 
 pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Location {
-    bytes: (usize, usize),
-}
-
-impl From<std::ops::Range<usize>> for Location {
-    fn from(value: std::ops::Range<usize>) -> Self {
-        Location {
-            bytes: (value.start, value.end),
-        }
-    }
-}
-
-impl From<tree_sitter::Range> for Location {
-    fn from(value: tree_sitter::Range) -> Self {
-        Location {
-            bytes: (value.start_byte, value.end_byte),
-        }
-    }
-}
-
 pub struct UsageUnderCursor<'a> {
     pub usage: ids::Usage,
-    pub location: Location,
+    pub range: lsp_types::Range,
     pub terms: Vec<&'a str>,
 }
 
@@ -194,7 +173,7 @@ impl InkDocument {
                 })
         };
 
-        let (usage, byte_range) = match node {
+        let (usage, range) = match node {
             DivertTarget::Call(call) => {
                 match call.name().ok() {
                     Some(Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
@@ -209,7 +188,7 @@ impl InkDocument {
                             params: true,
                         },
                     ),
-                    call.name().byte_range(),
+                    call.name().range(),
                 )
             }
             DivertTarget::Identifier(ident) => {
@@ -222,7 +201,7 @@ impl InkDocument {
                             params: false,
                         },
                     ),
-                    ident.byte_range(),
+                    ident.range(),
                 )
             }
             DivertTarget::QualifiedName(qname) => {
@@ -235,14 +214,14 @@ impl InkDocument {
                             params: false,
                         },
                     ),
-                    qname.byte_range(),
+                    qname.range(),
                 )
             }
         };
 
         Some(UsageUnderCursor {
             usage,
-            location: byte_range.into(),
+            range: self.lsp_range(&range),
             terms,
         })
     }

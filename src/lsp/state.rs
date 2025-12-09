@@ -200,7 +200,10 @@ impl State {
                     insert_text: None,
                     insert_text_format: None,
                     insert_text_mode: None,
-                    text_edit: None,
+                    text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                        range: search_terms.range,
+                        new_text: key.to_owned(),
+                    })),
                     additional_text_edits: None,
                     command: None,
                     commit_characters: None,
