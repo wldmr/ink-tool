@@ -1,5 +1,4 @@
 pub mod types {
-    use type_sitter;
     include!(concat!(env!("OUT_DIR"), "/type_sitter_ink.rs"));
 }
 

@@ -311,6 +311,7 @@ mod tests {
 
     mod completions {
         use super::{set_content, tests::text_with_caret, uri};
+        use itertools::Itertools;
         use pretty_assertions::assert_eq;
 
         #[test]
@@ -329,7 +330,7 @@ mod tests {
                 text
             ",
             );
-            let (contents, caret) = text_with_caret("{@o}"); // TODO should also work at end of string
+            let (contents, caret) = text_with_caret("{o@}");
             let uri = uri("test.ink");
             set_content(&mut state, uri.clone(), contents);
             let completions = state.completions(uri, caret).unwrap().unwrap();
@@ -337,8 +338,9 @@ mod tests {
                 completions
                     .into_iter()
                     .map(|it| it.label)
+                    .sorted_unstable()
                     .collect::<Vec<_>>(),
-                vec!["some_var", "one", "two"]
+                vec!["one", "some_var", "two"]
             );
         }
     }
