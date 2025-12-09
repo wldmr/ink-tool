@@ -23,7 +23,7 @@ Labels inside knots are namespaced by their knot.
 
 Crucially, labels inside nested stitches are _also_ namespaced by their knot, meaning defining a `(foo)` in this stitch is ambiguous
 
--   (bar) This is knot.bar -> DONE
+*   (bar) This is knot.bar -> DONE
 //   ^^^ defines knot.bar
 
 Within the definining knot (and nested stitches), the label can be referenced without the leading knot,

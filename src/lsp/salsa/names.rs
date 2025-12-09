@@ -103,6 +103,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
         use VisitInstruction::{Descend, Ignore};
         match node {
             AltArm(_)
+            | Choice(_)
             | ChoiceBlock(_)
             | Code(_)
             | CondArm(_)
@@ -292,7 +293,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
 
             // … and the rest …
             Alternatives(_) | Args(_) | Assignment(_) | Binary(_) | BlockComment(_)
-            | Boolean(_) | Call(_) | Choice(_) | ChoiceMark(_) | ChoiceMarks(_) | ChoiceOnly(_)
+            | Boolean(_) | Call(_) | ChoiceMark(_) | ChoiceMarks(_) | ChoiceOnly(_)
             | ConditionalText(_) | Condition(_) | Divert(_) | Else(_) | Eol(_) | Eval(_)
             | Expr(_) | GatherMark(_) | GatherMarks(_) | Glue(_) | Identifier(_) | Include(_)
             | LineComment(_) | ListValues(_) | Number(_) | Paren(_) | Path(_) | Postfix(_)
