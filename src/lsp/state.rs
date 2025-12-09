@@ -134,11 +134,11 @@ impl State {
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
         let (doc, docid) = self.get_doc_and_id(uri)?;
 
-        let Some(search_terms) = doc.usage_at(position) else {
+        let Some(search_terms) = doc.usage_at(docid, position) else {
             return Ok(Default::default());
         };
 
-        let Some(longest) = search_terms.into_iter().max_by_key(|it| it.len()) else {
+        let Some(longest) = search_terms.terms.into_iter().max_by_key(|it| it.len()) else {
             return Ok(Default::default());
         };
         log::debug!("Trying completion for '{longest}'.");
@@ -219,14 +219,14 @@ impl State {
         let (doc, docid) = self.get_doc_and_id(uri)?;
         let docs = self.db.doc_ids();
 
-        let Some(search_terms) = doc.usage_at(pos) else {
+        let Some(search_terms) = doc.usage_at(docid, pos) else {
             return Ok(Vec::new());
         };
 
         let ws_names = self.db.workspace_names();
         let mut result = Vec::new();
 
-        for term in search_terms {
+        for term in search_terms.terms {
             let Some(metas) = ws_names.get(term) else {
                 continue;
             };

@@ -1,6 +1,7 @@
 use crate::ink_syntax;
 use crate::ink_syntax::traversal::parent;
 use crate::ink_syntax::types::{AllNamed, DivertTarget, QualifiedName, Usages};
+use crate::lsp::document::ids::{NodeId, UsageInfo};
 use crate::lsp::idset::Id;
 use crate::lsp::salsa::GetNodeError;
 use crate::lsp::state::InvalidPosition;
@@ -55,8 +56,30 @@ impl std::hash::Hash for InkDocument {
 pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct PointOfInterest {
+pub struct Location {
     bytes: (usize, usize),
+}
+
+impl From<std::ops::Range<usize>> for Location {
+    fn from(value: std::ops::Range<usize>) -> Self {
+        Location {
+            bytes: (value.start, value.end),
+        }
+    }
+}
+
+impl From<tree_sitter::Range> for Location {
+    fn from(value: tree_sitter::Range) -> Self {
+        Location {
+            bytes: (value.start_byte, value.end_byte),
+        }
+    }
+}
+
+pub struct UsageUnderCursor<'a> {
+    pub usage: ids::Usage,
+    pub location: Location,
+    pub terms: Vec<&'a str>,
 }
 
 pub type DefinionsSearch<'a> = Vec<&'a str>;
@@ -106,7 +129,7 @@ impl InkDocument {
         }
     }
 
-    pub fn usage_at(&self, pos: Position) -> Option<DefinionsSearch<'_>> {
+    pub fn usage_at(&self, file: Id<Uri>, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
         let root = self.tree.root_node();
 
@@ -157,23 +180,73 @@ impl InkDocument {
             }
         };
 
-        match node {
+        let find_redirect_kind = |node: UntypedNode| {
+            parent::<_, ink_syntax::types::Redirect>(node)
+                .next()
+                .map(|it| match it {
+                    ink_syntax::types::Redirect::Divert(_) => ids::RedirectKind::Divert,
+                    ink_syntax::types::Redirect::Thread(_) => ids::RedirectKind::Thread,
+                    ink_syntax::types::Redirect::Tunnel(tunnel) => {
+                        if tunnel.target().is_some() {
+                            ids::RedirectKind::NamedTunnelReturn
+                        } else {
+                            ids::RedirectKind::Tunnel
+                        }
+                    }
+                })
+        };
+
+        let (usage, byte_range) = match node {
             DivertTarget::Call(call) => {
                 match call.name().ok() {
                     Some(Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
                     Some(Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
                     _ => {}
                 };
+                (
+                    ids::Usage(
+                        NodeId::new(file, call.name()),
+                        UsageInfo {
+                            redirect: find_redirect_kind(call.upcast()),
+                            params: true,
+                        },
+                    ),
+                    call.name().byte_range(),
+                )
             }
             DivertTarget::Identifier(ident) => {
                 terms.push(self.text_of(ident));
+                (
+                    ids::Usage(
+                        NodeId::new(file, ident),
+                        UsageInfo {
+                            redirect: find_redirect_kind(ident.upcast()),
+                            params: false,
+                        },
+                    ),
+                    ident.byte_range(),
+                )
             }
             DivertTarget::QualifiedName(qname) => {
                 extract_terms_from_qname(qname);
+                (
+                    ids::Usage(
+                        NodeId::new(file, qname),
+                        UsageInfo {
+                            redirect: find_redirect_kind(qname.upcast()),
+                            params: false,
+                        },
+                    ),
+                    qname.byte_range(),
+                )
             }
         };
 
-        Some(terms)
+        Some(UsageUnderCursor {
+            usage,
+            location: byte_range.into(),
+            terms,
+        })
     }
 }
 

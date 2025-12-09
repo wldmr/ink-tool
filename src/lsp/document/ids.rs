@@ -22,14 +22,6 @@ macro_rules! define_id_tuples {
 define_id_tuples![Definition(NodeId, DefinitionInfo), Usage(NodeId, UsageInfo),];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Thing {
-    /// A place that directly defines a name.
-    Definition(Definition),
-    /// A usage that *isn't* also a definition.
-    Usage(Usage),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(Id<Uri>, usize);
 
 impl NodeId {
