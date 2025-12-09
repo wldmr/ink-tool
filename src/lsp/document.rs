@@ -13,6 +13,8 @@ use type_sitter::{Node, UntypedNode};
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
 // Everthing else works in terms of LSP types.
 
+pub mod ids;
+
 pub(crate) struct InkDocument {
     pub(crate) tree: tree_sitter::Tree,
     pub(crate) text: String,

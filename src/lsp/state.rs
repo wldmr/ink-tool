@@ -1,8 +1,12 @@
 use super::document::{DocumentEdit, InkDocument};
-use crate::lsp::salsa::{self, names::Meta, DocId, InkGetters, InkSetters};
+use crate::lsp::{
+    idset::Id,
+    salsa::{self, names::Meta, DocId, InkGetters, InkSetters},
+};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
+use mini_milc::Cached;
 use tap::Tap as _;
 
 // This is quite an abomination, but we have to deal with it.
@@ -128,11 +132,7 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        let docs = self.db.doc_ids();
-        let Some(docid) = docs.get_id(&uri) else {
-            return Err(DocumentNotFound(uri).into());
-        };
-        let doc = self.db.document(docid);
+        let (doc, docid) = self.get_doc_and_id(uri)?;
 
         let Some(search_terms) = doc.usage_at(position) else {
             return Ok(Default::default());
@@ -144,8 +144,8 @@ impl State {
         log::debug!("Trying completion for '{longest}'.");
 
         let ws_names = self.db.workspace_names();
+        use crate::lsp::document::ids::DefinitionInfo::*;
         use lsp_types::CompletionItemKind;
-        use salsa::names::NameKind::*;
         Ok(Some(
             ws_names
                 .iter()
@@ -157,29 +157,39 @@ impl State {
                     label: key.clone(),
                     label_details: None,
                     kind: Some(match meta.kind {
-                        Knot => CompletionItemKind::MODULE,
-                        Stitch => CompletionItemKind::CLASS,
+                        ToplevelScope { .. } => CompletionItemKind::MODULE,
+                        SubScope { .. } => CompletionItemKind::CLASS,
                         Function => CompletionItemKind::FUNCTION,
                         External => CompletionItemKind::INTERFACE,
-                        VarConst => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
+                        Var => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
+                        Const => CompletionItemKind::CONSTANT, // TODO: Differentiate between VAR and CONST
                         List => CompletionItemKind::ENUM,
-                        ListItem => CompletionItemKind::ENUM_MEMBER,
+                        ListItem { .. } => CompletionItemKind::ENUM_MEMBER,
                         Label => CompletionItemKind::PROPERTY,
-                        Param => CompletionItemKind::VARIABLE,
+                        Param { .. } => CompletionItemKind::VARIABLE,
                         Temp => CompletionItemKind::UNIT,
                     }),
                     // TODO: Fetch actual definition
                     detail: Some(match meta.kind {
-                        Knot => format!("== {key}"),
-                        Stitch => format!("= {key}"),
+                        ToplevelScope { stitch, params } => {
+                            format!(
+                                "{} {key}{}",
+                                if stitch { "=" } else { "==" },
+                                if params { "(…)" } else { "" }
+                            )
+                        }
+                        SubScope { params, .. } => {
+                            format!("= {key}{}", if params { "(…)" } else { "" })
+                        }
                         Function => format!("== function {key}(…)"),
                         External => format!("EXTERNAL {key}(…)"),
-                        VarConst => format!("VAR {key}"), // TODO: Differentiate between VAR and CONST
+                        Var => format!("VAR {key} = …"),
+                        Const => format!("CONST {key} = …"),
                         List => format!("LIST {key} = …"),
-                        ListItem => format!("LIST [TODO: list name] = {key}, …"),
-                        Label => format!("({key})"),
-                        Param => format!("{key}"),
-                        Temp => format!("~ temp {key} = "),
+                        ListItem { .. } => format!("LIST … = … {key}, "),
+                        Label => format!("({key}) // label"),
+                        Param { .. } => format!("param // parameter"),
+                        Temp => format!("~ temp {key} = …"),
                     }),
                     // TODO: Fetch actual docs
                     documentation: None,
@@ -206,11 +216,8 @@ impl State {
         uri: Uri,
         pos: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
+        let (doc, docid) = self.get_doc_and_id(uri)?;
         let docs = self.db.doc_ids();
-        let Some(docid) = docs.get_id(&uri) else {
-            return Err(DocumentNotFound(uri).into());
-        };
-        let doc = self.db.document(docid);
 
         let Some(search_terms) = doc.usage_at(pos) else {
             return Ok(Vec::new());
@@ -267,6 +274,17 @@ impl State {
             .document(id)
             .ts_range(loc)
             .expect("don't call this with an invalid location")
+    }
+
+    fn get_doc_and_id(
+        &self,
+        uri: Uri,
+    ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, Id<Uri>), DocumentNotFound> {
+        let Some(id) = self.db.doc_ids().get_id(&uri) else {
+            return Err(DocumentNotFound(uri));
+        };
+        let doc = self.db.document(id);
+        Ok((doc, id))
     }
 }
 
