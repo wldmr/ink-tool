@@ -156,7 +156,7 @@ impl State {
                 .map(|(key, meta)| lsp_types::CompletionItem {
                     label: key.clone(),
                     label_details: None,
-                    kind: Some(match meta.kind {
+                    kind: Some(match meta.id.info() {
                         ToplevelScope { .. } => CompletionItemKind::MODULE,
                         SubScope { .. } => CompletionItemKind::CLASS,
                         Function => CompletionItemKind::FUNCTION,
@@ -170,7 +170,7 @@ impl State {
                         Temp => CompletionItemKind::UNIT,
                     }),
                     // TODO: Fetch actual definition
-                    detail: Some(match meta.kind {
+                    detail: Some(match meta.id.info() {
                         ToplevelScope { stitch, params } => {
                             format!(
                                 "{} {key}{}",
@@ -239,14 +239,17 @@ impl State {
             // Find "most local" thing.
             let local = locals.into_iter().min_by(|a, b| a.cmp_extent(b));
             if let Some(def) = local {
-                result.push(lsp_types::Location::new(docs[def.file].clone(), def.site));
+                result.push(lsp_types::Location::new(
+                    docs[def.id.file()].clone(),
+                    def.site,
+                ));
             } else {
                 // We "allow" ambiguity for globals, since we can't know which definition the user meant
                 // (there'll be an error message and they'll have to fix it).
                 result.extend(
                     globals
                         .into_iter()
-                        .map(|it| lsp_types::Location::new(docs[it.file].clone(), it.site)),
+                        .map(|it| lsp_types::Location::new(docs[it.id.file()].clone(), it.site)),
                 );
             }
         }

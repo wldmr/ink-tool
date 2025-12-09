@@ -4,7 +4,7 @@ use crate::{
         VisitInstruction, Visitor,
     },
     lsp::{
-        document::ids::{DefinitionInfo, NodeId},
+        document::ids::{self, Definition, DefinitionInfo, NodeId},
         salsa::DocId,
     },
 };
@@ -15,16 +15,15 @@ pub type Name = String;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Meta {
-    pub file: DocId,
+    pub id: ids::Definition,
     pub site: Range,
     pub extent: Option<Range>,
-    pub kind: DefinitionInfo,
 }
 
 impl Meta {
     pub fn visible_at(&self, doc: DocId, pos: Position) -> bool {
         match self.extent {
-            Some(Range { start, end }) => doc == self.file && start <= pos && pos <= end,
+            Some(Range { start, end }) => doc == self.id.file() && start <= pos && pos <= end,
             None => true,
         }
     }
@@ -136,7 +135,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             }
             ListValueDef(def) => {
                 let item = self.text(def.name());
-                let site = self.lsp_range(def.name());
+                let site = def.name();
                 let list = self.list.as_ref().expect("must have been set");
                 self.names.extend([
                     self.name(
@@ -240,11 +239,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 if let Some(knot) = &self.knot {
                     let k = &knot.name;
                     let s = self.text(name);
-                    let site = self.lsp_range(name);
                     let extent = Some(knot.extent);
                     self.names.extend([
-                        self.name(format!("{s}"), site, extent, kind),
-                        self.name(format!("{k}.{s}"), site, None, kind),
+                        self.name(format!("{s}"), name, extent, kind),
+                        self.name(format!("{k}.{s}"), name, None, kind),
                     ]);
                 } else {
                     self.names.push(self.global(name, kind));
@@ -254,7 +252,6 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
 
             Label(label) => {
                 let name = label.name();
-                let site = self.lsp_range(name);
                 let l = self.text(name);
                 let kind = DefinitionInfo::Label;
                 match (&self.knot, &self.stitch) {
@@ -263,14 +260,14 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                         let s = &stitch.name;
                         self.names.extend([
                             self.local(name, stitch.extent, kind),
-                            self.name(format!("{s}.{l}"), site, Some(stitch.extent), kind),
+                            self.name(format!("{s}.{l}"), name, Some(stitch.extent), kind),
                         ]);
                     }
                     (Some(knot), None) => {
                         let k = &knot.name;
                         self.names.extend([
                             self.local(name, knot.extent, kind),
-                            self.name(format!("{k}.{l}"), site, None, kind),
+                            self.name(format!("{k}.{l}"), name, None, kind),
                         ]);
                     }
                     (Some(knot), Some(stitch)) => {
@@ -280,10 +277,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                         let s = &stitch.name;
                         let l = &self.text(name);
                         self.names.extend([
-                            self.name(format!("{k}.{l}"), site, None, kind),
-                            self.name(format!("{k}.{s}.{l}"), site, None, kind),
-                            self.name(format!("{l}"), site, Some(knot.extent), kind),
-                            self.name(format!("{s}.{l}"), site, Some(knot.extent), kind),
+                            self.name(format!("{k}.{l}"), name, None, kind),
+                            self.name(format!("{k}.{s}.{l}"), name, None, kind),
+                            self.name(format!("{l}"), name, Some(knot.extent), kind),
+                            self.name(format!("{s}.{l}"), name, Some(knot.extent), kind),
                         ]);
                     }
                 }
@@ -384,27 +381,26 @@ impl<'a> Names<'a> {
     }
 
     fn global<N: Node<'a>>(&self, n: N, kind: DefinitionInfo) -> (Name, Meta) {
-        self.name(self.text(n), self.lsp_range(n), None, kind)
+        self.name(self.text(n), n, None, kind)
     }
 
     fn local<N: Node<'a>>(&self, n: N, extent: Range, kind: DefinitionInfo) -> (Name, Meta) {
-        self.name(self.text(n), self.lsp_range(n), Some(extent), kind)
+        self.name(self.text(n), n, Some(extent), kind)
     }
 
     fn name(
         &self,
         name: String,
-        site: Range,
+        site: impl type_sitter::Node<'a>,
         extent: Option<Range>,
-        kind: DefinitionInfo,
+        info: DefinitionInfo,
     ) -> (Name, Meta) {
         (
             name,
             Meta {
-                file: self.docid,
-                site: site,
+                id: Definition::new(self.docid, site, info),
                 extent: extent,
-                kind,
+                site: self.lsp_range(site),
             },
         )
     }

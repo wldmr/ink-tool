@@ -21,12 +21,52 @@ macro_rules! define_id_tuples {
 
 define_id_tuples![Definition(NodeId, DefinitionInfo), Usage(NodeId, UsageInfo),];
 
+impl Definition {
+    pub fn new<'a, N: type_sitter::Node<'a>>(file: Id<Uri>, node: N, info: DefinitionInfo) -> Self {
+        Self(NodeId::new(file, node), info)
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.0
+    }
+
+    pub fn file(&self) -> Id<Uri> {
+        self.0.file()
+    }
+
+    pub fn info(&self) -> DefinitionInfo {
+        self.1
+    }
+}
+
+impl Usage {
+    pub fn new<'a, N: type_sitter::Node<'a>>(file: Id<Uri>, node: N, info: UsageInfo) -> Self {
+        Self(NodeId::new(file, node), info)
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.0
+    }
+
+    pub fn file(&self) -> Id<Uri> {
+        self.0.file()
+    }
+
+    pub fn info(&self) -> UsageInfo {
+        self.1
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(Id<Uri>, usize);
 
 impl NodeId {
     pub fn new<'a, N: type_sitter::Node<'a>>(file: Id<Uri>, node: N) -> Self {
         Self(file, node.raw().id())
+    }
+
+    pub fn file(&self) -> Id<Uri> {
+        self.0
     }
 }
 

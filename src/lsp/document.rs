@@ -82,8 +82,6 @@ pub struct UsageUnderCursor<'a> {
     pub terms: Vec<&'a str>,
 }
 
-pub type DefinionsSearch<'a> = Vec<&'a str>;
-
 /// Public API
 impl InkDocument {
     pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
