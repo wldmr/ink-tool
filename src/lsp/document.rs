@@ -1,11 +1,14 @@
-use crate::ink_syntax::types::{AllNamed, DivertTarget};
+use crate::ink_syntax::types::{
+    AllNamed, DivertTarget, Identifier, Ink, Knot, KnotBlock, ScopeBlock, StitchBlock, Usages,
+};
+use crate::ink_syntax::{self, traversal};
 use crate::lsp::salsa::GetNodeError;
 use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
 use tap::Pipe as _;
 use tree_sitter::Parser;
-use type_sitter_lib::Node;
+use type_sitter::{Node, UntypedNamedNode, UntypedNode};
 
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
 // Everthing else works in terms of LSP types.
@@ -54,12 +57,7 @@ struct PointOfInterest {
     bytes: (usize, usize),
 }
 
-pub enum DefinionsSearch<'a> {
-    /// This thing has the following local definion(s)
-    Local(Vec<lsp_types::Range>),
-    /// This thing is not locally defined, look for this &str globally.
-    Global(&'a str),
-}
+pub type DefinionsSearch<'a> = Vec<&'a str>;
 
 /// Public API
 impl InkDocument {
@@ -106,13 +104,38 @@ impl InkDocument {
         }
     }
 
-    pub fn definitions_of(&self, pos: Position) -> Option<DefinionsSearch> {
-        let byte = self.to_byte(pos);
+    pub fn usage_at(&self, pos: Position) -> Option<DefinionsSearch<'_>> {
+        let byte_pos = self.to_byte(pos);
         let node = self
             .tree
             .root_node()
-            .named_descendant_for_byte_range(byte, byte)?;
-        todo!()
+            .named_descendant_for_byte_range(byte_pos, byte_pos)
+            .map(UntypedNamedNode::try_from_raw)?;
+        let node = traversal::parent::<_, Usages>(node).last()?;
+        let mut search = DefinionsSearch::default();
+        match node {
+            Usages::Identifier(ident) => {
+                search.push(self.text_of(ident));
+            }
+            Usages::QualifiedName(qname) => {
+                // Look for the "substrings" that end right of the cursor.
+                //
+                //     knot.stitch.label
+                //            ^
+                //
+                // would look for "knot.stitch" and "knot.stitch.label",
+                // but not "knot".
+                let start = qname.start_byte();
+                for ident in qname.identifiers(&mut qname.walk()) {
+                    let end = ident.end_byte();
+                    if end >= byte_pos {
+                        search.push(&self.text[start..end]);
+                    }
+                }
+            }
+        };
+
+        Some(search)
     }
 }
 
@@ -177,6 +200,10 @@ impl InkDocument {
         }
     }
 
+    fn text_of<'a, N: Node<'a>>(&self, n: N) -> &str {
+        &self.text[n.byte_range()]
+    }
+
     pub(super) fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(node.start_point);
         let end = self.lsp_position(node.end_point);
@@ -197,7 +224,7 @@ impl InkDocument {
 
     pub fn get_node_at<'a, T>(&'a self, pos: lsp_types::Position) -> Result<T, GetNodeError>
     where
-        T: type_sitter_lib::Node<'a>,
+        T: type_sitter::Node<'a>,
     {
         let (point, _byte) = self.ts_point(pos)?;
         self.tree
@@ -260,7 +287,10 @@ impl InkDocument {
 }
 #[cfg(test)]
 mod tests {
+    use crate::lsp::salsa;
+
     use super::{DocumentEdit, InkDocument};
+    use indoc::indoc;
     use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
     use test_case::test_case;

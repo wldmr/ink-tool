@@ -23,8 +23,8 @@
 *   -> SSSa
     // ^^^^ references stitch:KKKa.SSSa
 *   -> SSSb
-    // ^^^^ references stitch:SSSb
-    // ^^^^ references-not stitch:KKKa.SSSb
+    // ^^^^ references stitch:KKKa.SSSb
+    // ^^^^ references-not stitch:SSSb
 *   -> KKKa.SSSa
     // ^^^^^^^^^ references stitch:KKKa.SSSa
 

@@ -7,7 +7,7 @@ use crate::{
     lsp::{document::InkDocument, salsa::DocId},
 };
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
-use type_sitter_lib::{IncorrectKindCause, Node};
+use type_sitter::{IncorrectKindCause, Node};
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub(in crate::lsp::salsa) struct WorkspaceSymbolsQ(pub DocId);
@@ -19,7 +19,7 @@ impl mini_milc::Subquery<super::Ops, Option<Vec<WorkspaceSymbol>>> for Workspace
         old: mini_milc::Old<Option<Vec<WorkspaceSymbol>>>,
     ) -> mini_milc::Updated<Option<Vec<WorkspaceSymbol>>> {
         use crate::lsp::salsa::InkGetters as _;
-        let docs = db.docs();
+        let docs = db.doc_ids();
         let doc = db.document(self.0.clone());
         let uri = docs.get(self.0).unwrap();
         let mut syms = WorkspaceSymbols::new(uri, &*doc);
@@ -284,7 +284,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
         // not needed
     }
 
-    fn visit_error(&mut self, err: type_sitter_lib::IncorrectKind) -> VisitInstruction<Self> {
+    fn visit_error(&mut self, err: type_sitter::IncorrectKind) -> VisitInstruction<Self> {
         match err.cause() {
             // Error nodes might have children
             IncorrectKindCause::Error => VisitInstruction::Descend,

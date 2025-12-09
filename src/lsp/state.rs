@@ -1,8 +1,5 @@
 use super::document::{DocumentEdit, InkDocument};
-use crate::lsp::{
-    idset::Id,
-    salsa::{self, DocId, Docs, InkGetters, InkSetters, Ops},
-};
+use crate::lsp::salsa::{self, names::Meta, DocId, InkGetters, InkSetters};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
@@ -46,15 +43,14 @@ impl State {
         }
     }
 
-    pub fn docs(&self) -> mini_milc::Cached<'_, Ops, Docs> {
-        self.db.docs()
+    pub fn uris(&self) -> Vec<Uri> {
+        self.db.doc_ids().values().cloned().collect()
     }
 
     pub fn common_file_prefix(&self) -> String {
         // TODO: Perfect candite for caching
-        self.db
-            .docs()
-            .values()
+        self.uris()
+            .into_iter()
             .map(|it| it.path().to_string())
             .reduce(|acc, next| {
                 acc.chars()
@@ -68,7 +64,7 @@ impl State {
     }
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if let Some(id) = self.db.docs().get_id(&uri) {
+        if let Some(id) = self.db.doc_ids().get_id(&uri) {
             Ok(self.db.document(id).text.clone())
         } else {
             Err(DocumentNotFound(uri))
@@ -77,10 +73,10 @@ impl State {
 
     pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
         // Ensure the document is registered.
-        let id: Option<DocId> = self.db.docs().get_id(&uri).clone();
+        let id: Option<DocId> = self.db.doc_ids().get_id(&uri).clone();
         let id: DocId = id.unwrap_or_else(|| {
             self.db.modify_docs(|docs| docs.insert(uri.clone()));
-            self.db.docs().get_id(&uri).unwrap()
+            self.db.doc_ids().get_id(&uri).unwrap()
         });
         // Now actually modify it.
         self.db.modify_document(
@@ -101,7 +97,7 @@ impl State {
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
-        if let Some(id) = self.db.docs().get_id(&uri) {
+        if let Some(id) = self.db.doc_ids().get_id(&uri) {
             Ok(self.db.document_symbols(id).clone())
         } else {
             Err(DocumentNotFound(uri))
@@ -112,7 +108,7 @@ impl State {
         let query = query.to_lowercase();
         let should_filter = !query.is_empty();
         self.db
-            .docs()
+            .doc_ids()
             .ids()
             .flat_map(|uri| {
                 if let Some(syms) = &*self.db.workspace_symbols(uri) {
@@ -137,13 +133,48 @@ impl State {
 
     pub fn goto_definition(
         &self,
-        from_uri: &Uri,
-        from_position: Position,
+        uri: Uri,
+        pos: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
-        let doc_id = self.doc_id(&from_uri)?;
-        let doc = self.db.document(doc_id);
-        let node = doc.definitions_of(from_position);
-        Ok(Vec::new())
+        let docs = self.db.doc_ids();
+        let Some(docid) = docs.get_id(&uri) else {
+            return Err(DocumentNotFound(uri).into());
+        };
+        let doc = self.db.document(docid);
+
+        let Some(search_terms) = doc.usage_at(pos) else {
+            return Ok(Vec::new());
+        };
+
+        let ws_names = self.db.workspace_names();
+        let mut result = Vec::new();
+
+        for term in search_terms {
+            let Some(metas) = ws_names.get(term) else {
+                continue;
+            };
+
+            let (locals, globals): (Vec<&Meta>, Vec<&Meta>) = metas
+                .iter()
+                .filter(|it| it.visible_at(docid, pos))
+                .partition(|it| it.extent.is_some());
+
+            // Find "most local" thing.
+            let local = locals.into_iter().min_by(|a, b| a.cmp_extent(b));
+            if let Some(def) = local {
+                result.push(lsp_types::Location::new(docs[def.file].clone(), def.site));
+            } else {
+                // We "allow" ambiguity for globals, since we can't know which definition the user meant
+                // (there'll be an error message and they'll have to fix it).
+                result.extend(
+                    globals
+                        .into_iter()
+                        .map(|it| lsp_types::Location::new(docs[it.file].clone(), it.site)),
+                );
+            }
+        }
+
+        return Ok(result);
     }
 
     pub fn goto_references(
@@ -159,20 +190,13 @@ impl State {
         // only used in tests, so we'll crash liberally!
         let id = self
             .db
-            .docs()
+            .doc_ids()
             .get_id(&uri)
             .expect("don't call with with a non-existent document");
         self.db
             .document(id)
             .ts_range(loc)
             .expect("don't call this with an invalid location")
-    }
-
-    fn doc_id(&self, uri: &Uri) -> Result<Id<Uri>, DocumentNotFound> {
-        self.db
-            .docs()
-            .get_id(uri)
-            .ok_or_else(|| DocumentNotFound(uri.clone()))
     }
 }
 
@@ -250,8 +274,6 @@ mod tests {
     }
 
     mod links {
-        use std::{collections::HashMap, str::FromStr};
-
         use super::{new_state, set_content, State};
         use crate::{
             lsp::salsa::InkGetters,
@@ -264,6 +286,10 @@ mod tests {
         use assert2::assert;
         use itertools::Itertools;
         use lsp_types::Uri;
+        use std::{
+            collections::{BTreeSet, HashMap},
+            str::FromStr,
+        };
         use test_case::test_case;
 
         #[derive(Debug, Default)]
@@ -333,20 +359,13 @@ mod tests {
             fn failed(&'a self, state: &'a State) -> bool {
                 // Insurance against some obviously bad test definitions:
                 {
-                    let defined_names = self
-                        .definitions
-                        .keys()
-                        .map(|it| *it)
-                        .sorted_unstable()
-                        .unique()
-                        .collect::<Vec<_>>();
+                    let defined_names = self.definitions.keys().copied().collect::<BTreeSet<_>>();
                     let referenced_names = self
                         .references
                         .iter()
-                        .flat_map(|(_, _, _, names)| names.iter().map(|it| *it))
-                        .sorted_unstable()
-                        .unique()
-                        .collect::<Vec<_>>();
+                        .flat_map(|(_, _, _, names)| names.iter())
+                        .copied()
+                        .collect::<BTreeSet<_>>();
                     assert!(
                         defined_names == referenced_names,
                         "We don't want dangling references or definitions in tests."
@@ -377,7 +396,7 @@ mod tests {
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
                     let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
                     let found_definitions = state
-                        .goto_definition(&usage_uri, usage_lsp_position.start)
+                        .goto_definition((*usage_uri).clone(), usage_lsp_position.start)
                         .expect("we should be within range");
                     if *reference_kind == ReferenceKind::Unresolved {
                         if !found_definitions.is_empty() {
@@ -434,7 +453,7 @@ mod tests {
                                     .iter()
                                     .map(|other| {
                                         let docid =
-                                            db.docs().get_id(&other.uri).expect("must exist");
+                                            db.doc_ids().get_id(&other.uri).expect("must exist");
                                         let span = db
                                             .document(docid)
                                             .ts_range(other.range)
@@ -446,60 +465,6 @@ mod tests {
                                             .annotation(annotate_snippets::Level::Info.span(span))
                                     })
                                     .collect_vec();
-                                let visibilities: Vec<(&str, &str)> = Vec::new(); // TODO: Fill this in.
-                                let vis_of_target = if let Some(vec) = Some(visibilities) {
-                                    vec.iter()
-                                        .map(|(vis, name)| match *vis {
-                                            "global" => {
-                                                let source = &def_ann.full_text;
-                                                let span = def_ann.text_location.byte_range();
-                                                annotate_snippets::Snippet::source(source)
-                                                    .origin(def_uri.path().as_str())
-                                                    .annotations([
-                                                        annotate_snippets::Level::Info
-                                                            .span(span.clone())
-                                                            .label("has global name"),
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label(name),
-                                                    ])
-                                            }
-                                            "inside" => {
-                                                let source = todo!("scope.cst(db).text(db)");
-                                                let uri = todo!("scope.uri(db)");
-                                                let span = todo!("scope.node(db).byte_range()");
-                                                annotate_snippets::Snippet::source(source)
-                                                    .origin(uri)
-                                                    .annotations([
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label("has local name here"),
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label(name),
-                                                    ])
-                                            }
-                                            "temp" => {
-                                                let source = todo!("scope.cst(db).text(db)");
-                                                let uri = todo!("scope.uri(db)");
-                                                let span = todo!("scope.node(db).byte_range()");
-                                                annotate_snippets::Snippet::source(source)
-                                                    .origin(uri)
-                                                    .annotations([
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label("has temp name here"),
-                                                        annotate_snippets::Level::Info
-                                                            .span(span)
-                                                            .label(name),
-                                                    ])
-                                            }
-                                            _ => todo!(),
-                                        })
-                                        .collect_vec()
-                                } else {
-                                    Vec::new()
-                                };
                                 messages.push(
                                     annotate_snippets::Level::Error
                                         .title("Required reference not found")
@@ -522,14 +487,6 @@ mod tests {
                                             annotate_snippets::Level::Error
                                                 .title("But it only links to these locations:")
                                                 .snippets(other_references)
-                                        })
-                                        .footer(if vis_of_target.is_empty() {
-                                            annotate_snippets::Level::Error
-                                                .title("The intended target is not visible anywhere.")
-                                        } else {
-                                            annotate_snippets::Level::Note
-                                                .title("The intended target has the following visibilities:")
-                                                .snippets(vis_of_target)
                                         }),
                                 );
                             } else if *reference_kind == ReferenceKind::None && does_reference {
@@ -561,38 +518,6 @@ mod tests {
                     for message in messages {
                         eprintln!("{}", renderer.render(message));
                     }
-                    // eprintln!(
-                    //     "all names: {:#?}",
-                    //     workspace_definitions_by_name(db, state.workspace)
-                    //         .iter()
-                    //         .flat_map(move |(name, defs)| defs
-                    //             .into_iter()
-                    //             .map(|def| (name.clone(), def)))
-                    //         .map(|(name, def)| format!(
-                    //             "{name} ({})",
-                    //             match def.0 {
-                    //                 crate::lsp::salsa::Visibility::Global => "global".to_string(),
-                    //                 crate::lsp::salsa::Visibility::Inside(scope) => format!(
-                    //                     "local in {}",
-                    //                     scope.global_name(db).unwrap_or_else(|| def
-                    //                         .1
-                    //                         .uri(db)
-                    //                         .path()
-                    //                         .to_string())
-                    //                 ),
-                    //                 crate::lsp::salsa::Visibility::Temp(scope) => format!(
-                    //                     "temp in {}",
-                    //                     scope.global_name(db).unwrap_or_else(|| def
-                    //                         .1
-                    //                         .uri(db)
-                    //                         .path()
-                    //                         .to_string())
-                    //                 ),
-                    //             }
-                    //         ))
-                    //         .sorted_unstable()
-                    //         .collect_vec()
-                    // );
                     true
                 }
             }

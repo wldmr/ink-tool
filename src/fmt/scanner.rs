@@ -4,7 +4,7 @@ use crate::fmt::{
     util::constrained_value::Constrained,
 };
 
-use tree_sitter::{Node, QueryPredicateArg, TreeCursor};
+use tree_sitter::{Node, QueryPredicateArg, StreamingIterator, TreeCursor};
 
 use std::collections::HashMap;
 
@@ -154,10 +154,10 @@ impl FormatScanner {
             }
         }
 
-        for match_ in self
+        let mut matches = self
             .cursor
-            .matches(&self.query, tree.root_node(), source.as_bytes())
-        {
+            .matches(&self.query, tree.root_node(), source.as_bytes());
+        while let Some(match_) = matches.next() {
             for cap in match_.captures {
                 let rule = rules.entry(cap.node.id()).or_default();
                 // Deleting completely clobers all other intentions related to that node.

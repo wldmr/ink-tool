@@ -87,7 +87,7 @@ impl TextRegion {
     }
 }
 
-impl<'a, T: type_sitter_lib::Node<'a>> From<T> for TextRegion {
+impl<'a, T: type_sitter::Node<'a>> From<T> for TextRegion {
     fn from(node: T) -> Self {
         TextRegion {
             start: TextPos {

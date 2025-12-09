@@ -71,21 +71,21 @@ impl RequestHandler for request::WorkspaceSymbolRequest {
 //     }
 // }
 
-// impl RequestHandler for request::GotoDefinition {
-//     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-//         use lsp_types::GotoDefinitionResponse::*;
-//         let defs = state.lock()?.goto_definition(
-//             &params.text_document_position_params.text_document.uri,
-//             params.text_document_position_params.position,
-//         )?;
-//         let response = match defs.len() {
-//             0 => None,
-//             1 => Some(Scalar(defs.into_iter().next().unwrap())),
-//             _ => Some(Array(defs)),
-//         };
-//         Ok(response)
-//     }
-// }
+impl RequestHandler for request::GotoDefinition {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        use lsp_types::GotoDefinitionResponse::*;
+        let defs = state.lock()?.goto_definition(
+            params.text_document_position_params.text_document.uri,
+            params.text_document_position_params.position,
+        )?;
+        let response = match defs.len() {
+            0 => None,
+            1 => Some(Scalar(defs.into_iter().next().unwrap())),
+            _ => Some(Array(defs)),
+        };
+        Ok(response)
+    }
+}
 
 // impl RequestHandler for request::References {
 //     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
