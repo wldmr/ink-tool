@@ -128,7 +128,77 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        todo!()
+        let docs = self.db.doc_ids();
+        let Some(docid) = docs.get_id(&uri) else {
+            return Err(DocumentNotFound(uri).into());
+        };
+        let doc = self.db.document(docid);
+
+        let Some(search_terms) = doc.usage_at(position) else {
+            return Ok(Default::default());
+        };
+
+        let Some(longest) = search_terms.into_iter().max_by_key(|it| it.len()) else {
+            return Ok(Default::default());
+        };
+        log::debug!("Trying completion for '{longest}'.");
+
+        let ws_names = self.db.workspace_names();
+        use lsp_types::CompletionItemKind;
+        use salsa::names::NameKind::*;
+        Ok(Some(
+            ws_names
+                .iter()
+                .filter(|(key, _)| key.contains(longest))
+                .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
+                .filter(|(_, meta)| meta.visible_at(docid, position))
+                .inspect(|it| log::debug!("Found {it:?}"))
+                .map(|(key, meta)| lsp_types::CompletionItem {
+                    label: key.clone(),
+                    label_details: None,
+                    kind: Some(match meta.kind {
+                        Knot => CompletionItemKind::MODULE,
+                        Stitch => CompletionItemKind::CLASS,
+                        Function => CompletionItemKind::FUNCTION,
+                        External => CompletionItemKind::INTERFACE,
+                        VarConst => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
+                        List => CompletionItemKind::ENUM,
+                        ListItem => CompletionItemKind::ENUM_MEMBER,
+                        Label => CompletionItemKind::PROPERTY,
+                        Param => CompletionItemKind::VARIABLE,
+                        Temp => CompletionItemKind::UNIT,
+                    }),
+                    // TODO: Fetch actual definition
+                    detail: Some(match meta.kind {
+                        Knot => format!("== {key}"),
+                        Stitch => format!("= {key}"),
+                        Function => format!("== function {key}(…)"),
+                        External => format!("EXTERNAL {key}(…)"),
+                        VarConst => format!("VAR {key}"), // TODO: Differentiate between VAR and CONST
+                        List => format!("LIST {key} = …"),
+                        ListItem => format!("LIST [TODO: list name] = {key}, …"),
+                        Label => format!("({key})"),
+                        Param => format!("{key}"),
+                        Temp => format!("~ temp {key} = "),
+                    }),
+                    // TODO: Fetch actual docs
+                    documentation: None,
+                    deprecated: None,
+                    preselect: None,
+                    sort_text: None,
+                    filter_text: None,
+                    insert_text: None,
+                    insert_text_format: None,
+                    insert_text_mode: None,
+                    text_edit: None,
+                    additional_text_edits: None,
+                    command: None,
+                    commit_characters: None,
+                    data: None,
+                    tags: None,
+                })
+                .collect(),
+        ))
     }
 
     pub fn goto_definition(
@@ -259,7 +329,7 @@ mod tests {
                 text
             ",
             );
-            let (contents, caret) = text_with_caret("{o@}");
+            let (contents, caret) = text_with_caret("{@o}"); // TODO should also work at end of string
             let uri = uri("test.ink");
             set_content(&mut state, uri.clone(), contents);
             let completions = state.completions(uri, caret).unwrap().unwrap();
