@@ -3,7 +3,10 @@ use crate::{
         types::{AllNamed, ScopeBlock},
         VisitInstruction, Visitor,
     },
-    lsp::salsa::DocId,
+    lsp::{
+        document::ids::{self, Definition, DefinitionInfo, NodeId},
+        salsa::DocId,
+    },
 };
 use lsp_types::{Position, Range};
 use type_sitter::Node;
@@ -12,16 +15,15 @@ pub type Name = String;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Meta {
-    pub file: DocId,
+    pub id: ids::Definition,
     pub site: Range,
     pub extent: Option<Range>,
-    pub kind: NameKind,
 }
 
 impl Meta {
     pub fn visible_at(&self, doc: DocId, pos: Position) -> bool {
         match self.extent {
-            Some(Range { start, end }) => doc == self.file && start <= pos && pos <= end,
+            Some(Range { start, end }) => doc == self.id.file() && start <= pos && pos <= end,
             None => true,
         }
     }
@@ -43,22 +45,9 @@ impl Meta {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NameKind {
-    Knot,
-    Stitch,
-    Function,
-    External,
-    VarConst,
-    List,
-    ListItem,
-    Label,
-    Param,
-    Temp,
-}
-
 struct Environment {
     name: String,
+    nodeid: NodeId,
     extent: Range,
     temp_extent: Range,
 }
@@ -70,8 +59,8 @@ pub struct Names<'a> {
     ink_temp_extent: Option<Range>,
     knot: Option<Environment>,
     stitch: Option<Environment>,
-    list: Option<String>,
-    pub(super) names: Vec<(Name, Meta)>,
+    list: Option<Environment>,
+    names: Vec<(Name, Meta)>,
 }
 
 impl<'a> Names<'a> {
@@ -119,13 +108,26 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             | Stitch(_) => Descend,
 
             Global(def) => {
-                self.names.push(self.global(def.name(), NameKind::VarConst));
+                self.names.push(self.global(
+                    def.name(),
+                    match def.keyword().ok() {
+                        Some(kw) if kw.as_const().is_some() => DefinitionInfo::Const,
+                        _ => DefinitionInfo::Var,
+                    },
+                ));
                 Ignore
             }
 
             List(list) => {
-                self.names.push(self.global(list.name(), NameKind::List));
-                self.list = Some(self.text(list.name()));
+                self.names
+                    .push(self.global(list.name(), DefinitionInfo::List));
+                let extent = self.lsp_range(list);
+                self.list = Some(Environment {
+                    nodeid: NodeId::new(self.docid, list.name()),
+                    name: self.text(list.name()),
+                    extent,
+                    temp_extent: extent, // doesn't really make sense, but we don't want to define a new environment type just for lists.
+                });
                 // Ideally we’d unset this when we leave the definition, but we shouldn’t access
                 // this field without first coming through here and setting it to the correct
                 // value.
@@ -133,11 +135,21 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             }
             ListValueDef(def) => {
                 let item = self.text(def.name());
-                let site = self.lsp_range(def.name());
+                let site = def.name();
                 let list = self.list.as_ref().expect("must have been set");
                 self.names.extend([
-                    self.name(format!("{item}"), site, None, NameKind::ListItem), // Yes, you read that right.
-                    self.name(format!("{list}.{item}"), site, None, NameKind::List),
+                    self.name(
+                        format!("{item}"),
+                        site,
+                        None,
+                        DefinitionInfo::ListItem { list: list.nodeid },
+                    ), // Yes, you read that right.
+                    self.name(
+                        format!("{}.{item}", list.name),
+                        site,
+                        None,
+                        DefinitionInfo::List,
+                    ),
                 ]);
                 Ignore
             }
@@ -165,6 +177,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 let name = block.header().map(|it| it.name());
                 self.stitch = None;
                 self.knot = Some(Environment {
+                    nodeid: NodeId::new(self.docid, name),
                     name: self.text(name),
                     extent: self.lsp_range(block),
                     temp_extent: {
@@ -185,9 +198,18 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
 
                 let is_function = block.header().is_ok_and(|it| it.function().is_some());
                 let name = if is_function {
-                    self.global(name, NameKind::Function)
+                    self.global(name, DefinitionInfo::Function)
                 } else {
-                    self.global(name, NameKind::Knot)
+                    self.global(
+                        name,
+                        DefinitionInfo::ToplevelScope {
+                            stitch: false,
+                            params: block
+                                .header()
+                                .map(|header| header.params().is_some())
+                                .unwrap_or_default(),
+                        },
+                    )
                 };
                 self.names.push(name);
                 Descend
@@ -198,6 +220,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 let extent = self.lsp_range(block);
 
                 self.stitch = Some(Environment {
+                    nodeid: NodeId::new(self.docid, name),
                     name: block
                         .header()
                         .map(|it| self.text(it.name()))
@@ -206,40 +229,45 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     temp_extent: extent, // Stitches can't have subsections
                 });
 
+                let kind = DefinitionInfo::SubScope {
+                    parent: self.knot.as_ref().map(|it| it.nodeid),
+                    params: block
+                        .header()
+                        .map(|it| it.params().is_some())
+                        .unwrap_or_default(),
+                };
                 if let Some(knot) = &self.knot {
                     let k = &knot.name;
                     let s = self.text(name);
-                    let site = self.lsp_range(name);
                     let extent = Some(knot.extent);
                     self.names.extend([
-                        self.name(format!("{s}"), site, extent, NameKind::Stitch),
-                        self.name(format!("{k}.{s}"), site, None, NameKind::Stitch),
+                        self.name(format!("{s}"), name, extent, kind),
+                        self.name(format!("{k}.{s}"), name, None, kind),
                     ]);
                 } else {
-                    self.names.push(self.global(name, NameKind::Stitch));
+                    self.names.push(self.global(name, kind));
                 }
                 Descend
             }
 
             Label(label) => {
                 let name = label.name();
-                let site = self.lsp_range(name);
                 let l = self.text(name);
-                let kind = NameKind::Label;
+                let kind = DefinitionInfo::Label;
                 match (&self.knot, &self.stitch) {
                     (None, None) => self.names.push(self.global(name, kind)),
                     (None, Some(stitch)) => {
                         let s = &stitch.name;
                         self.names.extend([
                             self.local(name, stitch.extent, kind),
-                            self.name(format!("{s}.{l}"), site, Some(stitch.extent), kind),
+                            self.name(format!("{s}.{l}"), name, Some(stitch.extent), kind),
                         ]);
                     }
                     (Some(knot), None) => {
                         let k = &knot.name;
                         self.names.extend([
                             self.local(name, knot.extent, kind),
-                            self.name(format!("{k}.{l}"), site, None, kind),
+                            self.name(format!("{k}.{l}"), name, None, kind),
                         ]);
                     }
                     (Some(knot), Some(stitch)) => {
@@ -249,10 +277,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                         let s = &stitch.name;
                         let l = &self.text(name);
                         self.names.extend([
-                            self.name(format!("{k}.{l}"), site, None, kind),
-                            self.name(format!("{k}.{s}.{l}"), site, None, kind),
-                            self.name(format!("{l}"), site, Some(knot.extent), kind),
-                            self.name(format!("{s}.{l}"), site, Some(knot.extent), kind),
+                            self.name(format!("{k}.{l}"), name, None, kind),
+                            self.name(format!("{k}.{s}.{l}"), name, None, kind),
+                            self.name(format!("{l}"), name, Some(knot.extent), kind),
+                            self.name(format!("{s}.{l}"), name, Some(knot.extent), kind),
                         ]);
                     }
                 }
@@ -270,7 +298,19 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     (Some(knot), _) => knot.extent,
                     (None, None) => unreachable!("Must be inside block to find param"),
                 };
-                self.names.push(self.local(name, extent, NameKind::Param));
+                self.names.push(
+                    self.local(
+                        name,
+                        extent,
+                        DefinitionInfo::Param {
+                            is_ref: param.r#ref().is_some(),
+                            is_divert: param
+                                .value()
+                                .map(|it| it.as_divert().is_some())
+                                .unwrap_or_default(),
+                        },
+                    ),
+                );
                 Ignore
             }
 
@@ -281,13 +321,13 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     (Some(knot), _) => knot.temp_extent,
                 };
                 self.names
-                    .push(self.local(temp.name(), extent, NameKind::Temp));
+                    .push(self.local(temp.name(), extent, DefinitionInfo::Temp));
                 Ignore
             }
 
             External(external) => {
                 self.names
-                    .push(self.global(external.name(), NameKind::External));
+                    .push(self.global(external.name(), DefinitionInfo::External));
                 Ignore // Doesn't have body, so we don't need to define names for them
             }
 
@@ -340,28 +380,27 @@ impl<'a> Names<'a> {
         })
     }
 
-    fn global<N: Node<'a>>(&self, n: N, kind: NameKind) -> (Name, Meta) {
-        self.name(self.text(n), self.lsp_range(n), None, kind)
+    fn global<N: Node<'a>>(&self, n: N, kind: DefinitionInfo) -> (Name, Meta) {
+        self.name(self.text(n), n, None, kind)
     }
 
-    fn local<N: Node<'a>>(&self, n: N, extent: Range, kind: NameKind) -> (Name, Meta) {
-        self.name(self.text(n), self.lsp_range(n), Some(extent), kind)
+    fn local<N: Node<'a>>(&self, n: N, extent: Range, kind: DefinitionInfo) -> (Name, Meta) {
+        self.name(self.text(n), n, Some(extent), kind)
     }
 
     fn name(
         &self,
         name: String,
-        site: Range,
+        site: impl type_sitter::Node<'a>,
         extent: Option<Range>,
-        kind: NameKind,
+        info: DefinitionInfo,
     ) -> (Name, Meta) {
         (
             name,
             Meta {
-                file: self.docid,
-                site: site,
+                id: Definition::new(self.docid, site, info),
                 extent: extent,
-                kind,
+                site: self.lsp_range(site),
             },
         )
     }

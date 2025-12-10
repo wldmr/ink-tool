@@ -1,8 +1,12 @@
 use super::document::{DocumentEdit, InkDocument};
-use crate::lsp::salsa::{self, names::Meta, DocId, InkGetters, InkSetters};
+use crate::lsp::{
+    idset::Id,
+    salsa::{self, names::Meta, DocId, InkGetters, InkSetters},
+};
 use derive_more::derive::{Display, Error};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
+use mini_milc::Cached;
 use tap::Tap as _;
 
 // This is quite an abomination, but we have to deal with it.
@@ -128,7 +132,86 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        todo!()
+        let (doc, docid) = self.get_doc_and_id(uri)?;
+
+        let Some(search_terms) = doc.usage_at(docid, position) else {
+            return Ok(Default::default());
+        };
+
+        let Some(longest) = search_terms.terms.into_iter().max_by_key(|it| it.len()) else {
+            return Ok(Default::default());
+        };
+        log::debug!("Trying completion for '{longest}'.");
+
+        let ws_names = self.db.workspace_names();
+        use crate::lsp::document::ids::DefinitionInfo::*;
+        use lsp_types::CompletionItemKind;
+        Ok(Some(
+            ws_names
+                .iter()
+                .filter(|(key, _)| key.contains(longest))
+                .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
+                .filter(|(_, meta)| meta.visible_at(docid, position))
+                .inspect(|it| log::debug!("Found {it:?}"))
+                .map(|(key, meta)| lsp_types::CompletionItem {
+                    label: key.clone(),
+                    label_details: None,
+                    kind: Some(match meta.id.info() {
+                        ToplevelScope { .. } => CompletionItemKind::MODULE,
+                        SubScope { .. } => CompletionItemKind::CLASS,
+                        Function => CompletionItemKind::FUNCTION,
+                        External => CompletionItemKind::INTERFACE,
+                        Var => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
+                        Const => CompletionItemKind::CONSTANT, // TODO: Differentiate between VAR and CONST
+                        List => CompletionItemKind::ENUM,
+                        ListItem { .. } => CompletionItemKind::ENUM_MEMBER,
+                        Label => CompletionItemKind::PROPERTY,
+                        Param { .. } => CompletionItemKind::VARIABLE,
+                        Temp => CompletionItemKind::UNIT,
+                    }),
+                    // TODO: Fetch actual definition
+                    detail: Some(match meta.id.info() {
+                        ToplevelScope { stitch, params } => {
+                            format!(
+                                "{} {key}{}",
+                                if stitch { "=" } else { "==" },
+                                if params { "(…)" } else { "" }
+                            )
+                        }
+                        SubScope { params, .. } => {
+                            format!("= {key}{}", if params { "(…)" } else { "" })
+                        }
+                        Function => format!("== function {key}(…)"),
+                        External => format!("EXTERNAL {key}(…)"),
+                        Var => format!("VAR {key} = …"),
+                        Const => format!("CONST {key} = …"),
+                        List => format!("LIST {key} = …"),
+                        ListItem { .. } => format!("LIST … = … {key}, "),
+                        Label => format!("({key}) // label"),
+                        Param { .. } => format!("param // parameter"),
+                        Temp => format!("~ temp {key} = …"),
+                    }),
+                    // TODO: Fetch actual docs
+                    documentation: None,
+                    deprecated: None,
+                    preselect: None,
+                    sort_text: None,
+                    filter_text: None,
+                    insert_text: None,
+                    insert_text_format: None,
+                    insert_text_mode: None,
+                    text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                        range: search_terms.range,
+                        new_text: key.to_owned(),
+                    })),
+                    additional_text_edits: None,
+                    command: None,
+                    commit_characters: None,
+                    data: None,
+                    tags: None,
+                })
+                .collect(),
+        ))
     }
 
     pub fn goto_definition(
@@ -136,20 +219,17 @@ impl State {
         uri: Uri,
         pos: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
+        let (doc, docid) = self.get_doc_and_id(uri)?;
         let docs = self.db.doc_ids();
-        let Some(docid) = docs.get_id(&uri) else {
-            return Err(DocumentNotFound(uri).into());
-        };
-        let doc = self.db.document(docid);
 
-        let Some(search_terms) = doc.usage_at(pos) else {
+        let Some(search_terms) = doc.usage_at(docid, pos) else {
             return Ok(Vec::new());
         };
 
         let ws_names = self.db.workspace_names();
         let mut result = Vec::new();
 
-        for term in search_terms {
+        for term in search_terms.terms {
             let Some(metas) = ws_names.get(term) else {
                 continue;
             };
@@ -162,14 +242,17 @@ impl State {
             // Find "most local" thing.
             let local = locals.into_iter().min_by(|a, b| a.cmp_extent(b));
             if let Some(def) = local {
-                result.push(lsp_types::Location::new(docs[def.file].clone(), def.site));
+                result.push(lsp_types::Location::new(
+                    docs[def.id.file()].clone(),
+                    def.site,
+                ));
             } else {
                 // We "allow" ambiguity for globals, since we can't know which definition the user meant
                 // (there'll be an error message and they'll have to fix it).
                 result.extend(
                     globals
                         .into_iter()
-                        .map(|it| lsp_types::Location::new(docs[it.file].clone(), it.site)),
+                        .map(|it| lsp_types::Location::new(docs[it.id.file()].clone(), it.site)),
                 );
             }
         }
@@ -197,6 +280,17 @@ impl State {
             .document(id)
             .ts_range(loc)
             .expect("don't call this with an invalid location")
+    }
+
+    fn get_doc_and_id(
+        &self,
+        uri: Uri,
+    ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, Id<Uri>), DocumentNotFound> {
+        let Some(id) = self.db.doc_ids().get_id(&uri) else {
+            return Err(DocumentNotFound(uri));
+        };
+        let doc = self.db.document(id);
+        Ok((doc, id))
     }
 }
 
@@ -241,6 +335,7 @@ mod tests {
 
     mod completions {
         use super::{set_content, tests::text_with_caret, uri};
+        use itertools::Itertools;
         use pretty_assertions::assert_eq;
 
         #[test]
@@ -267,8 +362,9 @@ mod tests {
                 completions
                     .into_iter()
                     .map(|it| it.label)
+                    .sorted_unstable()
                     .collect::<Vec<_>>(),
-                vec!["some_var", "one", "two"]
+                vec!["one", "some_var", "two"]
             );
         }
     }

@@ -99,15 +99,20 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
                 save: None,
             },
         )),
-        completion_provider: None, /*Some(CompletionOptions {
-                                       resolve_provider: Some(false),
-                                       trigger_characters: Some(vec!["->", "-> "].into_iter().map(str::to_string).collect()),
-                                       all_commit_characters: None,
-                                       work_done_progress_options: WorkDoneProgressOptions {
-                                           work_done_progress: Some(false),
-                                       },
-                                       completion_item: None,
-                                   })*/
+        completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(false),
+            trigger_characters: Some(
+                vec!["->", "-> ", "{"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            all_commit_characters: None,
+            work_done_progress_options: WorkDoneProgressOptions {
+                work_done_progress: Some(false),
+            },
+            completion_item: None,
+        }),
         position_encoding: find_utf8(params).or(Some(PositionEncodingKind::UTF16)),
         ..Default::default()
     }
@@ -129,7 +134,7 @@ fn handle_request(request: Request, state: &SharedState) -> Result<Response, Req
         // HoverRequest,
         DocumentSymbolRequest,
         WorkspaceSymbolRequest,
-        // Completion,
+        Completion,
         GotoDefinition,
         // References,
     }

@@ -1,17 +1,20 @@
-use crate::ink_syntax::types::{
-    AllNamed, DivertTarget, Identifier, Ink, Knot, KnotBlock, ScopeBlock, StitchBlock, Usages,
-};
-use crate::ink_syntax::{self, traversal};
+use crate::ink_syntax;
+use crate::ink_syntax::traversal::parent;
+use crate::ink_syntax::types::{AllNamed, DivertTarget, QualifiedName, Usages};
+use crate::lsp::document::ids::{NodeId, UsageInfo};
+use crate::lsp::idset::Id;
 use crate::lsp::salsa::GetNodeError;
 use crate::lsp::state::InvalidPosition;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use lsp_types::Position;
+use lsp_types::{Position, Uri};
 use tap::Pipe as _;
 use tree_sitter::Parser;
-use type_sitter::{Node, UntypedNamedNode, UntypedNode};
+use type_sitter::{Node, UntypedNode};
 
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
 // Everthing else works in terms of LSP types.
+
+pub mod ids;
 
 pub(crate) struct InkDocument {
     pub(crate) tree: tree_sitter::Tree,
@@ -52,12 +55,11 @@ impl std::hash::Hash for InkDocument {
 
 pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct PointOfInterest {
-    bytes: (usize, usize),
+pub struct UsageUnderCursor<'a> {
+    pub usage: ids::Usage,
+    pub range: lsp_types::Range,
+    pub terms: Vec<&'a str>,
 }
-
-pub type DefinionsSearch<'a> = Vec<&'a str>;
 
 /// Public API
 impl InkDocument {
@@ -104,38 +106,124 @@ impl InkDocument {
         }
     }
 
-    pub fn usage_at(&self, pos: Position) -> Option<DefinionsSearch<'_>> {
+    pub fn usage_at(&self, file: Id<Uri>, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let node = self
-            .tree
-            .root_node()
+        let root = self.tree.root_node();
+
+        // We’ll try to find the biggest interesting node that surrounds the cursor
+        // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
+        // and we want the latter if it is there.
+        let node: DivertTarget<'_> = root
             .named_descendant_for_byte_range(byte_pos, byte_pos)
-            .map(UntypedNamedNode::try_from_raw)?;
-        let node = traversal::parent::<_, Usages>(node).last()?;
-        let mut search = DefinionsSearch::default();
-        match node {
-            Usages::Identifier(ident) => {
-                search.push(self.text_of(ident));
-            }
-            Usages::QualifiedName(qname) => {
-                // Look for the "substrings" that end right of the cursor.
-                //
-                //     knot.stitch.label
-                //            ^
-                //
-                // would look for "knot.stitch" and "knot.stitch.label",
-                // but not "knot".
-                let start = qname.start_byte();
-                for ident in qname.identifiers(&mut qname.walk()) {
-                    let end = ident.end_byte();
-                    if end >= byte_pos {
-                        search.push(&self.text[start..end]);
-                    }
-                }
+            .map(UntypedNode::try_from_raw)
+            .and_then(|node| parent::<_, DivertTarget>(node).last())
+            .or_else(|| {
+                // If we couldn’t find anything interesting at pos, try one byte to the left. This
+                // is to catch the (rather common) cases where the cursor is at the end of a word.
+                // For example, a cursor `@` at the end of an eval `{please_compl@}` would not be
+                // found to refer to `please_compl` if we didn’t account for this.
+                let one_to_the_left = byte_pos.checked_sub(1)?;
+                root.named_descendant_for_byte_range(one_to_the_left, one_to_the_left)
+                    .map(UntypedNode::try_from_raw)
+                    .and_then(|node| parent::<_, DivertTarget>(node).last())
+            })?;
+
+        // The “terms” that this usage references. A qualified name can refer to multiple
+        // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
+        // potentially contains the terms
+        //
+        // - `foo`
+        // - `foo.bar`, and
+        // - `foo.bar.baz`
+        //
+        // “Potentially”, because we only return the names that end to the *right* of the
+        // cursor. This is because we assume that the user is being specific when they
+        // place the cursor over the last part of a qualified name.
+        //
+        // Example:
+        //
+        //     knot.stitch.label
+        //            ^
+        //
+        // would look for “knot.stitch” and “knot.stitch.label”, but not “knot”.
+        let mut terms: Vec<&str> = Default::default();
+        let mut extract_terms_from_qname = |qname: QualifiedName| {
+            let start = qname.start_byte();
+            for ident in qname.identifiers(&mut qname.walk()) {
+                let end = ident.end_byte();
+                if end >= byte_pos {
+                    terms.push(&self.text[start..end]);
+                };
             }
         };
 
-        Some(search)
+        let find_redirect_kind = |node: UntypedNode| {
+            parent::<_, ink_syntax::types::Redirect>(node)
+                .next()
+                .map(|it| match it {
+                    ink_syntax::types::Redirect::Divert(_) => ids::RedirectKind::Divert,
+                    ink_syntax::types::Redirect::Thread(_) => ids::RedirectKind::Thread,
+                    ink_syntax::types::Redirect::Tunnel(tunnel) => {
+                        if tunnel.target().is_some() {
+                            ids::RedirectKind::NamedTunnelReturn
+                        } else {
+                            ids::RedirectKind::Tunnel
+                        }
+                    }
+                })
+        };
+
+        let (usage, range) = match node {
+            DivertTarget::Call(call) => {
+                match call.name().ok() {
+                    Some(Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
+                    Some(Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
+                    _ => {}
+                };
+                (
+                    ids::Usage(
+                        NodeId::new(file, call.name()),
+                        UsageInfo {
+                            redirect: find_redirect_kind(call.upcast()),
+                            params: true,
+                        },
+                    ),
+                    call.name().range(),
+                )
+            }
+            DivertTarget::Identifier(ident) => {
+                terms.push(self.text_of(ident));
+                (
+                    ids::Usage(
+                        NodeId::new(file, ident),
+                        UsageInfo {
+                            redirect: find_redirect_kind(ident.upcast()),
+                            params: false,
+                        },
+                    ),
+                    ident.range(),
+                )
+            }
+            DivertTarget::QualifiedName(qname) => {
+                extract_terms_from_qname(qname);
+                (
+                    ids::Usage(
+                        NodeId::new(file, qname),
+                        UsageInfo {
+                            redirect: find_redirect_kind(qname.upcast()),
+                            params: false,
+                        },
+                    ),
+                    qname.range(),
+                )
+            }
+        };
+
+        Some(UsageUnderCursor {
+            usage,
+            range: self.lsp_range(&range),
+            terms,
+        })
     }
 }
 
