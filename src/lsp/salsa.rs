@@ -2,7 +2,7 @@
 
 use super::state::InvalidPosition;
 use crate::{
-    ink_syntax::Visitor,
+    ink_syntax::{self, traversal, Visitor},
     lsp::{
         document::InkDocument,
         idset::{Id, IdSet},
@@ -13,6 +13,7 @@ use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
 use names::Meta;
 use std::collections::HashMap;
+use type_sitter::Node as _;
 
 mod doc_symbols;
 pub mod names;
@@ -34,6 +35,9 @@ struct WorkspaceDocsQ;
 type Names = Vec<(String, Meta)>;
 type WorkspaceNames = HashMap<String, Vec<Meta>>;
 
+type Usages = Vec<(String, lsp_types::Range)>;
+type WorkspaceUsages = HashMap<String, Vec<(DocId, lsp_types::Range)>>;
+
 composite_query! {
     #[derive(Hash, Copy)]
     pub enum Ops -> OpsV;
@@ -48,6 +52,12 @@ composite_query! {
 
     #[derive(Hash, Copy)]
     struct workspace_names -> WorkspaceNames {;}
+
+    #[derive(Hash, Copy)]
+    struct document_usages -> Usages {(DocId);}
+
+    #[derive(Hash, Copy)]
+    struct workspace_usages -> WorkspaceUsages {;}
 }
 
 // Inputs
@@ -74,6 +84,39 @@ subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
     names
 });
 
+subquery!(Ops, document_usages, Usages, |self, db| {
+    let doc = db.document(self.0);
+    let ink = type_sitter::UntypedNode::new(doc.tree.root_node());
+    traversal::depth_first::<_, ink_syntax::types::Usages>(ink)
+        .map(|node| match node {
+            ink_syntax::types::Usages::Identifier(ident) => ident.range(),
+            ink_syntax::types::Usages::QualifiedName(qname) => qname.range(),
+        })
+        .map(|range| {
+            (
+                doc.text[range.start_byte..range.end_byte].to_owned(),
+                doc.lsp_range(&range),
+            )
+        })
+        .collect::<Usages>()
+});
+
+subquery!(Ops, workspace_usages, WorkspaceUsages, |self, db| {
+    let mut usages = WorkspaceUsages::new();
+    for id in db.doc_ids().ids() {
+        for (name, range) in db.document_usages(id).iter() {
+            // Ensure that the entry exists, only cloning the name if necessary.
+            // (The entry API requires an owned key, but given that the same name will be
+            // referenced quite often, we don’t want to eagerly clone all the occurrences)
+            if !usages.contains_key(name) {
+                usages.insert(name.clone(), Default::default());
+            }
+            usages.get_mut(name).unwrap().push((id, *range));
+        }
+    }
+    usages
+});
+
 // Extension traits
 pub trait InkGetters: Db<Ops> {
     fn doc_ids(&self) -> Cached<'_, Ops, DocIds> {
@@ -98,6 +141,14 @@ pub trait InkGetters: Db<Ops> {
 
     fn workspace_names(&self) -> Cached<'_, Ops, WorkspaceNames> {
         self.get(workspace_names)
+    }
+
+    fn document_usages(&self, id: DocId) -> Cached<'_, Ops, Usages> {
+        self.get(document_usages(id))
+    }
+
+    fn workspace_usages(&self) -> Cached<'_, Ops, WorkspaceUsages> {
+        self.get(workspace_usages)
     }
 }
 impl<D: Db<Ops>> InkGetters for D {}

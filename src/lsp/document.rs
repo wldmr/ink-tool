@@ -1,7 +1,7 @@
 use crate::ink_syntax;
 use crate::ink_syntax::traversal::parent;
-use crate::ink_syntax::types::{AllNamed, DivertTarget, QualifiedName, Usages};
-use crate::lsp::document::ids::{NodeId, UsageInfo};
+use crate::ink_syntax::types::{AllNamed, Definitions, DivertTarget, QualifiedName, Usages};
+use crate::lsp::document::ids::{DefinitionInfo, NodeId, UsageInfo};
 use crate::lsp::idset::Id;
 use crate::lsp::salsa::GetNodeError;
 use crate::lsp::state::InvalidPosition;
@@ -61,6 +61,11 @@ pub struct UsageUnderCursor<'a> {
     pub terms: Vec<&'a str>,
 }
 
+pub struct DefinitionUnderCursor<'a> {
+    pub range: lsp_types::Range,
+    pub term: &'a str,
+}
+
 /// Public API
 impl InkDocument {
     pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
@@ -106,27 +111,32 @@ impl InkDocument {
         }
     }
 
+    pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
+        let node: Definitions = self.thing_under_cursor(pos)?;
+        let site = match node {
+            Definitions::External(external) => external.name().upcast(),
+            Definitions::Global(global) => global.name().upcast(),
+            Definitions::Knot(knot) => knot.name().upcast(),
+            Definitions::Label(label) => label.name().upcast(),
+            Definitions::List(list) => list.name().upcast(),
+            Definitions::ListValueDef(lvd) => lvd.name().upcast(),
+            Definitions::Param(param) => match param.value().ok()? {
+                ink_syntax::types::ParamValue::Divert(divert) => divert.target().upcast(),
+                ink_syntax::types::ParamValue::Identifier(identifier) => identifier.upcast(),
+            },
+            Definitions::Stitch(stitch) => stitch.name().upcast(),
+            Definitions::TempDef(temp_def) => temp_def.name().upcast(),
+        };
+
+        Some(DefinitionUnderCursor {
+            range: self.lsp_range(&site.range()),
+            term: self.text_of(site),
+        })
+    }
+
     pub fn usage_at(&self, file: Id<Uri>, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let root = self.tree.root_node();
-
-        // We’ll try to find the biggest interesting node that surrounds the cursor
-        // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
-        // and we want the latter if it is there.
-        let node: DivertTarget<'_> = root
-            .named_descendant_for_byte_range(byte_pos, byte_pos)
-            .map(UntypedNode::try_from_raw)
-            .and_then(|node| parent::<_, DivertTarget>(node).last())
-            .or_else(|| {
-                // If we couldn’t find anything interesting at pos, try one byte to the left. This
-                // is to catch the (rather common) cases where the cursor is at the end of a word.
-                // For example, a cursor `@` at the end of an eval `{please_compl@}` would not be
-                // found to refer to `please_compl` if we didn’t account for this.
-                let one_to_the_left = byte_pos.checked_sub(1)?;
-                root.named_descendant_for_byte_range(one_to_the_left, one_to_the_left)
-                    .map(UntypedNode::try_from_raw)
-                    .and_then(|node| parent::<_, DivertTarget>(node).last())
-            })?;
+        let node: DivertTarget<'_> = self.thing_under_cursor(pos)?;
 
         // The “terms” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -229,6 +239,33 @@ impl InkDocument {
 
 /// Private Helpers
 impl InkDocument {
+    /// Translate editor position into an underlying tree node of a given type.
+    ///
+    /// This is its own function because tree-sitter doesn’t consider a cursor at the
+    /// “end” of of a node (like an Identifier) as inside that node, while the user
+    /// typically would. So we encapsulate that search here.
+    fn thing_under_cursor<'a, N: type_sitter::Node<'a>>(&'a self, pos: Position) -> Option<N> {
+        let byte_pos = self.to_byte(pos);
+        let root = self.tree.root_node();
+
+        // We’ll try to find the biggest interesting node that surrounds the cursor
+        // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
+        // and we want the latter if it is there.
+        root.named_descendant_for_byte_range(byte_pos, byte_pos)
+            .map(UntypedNode::try_from_raw)
+            .and_then(|node| parent::<_, N>(node).last())
+            .or_else(|| {
+                // If we couldn’t find anything interesting at pos, try one byte to the left. This
+                // is to catch the (rather common) cases where the cursor is at the end of a word.
+                // For example, a cursor `@` at the end of an eval `{please_compl@}` would not be
+                // found to refer to `please_compl` if we didn’t account for this.
+                let one_to_the_left = byte_pos.checked_sub(1)?;
+                root.named_descendant_for_byte_range(one_to_the_left, one_to_the_left)
+                    .map(UntypedNode::try_from_raw)
+                    .and_then(|node| parent::<_, N>(node).last())
+            })
+    }
+
     fn input_edit(&self, range: lsp_types::Range, new_text: &str) -> tree_sitter::InputEdit {
         let start_byte = self.to_byte(range.start);
         let old_end_byte = self.to_byte(range.end);

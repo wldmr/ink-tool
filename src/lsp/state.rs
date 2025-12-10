@@ -34,7 +34,7 @@ pub(crate) struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
 #[derive(Debug, Clone, Display, Error, derive_more::From)]
 #[display("Could not go to position")]
-pub(crate) enum GotoDefinitionError {
+pub(crate) enum GotoLocationError {
     DocumentNotFound(DocumentNotFound),
     PositionOutOfBounds(InvalidPosition),
 }
@@ -218,7 +218,7 @@ impl State {
         &self,
         uri: Uri,
         pos: Position,
-    ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
+    ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
         let (doc, docid) = self.get_doc_and_id(uri)?;
         let docs = self.db.doc_ids();
 
@@ -262,10 +262,32 @@ impl State {
 
     pub fn goto_references(
         &self,
-        from_uri: &Uri,
+        from_uri: Uri,
         from_position: Position,
-    ) -> Result<Vec<lsp_types::Location>, GotoDefinitionError> {
-        todo!()
+    ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
+        let (doc, docid) = self.get_doc_and_id(from_uri)?;
+        let docs = self.db.doc_ids();
+        let mut result = Default::default();
+        let Some(def) = doc.definition_at(from_position) else {
+            return Ok(result);
+        };
+        let doc_names = self.db.document_names(docid);
+        let my_names = doc_names
+            .iter()
+            .filter(|(_name, meta)| meta.site == def.range);
+
+        let ws_usages = self.db.workspace_usages();
+        for (name, meta) in my_names {
+            if let Some(usages) = ws_usages.get(name) {
+                for (file, range) in usages.iter().copied() {
+                    if meta.visible_at(file, range.start) {
+                        let uri = docs[file].clone();
+                        result.push(lsp_types::Location { uri, range });
+                    }
+                }
+            }
+        }
+        Ok(result)
     }
 
     #[cfg(test)]
