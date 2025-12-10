@@ -291,12 +291,12 @@ impl State {
     }
 
     #[cfg(test)]
-    fn to_ts_range(&self, uri: Uri, loc: lsp_types::Range) -> tree_sitter::Range {
+    fn to_ts_range(&self, uri: &Uri, loc: lsp_types::Range) -> tree_sitter::Range {
         // only used in tests, so we'll crash liberally!
         let id = self
             .db
             .doc_ids()
-            .get_id(&uri)
+            .get_id(uri)
             .expect("don't call with with a non-existent document");
         self.db
             .document(id)
@@ -393,13 +393,10 @@ mod tests {
 
     mod links {
         use super::{new_state, set_content, State};
-        use crate::{
-            lsp::salsa::InkGetters,
-            test_utils::{
-                self,
-                text_annotations::{Annotation, AnnotationScanner},
-                Compact,
-            },
+        use crate::test_utils::{
+            self,
+            text_annotations::{Annotation, AnnotationScanner},
+            Compact,
         };
         use assert2::assert;
         use itertools::Itertools;
@@ -408,6 +405,7 @@ mod tests {
             collections::{BTreeSet, HashMap},
             str::FromStr,
         };
+        use tap::Pipe;
         use test_case::test_case;
 
         #[derive(Debug, Default)]
@@ -419,8 +417,8 @@ mod tests {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum ReferenceKind {
             Any,
-            None,
-            Unresolved,
+            Not,
+            Nothing,
         }
 
         impl<'a> LinkCheck<'a> {
@@ -430,11 +428,14 @@ mod tests {
                 annotations: impl IntoIterator<Item = Annotation<'a>>,
             ) {
                 for loc in annotations {
-                    let Some((keyword, arg)) = loc.claim().split_once(char::is_whitespace) else {
+                    let claim = loc.claim().split_whitespace().collect_vec();
+                    if claim.is_empty() {
                         continue;
                     };
-                    match keyword {
+                    match claim[0] {
                         "defines" => {
+                            assert!(claim.len() == 2, "defines takes exactly one argument");
+                            let arg = &claim[1];
                             if let Some((existing_uri, existing_ann)) = self.definitions.get(arg) {
                                 panic!(
                                     "Duplicate definition for `{}`: {}:{:?} and {}:{:?}",
@@ -445,36 +446,36 @@ mod tests {
                                     Compact(loc.text_location)
                                 );
                             } else {
-                                self.definitions.insert(arg, (uri, loc));
+                                self.definitions.insert(claim[1], (uri, loc));
                             };
                         }
                         "references-nothing" => {
-                            if !arg.is_empty() {
-                                panic!("references-nothing doesn't take arguments, found `{arg}`");
-                            }
+                            assert!(
+                                claim.len() == 1,
+                                "references-nothing doesn't take arguments"
+                            );
                             self.references
-                                .push((uri, loc, ReferenceKind::Unresolved, Vec::new()));
+                                .push((uri, loc, ReferenceKind::Nothing, Vec::new()));
                         }
                         "references" => {
-                            let names = arg.trim().split_whitespace().collect_vec();
-                            if names.is_empty() {
-                                panic!("references must have at least one argument");
-                            }
+                            assert!(claim.len() > 1, "references takes at least one argument");
+                            let names = claim[1..].to_vec();
                             self.references.push((uri, loc, ReferenceKind::Any, names));
                         }
                         "references-not" => {
-                            let names = arg.trim().split_whitespace().collect_vec();
-                            if names.is_empty() {
-                                panic!("references-not must have at least one argument");
-                            }
-                            self.references.push((uri, loc, ReferenceKind::None, names));
+                            assert!(
+                                claim.len() > 1,
+                                "references-not takes at least one argument"
+                            );
+                            let names = claim[1..].to_vec();
+                            self.references.push((uri, loc, ReferenceKind::Not, names));
                         }
                         _ => continue, // Ignore (might be a claim for another annotation scanner)
                     }
                 }
             }
 
-            fn failed(&'a self, state: &'a State) -> bool {
+            fn check(&'a self, state: &'a State) {
                 // Insurance against some obviously bad test definitions:
                 {
                     let defined_names = self.definitions.keys().copied().collect::<BTreeSet<_>>();
@@ -493,7 +494,6 @@ mod tests {
                         "There should be at least one reference in a test"
                     );
                 }
-                let db = &state.db;
 
                 let inks: HashMap<&'a Uri, &'a str> = {
                     let defs = self
@@ -507,84 +507,63 @@ mod tests {
                     defs.chain(refs).collect()
                 };
 
-                // kind of breaks encapsulation, but just to get going:
-                // let visibilities_of_definitions = todo!();
-
                 let mut messages = Vec::new();
+                use annotate_snippets::{Level, Snippet};
+
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
                     let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
                     let found_definitions = state
                         .goto_definition((*usage_uri).clone(), usage_lsp_position.start)
                         .expect("we should be within range");
-                    if *reference_kind == ReferenceKind::Unresolved {
-                        if !found_definitions.is_empty() {
-                            for def in found_definitions {
-                                let ts_range =
-                                    state.to_ts_range((*usage_uri).clone(), usage_lsp_position);
-                                let byte_range = ts_range.start_byte..ts_range.end_byte;
+                    let per_file_defs = |level: Level| {
+                        let per_file = found_definitions
+                            .iter()
+                            .into_group_map_by(|it| it.uri.clone());
+                        per_file
+                            .into_iter()
+                            .map(|(uri, defs)| {
                                 // have to use def_uri, because we can't return a reference to def.uri from this function.
-                                let (def_uri, def_src) = inks.get_key_value(&def.uri).unwrap();
-                                messages.push(
-                                    annotate_snippets::Level::Error
-                                        .title("Disallowed definition")
-                                        .snippets([
-                                            Self::annotation_to_snippet(
-                                                &usage_uri,
-                                                &usage_ann,
-                                                "Expected this usage to be unresolved, …",
-                                            ),
-                                            annotate_snippets::Snippet::source(def_src)
-                                                .origin(def_uri.path().as_str())
-                                                // .line_start(def.range.start.line as usize + 1)
-                                                .fold(true)
-                                                .annotation(
-                                                    annotate_snippets::Level::Error
-                                                        .span(byte_range)
-                                                        .label("… but it links to this definition"),
-                                                ),
-                                        ]),
-                                );
-                            }
+                                let (def_uri, def_src) = inks.get_key_value(&uri).unwrap();
+                                Snippet::source(def_src)
+                                    .origin(def_uri.path().as_str())
+                                    .fold(true)
+                                    .annotations(defs.into_iter().map(|def| {
+                                        let def = state.to_ts_range(&uri, def.range);
+                                        level.span(def.start_byte..def.end_byte)
+                                    }))
+                            })
+                            .collect_vec()
+                    };
+                    if matches!(reference_kind, ReferenceKind::Nothing) {
+                        if !found_definitions.is_empty() {
+                            messages.push(
+                                Level::Error
+                                    .title("Disallowed definitions")
+                                    .snippet(Self::annotation_to_snippet(
+                                        &usage_uri,
+                                        &usage_ann,
+                                        "Expected this usage to be unresolved, …",
+                                    ))
+                                    .footer(
+                                        Level::Info
+                                            .title("… but it resolves to:")
+                                            .snippets(per_file_defs(Level::Error)),
+                                    ),
+                            )
                         }
                     } else {
                         for name in names {
                             let (def_uri, def_ann) = self.definitions.get(name).expect(
                                 "we checked that every reference has a definition, see above",
                             );
-                            let def_lsp_location = lsp_types::Location {
-                                uri: (*def_uri).clone(),
-                                range: def_ann.text_location.into(),
-                            };
-                            log::debug!(
-                                "expecting location for definition {name}: {:#?}",
-                                vec![Compact(def_lsp_location.clone())]
-                            );
-                            log::debug!(
-                                "found definitions for {name}: {:#?}",
-                                found_definitions.iter().cloned().map(Compact).collect_vec()
-                            );
+                            let range = def_ann.text_location.into();
+                            let does_reference = found_definitions
+                                .iter()
+                                .any(|def| def.uri == **def_uri && def.range == range);
 
-                            let does_reference = found_definitions.contains(&def_lsp_location);
-
-                            if *reference_kind == ReferenceKind::Any && !does_reference {
-                                let other_references = found_definitions
-                                    .iter()
-                                    .map(|other| {
-                                        let docid =
-                                            db.doc_ids().get_id(&other.uri).expect("must exist");
-                                        let span = db
-                                            .document(docid)
-                                            .ts_range(other.range)
-                                            .map(|it| it.start_byte..it.end_byte)
-                                            .unwrap();
-                                        let (uri, source) = inks.get_key_value(&other.uri).unwrap();
-                                        annotate_snippets::Snippet::source(source)
-                                            .origin(uri.path().as_str())
-                                            .annotation(annotate_snippets::Level::Info.span(span))
-                                    })
-                                    .collect_vec();
+                            if matches!(reference_kind, ReferenceKind::Any) && !does_reference {
                                 messages.push(
-                                    annotate_snippets::Level::Error
+                                    Level::Error
                                         .title("Required reference not found")
                                         .snippets([
                                             Self::annotation_to_snippet(
@@ -598,45 +577,43 @@ mod tests {
                                                 "… to reference this definition.",
                                             ),
                                         ])
-                                        .footer(if other_references.is_empty() {
-                                            annotate_snippets::Level::Error
-                                                .title("But it links nowhere.")
-                                        } else {
-                                            annotate_snippets::Level::Error
-                                                .title("But it only links to these locations:")
-                                                .snippets(other_references)
-                                        }),
+                                        .footer(per_file_defs(Level::Warning).pipe(|defs| {
+                                            if defs.is_empty() {
+                                                Level::Error.title("But it links nowhere.")
+                                            } else {
+                                                Level::Error
+                                                    .title("But it only links to these locations:")
+                                                    .snippets(defs)
+                                            }
+                                        })),
                                 );
-                            } else if *reference_kind == ReferenceKind::None && does_reference {
+                            } else if matches!(reference_kind, ReferenceKind::Not) && does_reference
+                            {
                                 messages.push(
-                                    annotate_snippets::Level::Error
-                                        .title("Forbidden reference found")
-                                        .snippets([
-                                            Self::annotation_to_snippet(
-                                                &usage_uri,
-                                                &usage_ann,
-                                                "Expected this usage …",
-                                            ),
-                                            Self::annotation_to_snippet(
-                                                &def_uri,
-                                                &def_ann,
-                                                "… to not reference this definition, but it does.",
-                                            ),
-                                        ]),
+                                    Level::Error.title("Forbidden reference found").snippets([
+                                        Self::annotation_to_snippet(
+                                            &usage_uri,
+                                            &usage_ann,
+                                            "Expected this usage …",
+                                        ),
+                                        Self::annotation_to_snippet(
+                                            &def_uri,
+                                            &def_ann,
+                                            "… to not reference this definition, but it does.",
+                                        ),
+                                    ]),
                                 );
                             }
                         }
                     }
                 }
 
-                if messages.is_empty() {
-                    false
-                } else {
+                if !messages.is_empty() {
                     let renderer = annotate_snippets::Renderer::styled();
                     for message in messages {
                         eprintln!("{}", renderer.render(message));
                     }
-                    true
+                    panic!("check failed");
                 }
             }
 
@@ -647,7 +624,6 @@ mod tests {
             ) -> annotate_snippets::Snippet<'a> {
                 annotate_snippets::Snippet::source(ann.full_text)
                     .origin(file.path().as_str())
-                    // .line_start(ann.text_location.start.row as usize + 1)
                     .fold(true)
                     .annotations([
                         annotate_snippets::Level::Error
@@ -694,9 +670,7 @@ mod tests {
                 checks.add_annotations(&uri, annotation_scanner.scan(contents))
             }
 
-            if checks.failed(&state) {
-                panic!("Link check for {fs_location} failed.");
-            }
+            checks.check(&state);
         }
     }
 }
