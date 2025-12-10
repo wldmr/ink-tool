@@ -29,8 +29,6 @@ pub enum GetNodeError {
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-struct WorkspaceDocsQ;
 
 type Names = Vec<(String, Meta)>;
 type WorkspaceNames = HashMap<String, Vec<Meta>>;
@@ -42,10 +40,14 @@ composite_query! {
     #[derive(Hash, Copy)]
     pub enum Ops -> OpsV;
 
-    use DocId -> InkDocument,
-        WorkspaceDocsQ -> DocIds,
-        DocumentSymbolsQ -> Option<DocumentSymbol>,
+    use DocumentSymbolsQ -> Option<DocumentSymbol>,
         WorkspaceSymbolsQ -> Option<Vec<WorkspaceSymbol>>;
+
+    #[derive(Hash, Copy)]
+    struct document -> InkDocument {(DocId);}
+
+    #[derive(Hash, Copy)]
+    struct doc_ids -> DocIds {;}
 
     #[derive(Hash, Copy)]
     struct document_names -> Names {(DocId);}
@@ -61,8 +63,8 @@ composite_query! {
 }
 
 // Inputs
-subquery!(Ops, DocId, InkDocument);
-subquery!(Ops, WorkspaceDocsQ, DocIds);
+subquery!(Ops, document, InkDocument);
+subquery!(Ops, doc_ids, DocIds);
 
 subquery!(Ops, document_names, Names, |self, db| {
     let doc = db.document(self.0);
@@ -120,11 +122,11 @@ subquery!(Ops, workspace_usages, WorkspaceUsages, |self, db| {
 // Extension traits
 pub trait InkGetters: Db<Ops> {
     fn doc_ids(&self) -> Cached<'_, Ops, DocIds> {
-        self.get(WorkspaceDocsQ)
+        self.get(doc_ids)
     }
 
     fn document(&self, id: DocId) -> Cached<'_, Ops, InkDocument> {
-        self.get(id)
+        self.get(document(id))
     }
 
     fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<DocumentSymbol>> {
@@ -155,7 +157,7 @@ impl<D: Db<Ops>> InkGetters for D {}
 
 pub trait InkSetters: Db<Ops> {
     fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut DocIds) -> C) -> bool {
-        self.modify(WorkspaceDocsQ, f)
+        self.modify(doc_ids, f)
     }
 
     fn modify_document<C: HasChanged>(
@@ -164,7 +166,7 @@ pub trait InkSetters: Db<Ops> {
         default: impl FnOnce() -> InkDocument,
         update: impl FnOnce(&mut InkDocument) -> C,
     ) -> bool {
-        self.modify_with_default(id, default, update)
+        self.modify_with_default(document(id), default, update)
     }
 }
 impl<D: InkGetters> InkSetters for D {}
