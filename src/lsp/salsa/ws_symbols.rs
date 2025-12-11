@@ -12,12 +12,12 @@ use type_sitter::{IncorrectKindCause, Node};
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub(in crate::lsp::salsa) struct WorkspaceSymbolsQ(pub DocId);
 
-impl mini_milc::Subquery<super::Ops, Option<Vec<WorkspaceSymbol>>> for WorkspaceSymbolsQ {
+impl mini_milc::Subquery<super::Ops, Vec<WorkspaceSymbol>> for WorkspaceSymbolsQ {
     fn value(
         &self,
         db: &impl mini_milc::Db<super::Ops>,
-        old: mini_milc::Old<Option<Vec<WorkspaceSymbol>>>,
-    ) -> mini_milc::Updated<Option<Vec<WorkspaceSymbol>>> {
+        old: mini_milc::Old<Vec<WorkspaceSymbol>>,
+    ) -> mini_milc::Updated<Vec<WorkspaceSymbol>> {
         use crate::lsp::salsa::InkGetters as _;
         let docs = db.doc_ids();
         let doc = db.document(self.0.clone());
@@ -25,7 +25,7 @@ impl mini_milc::Subquery<super::Ops, Option<Vec<WorkspaceSymbol>>> for Workspace
         let mut syms = WorkspaceSymbols::new(uri, &*doc);
         let mut cursor = doc.tree.root_node().walk();
         syms.traverse(&mut cursor);
-        old.update(Some(syms.sym))
+        old.update(syms.sym)
     }
 }
 

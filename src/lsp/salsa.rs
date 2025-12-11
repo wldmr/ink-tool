@@ -41,7 +41,7 @@ composite_query! {
     pub enum Ops -> OpsV;
 
     use DocumentSymbolsQ -> Option<DocumentSymbol>,
-        WorkspaceSymbolsQ -> Option<Vec<WorkspaceSymbol>>;
+        WorkspaceSymbolsQ -> Vec<WorkspaceSymbol>;
 
     #[derive(Hash, Copy)]
     struct document -> InkDocument {(DocId);}
@@ -133,7 +133,7 @@ pub trait InkGetters: Db<Ops> {
         self.get(doc_symbols::DocumentSymbolsQ(id))
     }
 
-    fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<Vec<WorkspaceSymbol>>> {
+    fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Vec<WorkspaceSymbol>> {
         self.get(ws_symbols::WorkspaceSymbolsQ(id))
     }
 

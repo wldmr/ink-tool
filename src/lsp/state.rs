@@ -108,27 +108,22 @@ impl State {
         }
     }
 
-    pub fn workspace_symbols(&mut self, query: String) -> Vec<WorkspaceSymbol> {
-        let query = query.to_lowercase();
-        let should_filter = !query.is_empty();
-        self.db
-            .doc_ids()
-            .ids()
-            .flat_map(|uri| {
-                if let Some(syms) = &*self.db.workspace_symbols(uri) {
-                    syms.iter()
-                        .filter(|sym| should_filter && sym.name.to_lowercase().contains(&query))
-                        .cloned()
-                        .collect()
-                } else {
-                    Vec::new()
+    pub fn workspace_symbols(&self, query: String) -> Vec<WorkspaceSymbol> {
+        let query = query.trim().to_lowercase();
+        let no_filter = query.is_empty();
+        let mut syms = Vec::new();
+        for id in self.db.doc_ids().ids() {
+            for sym in self.db.workspace_symbols(id).iter() {
+                if no_filter || sym.name.to_lowercase().contains(&query) {
+                    syms.push(sym.clone());
                 }
-            })
-            .collect()
+            }
+        }
+        syms
     }
 
     pub fn completions(
-        &mut self,
+        &self,
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
