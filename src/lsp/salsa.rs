@@ -40,7 +40,7 @@ composite_query! {
     #[derive(Hash, Copy)]
     pub enum Ops -> OpsV;
 
-    use DocumentSymbolsQ -> Option<DocumentSymbol>,
+    use DocumentSymbolsQ -> Vec<DocumentSymbol>,
         WorkspaceSymbolsQ -> Vec<WorkspaceSymbol>;
 
     #[derive(Hash, Copy)]
@@ -70,8 +70,9 @@ subquery!(Ops, document_names, Names, |self, db| {
     let doc = db.document(self.0);
     let to_lsp_range = |r| doc.lsp_range(&r);
     let mut visitor = names::Names::new(self.0, &doc.text, &to_lsp_range);
-    visitor.traverse(&mut doc.tree.root_node().walk());
-    visitor.into_names()
+    let mut names = Vec::new();
+    visitor.traverse(&mut doc.tree.root_node().walk(), &mut names);
+    names
 });
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
@@ -129,7 +130,7 @@ pub trait InkGetters: Db<Ops> {
         self.get(document(id))
     }
 
-    fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Option<DocumentSymbol>> {
+    fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Vec<DocumentSymbol>> {
         self.get(doc_symbols::DocumentSymbolsQ(id))
     }
 

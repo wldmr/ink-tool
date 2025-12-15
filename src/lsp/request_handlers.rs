@@ -45,12 +45,8 @@ type Response<T> = Result<T, ResponseError>;
 
 impl RequestHandler for request::DocumentSymbolRequest {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-        let response = state
-            .lock()?
-            .document_symbols(params.text_document.uri)?
-            .and_then(|it| it.children)
-            .map(DocumentSymbolResponse::Nested);
-        Ok(response)
+        let symbols = state.lock()?.document_symbols(params.text_document.uri)?;
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 }
 

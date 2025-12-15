@@ -65,6 +65,5 @@ pub mod traversal {
 }
 
 mod visitor;
-pub(crate) use visitor::Visit;
 pub(crate) use visitor::VisitInstruction;
 pub(crate) use visitor::Visitor;

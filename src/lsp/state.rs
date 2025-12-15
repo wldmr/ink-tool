@@ -100,7 +100,7 @@ impl State {
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
-    pub fn document_symbols(&self, uri: Uri) -> Result<Option<DocumentSymbol>, DocumentNotFound> {
+    pub fn document_symbols(&self, uri: Uri) -> Result<Vec<DocumentSymbol>, DocumentNotFound> {
         if let Some(id) = self.db.doc_ids().get_id(&uri) {
             Ok(self.db.document_symbols(id).clone())
         } else {
@@ -147,7 +147,6 @@ impl State {
                 .filter(|(key, _)| key.contains(longest))
                 .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
                 .filter(|(_, meta)| meta.visible_at(docid, position))
-                .inspect(|it| log::debug!("Found {it:?}"))
                 .map(|(key, meta)| lsp_types::CompletionItem {
                     label: key.clone(),
                     label_details: None,
