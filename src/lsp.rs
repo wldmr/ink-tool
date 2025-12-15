@@ -101,13 +101,13 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         )),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
-            trigger_characters: Some(
-                vec!["->", "-> ", "{"]
+            trigger_characters: Some(["->", "-> ", "{"].into_iter().map(str::to_string).collect()),
+            all_commit_characters: Some(
+                [" ", "}", "+", "-", "=", "/", "%", "|"]
                     .into_iter()
-                    .map(str::to_string)
+                    .map(str::to_owned)
                     .collect(),
             ),
-            all_commit_characters: None,
             work_done_progress_options: WorkDoneProgressOptions {
                 work_done_progress: Some(false),
             },
