@@ -60,7 +60,6 @@ pub struct Names<'a> {
     knot: Option<Environment>,
     stitch: Option<Environment>,
     list: Option<Environment>,
-    names: Vec<(Name, Meta)>,
 }
 
 impl<'a> Names<'a> {
@@ -77,17 +76,18 @@ impl<'a> Names<'a> {
             knot: None,
             stitch: None,
             list: None,
-            names: Default::default(),
         }
-    }
-
-    pub fn into_names(self) -> Vec<(Name, Meta)> {
-        self.names
     }
 }
 
 impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
-    fn visit(&mut self, node: AllNamed<'a>) -> VisitInstruction<Self> {
+    type State = Vec<(Name, Meta)>;
+
+    fn visit(
+        &mut self,
+        node: AllNamed<'a>,
+        names: &mut Self::State,
+    ) -> VisitInstruction<Self::State> {
         use AllNamed::*;
         use VisitInstruction::{Descend, Ignore};
         match node {
@@ -108,7 +108,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             | Stitch(_) => Descend,
 
             Global(def) => {
-                self.names.push(self.global(
+                names.push(self.global(
                     def.name(),
                     match def.keyword().ok() {
                         Some(kw) if kw.as_const().is_some() => DefinitionInfo::Const,
@@ -119,8 +119,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             }
 
             List(list) => {
-                self.names
-                    .push(self.global(list.name(), DefinitionInfo::List));
+                names.push(self.global(list.name(), DefinitionInfo::List));
                 let extent = self.lsp_range(list);
                 self.list = Some(Environment {
                     nodeid: NodeId::new(self.docid, list.name()),
@@ -137,7 +136,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 let item = self.text(def.name());
                 let site = def.name();
                 let list = self.list.as_ref().expect("must have been set");
-                self.names.extend([
+                names.extend([
                     self.name(
                         format!("{item}"),
                         site,
@@ -211,7 +210,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                         },
                     )
                 };
-                self.names.push(name);
+                names.push(name);
                 Descend
             }
 
@@ -240,12 +239,12 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     let k = &knot.name;
                     let s = self.text(name);
                     let extent = Some(knot.extent);
-                    self.names.extend([
+                    names.extend([
                         self.name(format!("{s}"), name, extent, kind),
                         self.name(format!("{k}.{s}"), name, None, kind),
                     ]);
                 } else {
-                    self.names.push(self.global(name, kind));
+                    names.push(self.global(name, kind));
                 }
                 Descend
             }
@@ -255,17 +254,17 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 let l = self.text(name);
                 let kind = DefinitionInfo::Label;
                 match (&self.knot, &self.stitch) {
-                    (None, None) => self.names.push(self.global(name, kind)),
+                    (None, None) => names.push(self.global(name, kind)),
                     (None, Some(stitch)) => {
                         let s = &stitch.name;
-                        self.names.extend([
+                        names.extend([
                             self.local(name, stitch.extent, kind),
                             self.name(format!("{s}.{l}"), name, Some(stitch.extent), kind),
                         ]);
                     }
                     (Some(knot), None) => {
                         let k = &knot.name;
-                        self.names.extend([
+                        names.extend([
                             self.local(name, knot.extent, kind),
                             self.name(format!("{k}.{l}"), name, None, kind),
                         ]);
@@ -276,7 +275,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                         let k = &knot.name;
                         let s = &stitch.name;
                         let l = &self.text(name);
-                        self.names.extend([
+                        names.extend([
                             self.name(format!("{k}.{l}"), name, None, kind),
                             self.name(format!("{k}.{s}.{l}"), name, None, kind),
                             self.name(format!("{l}"), name, Some(knot.extent), kind),
@@ -298,7 +297,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     (Some(knot), _) => knot.extent,
                     (None, None) => unreachable!("Must be inside block to find param"),
                 };
-                self.names.push(
+                names.push(
                     self.local(
                         name,
                         extent,
@@ -320,14 +319,12 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     (_, Some(stitch)) => stitch.temp_extent,
                     (Some(knot), _) => knot.temp_extent,
                 };
-                self.names
-                    .push(self.local(temp.name(), extent, DefinitionInfo::Temp));
+                names.push(self.local(temp.name(), extent, DefinitionInfo::Temp));
                 Ignore
             }
 
             External(external) => {
-                self.names
-                    .push(self.global(external.name(), DefinitionInfo::External));
+                names.push(self.global(external.name(), DefinitionInfo::External));
                 Ignore // Doesn't have body, so we don't need to define names for them
             }
 
@@ -342,16 +339,17 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
         }
     }
 
-    fn combine(&mut self, _: Self) {
-        // noop
-    }
-
-    fn visit_error(&mut self, err: type_sitter::IncorrectKind) -> VisitInstruction<Self> {
+    fn visit_error(&mut self, err: type_sitter::IncorrectKind) -> VisitInstruction<Self::State> {
         match err.cause() {
             type_sitter::IncorrectKindCause::Error => VisitInstruction::Descend,
             type_sitter::IncorrectKindCause::Missing => VisitInstruction::Ignore,
             type_sitter::IncorrectKindCause::OtherKind(_) => VisitInstruction::Descend,
         }
+    }
+
+    fn combine(_: &mut Self::State, _: Self::State) {
+        // parent.append(&mut children); // More of a failsafe; we shouldn't actuall nest these.
+        unreachable!("We don't have sub-states")
     }
 }
 

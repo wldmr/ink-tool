@@ -1,5 +1,5 @@
 use super::state::DocumentNotFound;
-use super::state::GotoDefinitionError;
+use super::state::GotoLocationError;
 use super::RequestHandler;
 use super::SharedState;
 use lsp_server::ResponseError;
@@ -16,8 +16,8 @@ impl From<DocumentNotFound> for ResponseError {
     }
 }
 
-impl From<GotoDefinitionError> for ResponseError {
-    fn from(value: GotoDefinitionError) -> Self {
+impl From<GotoLocationError> for ResponseError {
+    fn from(value: GotoLocationError) -> Self {
         Self {
             code: lsp_server::ErrorCode::RequestFailed as i32,
             message: value.to_string(),
@@ -45,12 +45,8 @@ type Response<T> = Result<T, ResponseError>;
 
 impl RequestHandler for request::DocumentSymbolRequest {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-        let response = state
-            .lock()?
-            .document_symbols(params.text_document.uri)?
-            .and_then(|it| it.children)
-            .map(DocumentSymbolResponse::Nested);
-        Ok(response)
+        let symbols = state.lock()?.document_symbols(params.text_document.uri)?;
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 }
 
@@ -87,16 +83,16 @@ impl RequestHandler for request::GotoDefinition {
     }
 }
 
-// impl RequestHandler for request::References {
-//     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
-//         let refs = state.lock()?.goto_references(
-//             &params.text_document_position.text_document.uri,
-//             params.text_document_position.position,
-//         )?;
-//         let response = match refs.len() {
-//             0 => None,
-//             _ => Some(refs),
-//         };
-//         Ok(response)
-//     }
-// }
+impl RequestHandler for request::References {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        let refs = state.lock()?.goto_references(
+            params.text_document_position.text_document.uri,
+            params.text_document_position.position,
+        )?;
+        let response = match refs.len() {
+            0 => None,
+            _ => Some(refs),
+        };
+        Ok(response)
+    }
+}

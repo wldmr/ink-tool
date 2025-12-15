@@ -89,7 +89,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         definition_provider: Some(OneOf::Left(true)),
-        references_provider: None, //Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -101,13 +101,13 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         )),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
-            trigger_characters: Some(
-                vec!["->", "-> ", "{"]
+            trigger_characters: Some(["->", "-> ", "{"].into_iter().map(str::to_string).collect()),
+            all_commit_characters: Some(
+                [" ", "}", "+", "-", "=", "/", "%", "|"]
                     .into_iter()
-                    .map(str::to_string)
+                    .map(str::to_owned)
                     .collect(),
             ),
-            all_commit_characters: None,
             work_done_progress_options: WorkDoneProgressOptions {
                 work_done_progress: Some(false),
             },
@@ -136,7 +136,7 @@ fn handle_request(request: Request, state: &SharedState) -> Result<Response, Req
         WorkspaceSymbolRequest,
         Completion,
         GotoDefinition,
-        // References,
+        References,
     }
 }
 
