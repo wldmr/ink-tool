@@ -1,38 +1,15 @@
 use crate::{
-    ink_syntax::{
-        types::{AllNamed, GlobalKeyword},
-        VisitInstruction, Visitor,
-    },
-    lsp::{document::InkDocument, salsa::DocId},
+    document::InkDocument,
+    types::{AllNamed, GlobalKeyword},
+    visitor::{VisitInstruction, Visitor},
 };
 use builder::SymbolBuilder;
 use line_index::{LineCol, LineIndex, WideEncoding};
-use lsp_types::{DocumentSymbol, Range, SymbolKind};
+use lsp_types::Range;
+use lsp_types::{DocumentSymbol, SymbolKind};
 use type_sitter::{IncorrectKindCause, Node};
 
 // IDEA: Maybe this shouldn't return LSP types?
-
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
-pub(in crate::lsp::salsa) struct DocumentSymbolsQ(pub DocId);
-
-impl mini_milc::Subquery<super::Ops, Vec<DocumentSymbol>> for DocumentSymbolsQ {
-    fn value(
-        &self,
-        db: &impl mini_milc::Db<super::Ops>,
-        old: mini_milc::Old<Vec<DocumentSymbol>>,
-    ) -> mini_milc::Updated<Vec<DocumentSymbol>> {
-        use crate::lsp::salsa::InkGetters as _;
-        let doc = db.document(self.0.clone());
-        let mut syms = DocumentSymbols::new(&*doc);
-        let mut cursor = doc.tree.root_node().walk();
-        let mut dummy = SymbolBuilder::new(SymbolKind::FILE)
-            .name("dummy.ink")
-            .range(Range::default())
-            .build();
-        syms.traverse(&mut cursor, &mut dummy);
-        old.update(dummy.children.unwrap_or_default())
-    }
-}
 
 mod builder {
     use lsp_types::{DocumentSymbol, Range, SymbolKind};
@@ -141,6 +118,12 @@ pub(crate) fn lsp_range(
     lsp_types::Range { start, end }
 }
 
+pub(crate) fn dummy_file_symbol() -> DocumentSymbol {
+    SymbolBuilder::new(SymbolKind::FILE)
+        .name("dummy.ink")
+        .range(Range::default())
+        .build()
+}
 pub(super) struct DocumentSymbols<'a> {
     text: &'a str,
     lines: &'a LineIndex,

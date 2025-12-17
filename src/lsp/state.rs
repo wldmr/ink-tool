@@ -1,9 +1,9 @@
-use super::document::{DocumentEdit, InkDocument};
 use crate::lsp::{
     idset::Id,
-    salsa::{self, names::Meta, DocId, InkGetters, InkSetters},
+    salsa::{self, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
+use ink_document::{DocumentEdit, InkDocument, Meta};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use mini_milc::Cached;
@@ -69,7 +69,7 @@ impl State {
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
         if let Some(id) = self.db.doc_ids().get_id(&uri) {
-            Ok(self.db.document(id).text.clone())
+            Ok(self.db.document(id).text().to_owned())
         } else {
             Err(DocumentNotFound(uri))
         }
@@ -127,9 +127,9 @@ impl State {
         uri: Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        let (doc, docid) = self.get_doc_and_id(uri)?;
+        let (doc, this_doc) = self.get_doc_and_id(uri)?;
 
-        let Some(search_terms) = doc.usage_at(docid, position) else {
+        let Some(search_terms) = doc.usage_at(position) else {
             return Ok(Default::default());
         };
 
@@ -139,15 +139,17 @@ impl State {
         log::debug!("Trying completion for '{longest}'.");
 
         let ws_names = self.db.workspace_names();
-        use crate::lsp::document::ids::DefinitionInfo::*;
+        use ink_document::ids::DefinitionInfo::*;
         use lsp_types::CompletionItemKind;
         Ok(Some(
             ws_names
                 .iter()
                 .filter(|(key, _)| key.contains(longest))
                 .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
-                .filter(|(_, meta)| meta.visible_at(docid, position))
-                .map(|(key, meta)| lsp_types::CompletionItem {
+                .filter(|(_, (docid, meta))| {
+                    meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(position))
+                })
+                .map(|(key, (_, meta))| lsp_types::CompletionItem {
                     label: key.clone(),
                     label_details: None,
                     kind: Some(match meta.id.info() {
@@ -213,10 +215,10 @@ impl State {
         uri: Uri,
         pos: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let (doc, docid) = self.get_doc_and_id(uri)?;
+        let (doc, this_doc) = self.get_doc_and_id(uri)?;
         let docs = self.db.doc_ids();
 
-        let Some(search_terms) = doc.usage_at(docid, pos) else {
+        let Some(search_terms) = doc.usage_at(pos) else {
             return Ok(Vec::new());
         };
 
@@ -228,25 +230,25 @@ impl State {
                 continue;
             };
 
-            let (locals, globals): (Vec<&Meta>, Vec<&Meta>) = metas
+            let (globals, locals): (Vec<&(DocId, Meta)>, Vec<&(DocId, Meta)>) = metas
                 .iter()
-                .filter(|it| it.visible_at(docid, pos))
-                .partition(|it| it.extent.is_some());
+                .filter(|(docid, meta)| {
+                    meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(pos))
+                })
+                .partition(|(_, meta)| meta.is_global());
 
             // Find "most local" thing.
-            let local = locals.into_iter().min_by(|a, b| a.cmp_extent(b));
-            if let Some(def) = local {
-                result.push(lsp_types::Location::new(
-                    docs[def.id.file()].clone(),
-                    def.site,
-                ));
+            let local = locals.into_iter().min_by(|a, b| a.1.cmp_extent(&b.1));
+            if let Some((file, def)) = local {
+                result.push(lsp_types::Location::new(docs[*file].clone(), def.site));
             } else {
                 // We "allow" ambiguity for globals, since we can't know which definition the user meant
                 // (there'll be an error message and they'll have to fix it).
                 result.extend(
                     globals
                         .into_iter()
-                        .map(|it| lsp_types::Location::new(docs[it.id.file()].clone(), it.site)),
+                        .copied()
+                        .map(|(file, def)| lsp_types::Location::new(docs[file].clone(), def.site)),
                 );
             }
         }
@@ -259,13 +261,13 @@ impl State {
         from_uri: Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let (doc, docid) = self.get_doc_and_id(from_uri)?;
+        let (doc, this_doc) = self.get_doc_and_id(from_uri)?;
         let docs = self.db.doc_ids();
         let mut result = Default::default();
         let Some(def) = doc.definition_at(from_position) else {
             return Ok(result);
         };
-        let doc_names = self.db.document_names(docid);
+        let doc_names = self.db.document_names(this_doc);
         let my_names = doc_names
             .iter()
             .filter(|(_name, meta)| meta.site == def.range);
@@ -274,7 +276,9 @@ impl State {
         for (name, meta) in my_names {
             if let Some(usages) = ws_usages.get(name) {
                 for (file, range) in usages.iter().copied() {
-                    if meta.visible_at(file, range.start) {
+                    if meta.is_global()
+                        || (this_doc == file && meta.is_locally_visible_at(range.start))
+                    {
                         let uri = docs[file].clone();
                         result.push(lsp_types::Location { uri, range });
                     }

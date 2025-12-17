@@ -1,10 +1,10 @@
-use crate::ink_syntax;
-use crate::ink_syntax::traversal::parent;
-use crate::ink_syntax::types::{AllNamed, Definitions, DivertTarget, QualifiedName, Usages};
-use crate::lsp::document::ids::{DefinitionInfo, NodeId, UsageInfo};
-use crate::lsp::idset::Id;
-use crate::lsp::salsa::GetNodeError;
-use crate::lsp::state::InvalidPosition;
+use crate::ids::{self, NodeId, UsageInfo};
+use crate::names::{self, Name};
+use crate::traversal::{self, parent};
+use crate::types::{self, AllNamed, Definitions, DivertTarget, QualifiedName};
+use crate::visitor::Visitor as _;
+use crate::Meta;
+use derive_more::derive::{Display, Error, From};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::{Position, Uri};
 use tap::Pipe as _;
@@ -14,15 +14,27 @@ use type_sitter::{Node, UntypedNode};
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
 // Everthing else works in terms of LSP types.
 
-pub mod ids;
-
-pub(crate) struct InkDocument {
+pub struct InkDocument {
     pub(crate) tree: tree_sitter::Tree,
     pub(crate) text: String,
     pub(crate) parser: tree_sitter::Parser,
     pub(crate) enc: Option<WideEncoding>,
     pub(crate) lines: line_index::LineIndex,
 }
+
+#[derive(Debug, Clone, Display, Error, From)]
+#[display("Could not go to node.")]
+pub enum GetNodeError {
+    #[display("Node type didn't match")]
+    InvalidType,
+    PositionOutOfBounds(InvalidPosition),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
+#[display("Not a valid position: {}:{}", _0.line, _0.character)]
+pub struct InvalidPosition(#[error(not(source))] pub(crate) Position);
+
+pub type Usages = Vec<(String, lsp_types::Range)>;
 
 impl Default for InkDocument {
     fn default() -> Self {
@@ -53,7 +65,7 @@ impl std::hash::Hash for InkDocument {
     }
 }
 
-pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
+pub type DocumentEdit<S> = (Option<lsp_types::Range>, S);
 
 pub struct UsageUnderCursor<'a> {
     pub usage: ids::Usage,
@@ -68,7 +80,7 @@ pub struct DefinitionUnderCursor<'a> {
 
 /// Public API
 impl InkDocument {
-    pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
+    pub fn new(text: String, enc: Option<WideEncoding>) -> Self {
         let mut parser = Parser::new();
         parser
             .set_language(&tree_sitter_ink::LANGUAGE.into())
@@ -86,11 +98,11 @@ impl InkDocument {
         }
     }
 
-    pub(crate) fn new_empty(enc: Option<WideEncoding>) -> Self {
+    pub fn new_empty(enc: Option<WideEncoding>) -> Self {
         Self::new(String::new(), enc)
     }
 
-    pub(crate) fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
+    pub fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
         // log::trace!("applying {} edits", edits.len());
         for (range, new_text) in edits.into_iter() {
             let edit = range.map(|range| self.input_edit(range, new_text.as_ref()));
@@ -111,6 +123,10 @@ impl InkDocument {
         }
     }
 
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
         let node: Definitions = self.thing_under_cursor(pos)?;
         let site = match node {
@@ -121,8 +137,8 @@ impl InkDocument {
             Definitions::List(list) => list.name().upcast(),
             Definitions::ListValueDef(lvd) => lvd.name().upcast(),
             Definitions::Param(param) => match param.value().ok()? {
-                ink_syntax::types::ParamValue::Divert(divert) => divert.target().upcast(),
-                ink_syntax::types::ParamValue::Identifier(identifier) => identifier.upcast(),
+                types::ParamValue::Divert(divert) => divert.target().upcast(),
+                types::ParamValue::Identifier(identifier) => identifier.upcast(),
             },
             Definitions::Stitch(stitch) => stitch.name().upcast(),
             Definitions::TempDef(temp_def) => temp_def.name().upcast(),
@@ -134,7 +150,7 @@ impl InkDocument {
         })
     }
 
-    pub fn usage_at(&self, file: Id<Uri>, pos: Position) -> Option<UsageUnderCursor<'_>> {
+    pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
         let node: DivertTarget<'_> = self.thing_under_cursor(pos)?;
 
@@ -168,12 +184,12 @@ impl InkDocument {
         };
 
         let find_redirect_kind = |node: UntypedNode| {
-            parent::<_, ink_syntax::types::Redirect>(node)
+            parent::<_, types::Redirect>(node)
                 .next()
                 .map(|it| match it {
-                    ink_syntax::types::Redirect::Divert(_) => ids::RedirectKind::Divert,
-                    ink_syntax::types::Redirect::Thread(_) => ids::RedirectKind::Thread,
-                    ink_syntax::types::Redirect::Tunnel(tunnel) => {
+                    types::Redirect::Divert(_) => ids::RedirectKind::Divert,
+                    types::Redirect::Thread(_) => ids::RedirectKind::Thread,
+                    types::Redirect::Tunnel(tunnel) => {
                         if tunnel.target().is_some() {
                             ids::RedirectKind::NamedTunnelReturn
                         } else {
@@ -186,13 +202,13 @@ impl InkDocument {
         let (usage, range) = match node {
             DivertTarget::Call(call) => {
                 match call.name().ok() {
-                    Some(Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
-                    Some(Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
+                    Some(types::Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
+                    Some(types::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
                     _ => {}
                 };
                 (
                     ids::Usage(
-                        NodeId::new(file, call.name()),
+                        NodeId::new(call.name()),
                         UsageInfo {
                             redirect: find_redirect_kind(call.upcast()),
                             params: true,
@@ -205,7 +221,7 @@ impl InkDocument {
                 terms.push(self.text_of(ident));
                 (
                     ids::Usage(
-                        NodeId::new(file, ident),
+                        NodeId::new(ident),
                         UsageInfo {
                             redirect: find_redirect_kind(ident.upcast()),
                             params: false,
@@ -218,7 +234,7 @@ impl InkDocument {
                 extract_terms_from_qname(qname);
                 (
                     ids::Usage(
-                        NodeId::new(file, qname),
+                        NodeId::new(qname),
                         UsageInfo {
                             redirect: find_redirect_kind(qname.upcast()),
                             params: false,
@@ -234,6 +250,47 @@ impl InkDocument {
             range: self.lsp_range(&range),
             terms,
         })
+    }
+
+    pub fn usages(&self) -> Usages {
+        let ink = type_sitter::UntypedNode::new(self.tree.root_node());
+        traversal::depth_first::<_, types::Usages>(ink)
+            .map(|node| match node {
+                types::Usages::Identifier(ident) => ident.range(),
+                types::Usages::QualifiedName(qname) => qname.range(),
+            })
+            .map(|range| {
+                (
+                    self.text[range.start_byte..range.end_byte].to_owned(),
+                    self.lsp_range(&range),
+                )
+            })
+            .collect::<Usages>()
+    }
+
+    pub fn names(&self) -> Vec<(Name, Meta)> {
+        let to_lsp_range = |r| self.lsp_range(&r);
+        let mut visitor = names::Names::new(&self.text, &to_lsp_range);
+        let mut names = Vec::new();
+        visitor.traverse(&mut self.tree.root_node().walk(), &mut names);
+        names
+    }
+
+    pub fn doc_symbols(&self) -> Vec<lsp_types::DocumentSymbol> {
+        let mut visitor = crate::doc_symbols::DocumentSymbols::new(self);
+        let mut cursor = self.tree.root_node().walk();
+        let mut dummy = crate::doc_symbols::dummy_file_symbol();
+        visitor.traverse(&mut cursor, &mut dummy);
+        dummy.children.unwrap_or_default()
+    }
+
+    pub fn workspace_symbols(&self, uri: &Uri) -> Vec<lsp_types::WorkspaceSymbol> {
+        let mut visitor = crate::ws_symbols::WorkspaceSymbols::new(&uri, self);
+        let mut cursor = self.tree.root_node().walk();
+        let mut syms = Vec::new();
+
+        visitor.traverse(&mut cursor, &mut syms);
+        syms
     }
 }
 
@@ -412,10 +469,8 @@ impl InkDocument {
 }
 #[cfg(test)]
 mod tests {
-    use crate::lsp::salsa;
 
     use super::{DocumentEdit, InkDocument};
-    use indoc::indoc;
     use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
     use test_case::test_case;

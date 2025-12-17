@@ -1,6 +1,3 @@
-use crate::lsp::idset::Id;
-use lsp_types::Uri;
-
 // We use the `name(type)` syntax instead of `name: type` because that’s what
 // rustfmt can actually format (it gives up on anything more complicated).
 // Otherwise we’d have to format it ourselves which is tedious.
@@ -22,16 +19,12 @@ macro_rules! define_id_tuples {
 define_id_tuples![Definition(NodeId, DefinitionInfo), Usage(NodeId, UsageInfo),];
 
 impl Definition {
-    pub fn new<'a, N: type_sitter::Node<'a>>(file: Id<Uri>, node: N, info: DefinitionInfo) -> Self {
-        Self(NodeId::new(file, node), info)
+    pub fn new<'a, N: type_sitter::Node<'a>>(node: N, info: DefinitionInfo) -> Self {
+        Self(NodeId::new(node), info)
     }
 
     pub fn node(&self) -> NodeId {
         self.0
-    }
-
-    pub fn file(&self) -> Id<Uri> {
-        self.0.file()
     }
 
     pub fn info(&self) -> DefinitionInfo {
@@ -40,16 +33,12 @@ impl Definition {
 }
 
 impl Usage {
-    pub fn new<'a, N: type_sitter::Node<'a>>(file: Id<Uri>, node: N, info: UsageInfo) -> Self {
-        Self(NodeId::new(file, node), info)
+    pub fn new<'a, N: type_sitter::Node<'a>>(node: N, info: UsageInfo) -> Self {
+        Self(NodeId::new(node), info)
     }
 
     pub fn node(&self) -> NodeId {
         self.0
-    }
-
-    pub fn file(&self) -> Id<Uri> {
-        self.0.file()
     }
 
     pub fn info(&self) -> UsageInfo {
@@ -58,15 +47,11 @@ impl Usage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(Id<Uri>, usize);
+pub struct NodeId(usize);
 
 impl NodeId {
-    pub fn new<'a, N: type_sitter::Node<'a>>(file: Id<Uri>, node: N) -> Self {
-        Self(file, node.raw().id())
-    }
-
-    pub fn file(&self) -> Id<Uri> {
-        self.0
+    pub fn new<'a, N: type_sitter::Node<'a>>(node: N) -> Self {
+        Self(node.raw().id())
     }
 }
 

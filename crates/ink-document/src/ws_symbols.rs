@@ -1,36 +1,13 @@
 use super::doc_symbols::lsp_range;
 use crate::{
-    ink_syntax::{
-        types::{AllNamed, GlobalKeyword},
-        VisitInstruction, Visitor,
-    },
-    lsp::{document::InkDocument, salsa::DocId},
+    types::{AllNamed, GlobalKeyword},
+    visitor::{VisitInstruction, Visitor},
+    InkDocument,
 };
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
 use type_sitter::{IncorrectKindCause, Node};
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
-pub(in crate::lsp::salsa) struct WorkspaceSymbolsQ(pub DocId);
-
-impl mini_milc::Subquery<super::Ops, Vec<WorkspaceSymbol>> for WorkspaceSymbolsQ {
-    fn value(
-        &self,
-        db: &impl mini_milc::Db<super::Ops>,
-        old: mini_milc::Old<Vec<WorkspaceSymbol>>,
-    ) -> mini_milc::Updated<Vec<WorkspaceSymbol>> {
-        use crate::lsp::salsa::InkGetters as _;
-        let docs = db.doc_ids();
-        let doc = db.document(self.0.clone());
-        let uri = docs.get(self.0).unwrap();
-        let mut syms = WorkspaceSymbols::new(uri, &*doc);
-        let mut cursor = doc.tree.root_node().walk();
-        let mut new = Vec::new();
-        syms.traverse(&mut cursor, &mut new);
-        old.update(new)
-    }
-}
-
-struct WorkspaceSymbols<'a> {
+pub(crate) struct WorkspaceSymbols<'a> {
     uri: &'a Uri,
     doc: &'a InkDocument,
     knot: Option<&'a str>,

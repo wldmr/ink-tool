@@ -1,4 +1,4 @@
-pub mod types {
+pub(crate) mod types {
     include!(concat!(env!("OUT_DIR"), "/type_sitter_ink.rs"));
 }
 
@@ -64,6 +64,14 @@ pub mod traversal {
     }
 }
 
+mod doc_symbols;
+mod document;
+pub mod ids;
+mod names;
 mod visitor;
-pub(crate) use visitor::VisitInstruction;
-pub(crate) use visitor::Visitor;
+mod ws_symbols;
+
+pub use document::{
+    DefinitionUnderCursor, DocumentEdit, GetNodeError, InkDocument, UsageUnderCursor, Usages,
+};
+pub use names::Meta;
