@@ -289,17 +289,14 @@ impl State {
     }
 
     #[cfg(test)]
-    fn to_ts_range(&self, uri: &Uri, loc: lsp_types::Range) -> tree_sitter::Range {
+    fn byte_range_of(&self, uri: &Uri, loc: lsp_types::Range) -> std::ops::Range<usize> {
         // only used in tests, so we'll crash liberally!
         let id = self
             .db
             .doc_ids()
             .get_id(uri)
             .expect("don't call with with a non-existent document");
-        self.db
-            .document(id)
-            .ts_range(loc)
-            .expect("don't call this with an invalid location")
+        self.db.document(id).byte_range(loc)
     }
 
     fn get_doc_and_id(
@@ -526,8 +523,8 @@ mod tests {
                                     .origin(def_uri.path().as_str())
                                     .fold(true)
                                     .annotations(defs.into_iter().map(|def| {
-                                        let def = state.to_ts_range(&uri, def.range);
-                                        level.span(def.start_byte..def.end_byte)
+                                        let range = state.byte_range_of(&uri, def.range);
+                                        level.span(range)
                                     }))
                             })
                             .collect_vec()

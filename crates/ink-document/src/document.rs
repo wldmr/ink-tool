@@ -1,13 +1,12 @@
 use crate::ids::{self, NodeId, UsageInfo};
 use crate::names::{self, Name};
 use crate::traversal::{self, parent};
-use crate::types::{self, AllNamed, Definitions, DivertTarget, QualifiedName};
+use crate::types::{self, Definitions, DivertTarget, QualifiedName};
 use crate::visitor::Visitor as _;
 use crate::Meta;
 use derive_more::derive::{Display, Error, From};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::{Position, Uri};
-use tap::Pipe as _;
 use tree_sitter::Parser;
 use type_sitter::{Node, UntypedNode};
 
@@ -127,6 +126,12 @@ impl InkDocument {
         &self.text
     }
 
+    pub fn byte_range(&self, range: lsp_types::Range) -> std::ops::Range<usize> {
+        let start = self.to_byte(range.start);
+        let end = self.to_byte(range.end);
+        start..end
+    }
+
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
         let node: Definitions = self.thing_under_cursor(pos)?;
         let site = match node {
@@ -152,7 +157,7 @@ impl InkDocument {
 
     pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let node: DivertTarget<'_> = self.thing_under_cursor(pos)?;
+        let node: DivertTarget = self.thing_under_cursor(pos)?;
 
         // The “terms” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -309,7 +314,7 @@ impl InkDocument {
         // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
         // and we want the latter if it is there.
         root.named_descendant_for_byte_range(byte_pos, byte_pos)
-            .map(UntypedNode::try_from_raw)
+            .map(UntypedNode::new)
             .and_then(|node| parent::<_, N>(node).last())
             .or_else(|| {
                 // If we couldn’t find anything interesting at pos, try one byte to the left. This
@@ -318,7 +323,7 @@ impl InkDocument {
                 // found to refer to `please_compl` if we didn’t account for this.
                 let one_to_the_left = byte_pos.checked_sub(1)?;
                 root.named_descendant_for_byte_range(one_to_the_left, one_to_the_left)
-                    .map(UntypedNode::try_from_raw)
+                    .map(UntypedNode::new)
                     .and_then(|node| parent::<_, N>(node).last())
             })
     }
@@ -386,87 +391,13 @@ impl InkDocument {
         &self.text[n.byte_range()]
     }
 
-    pub(super) fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
+    fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(node.start_point);
         let end = self.lsp_position(node.end_point);
         lsp_types::Range { start, end }
     }
-
-    /// Walk up the parents of this node; return the largest node that can be a (potentially qualified) name of something.
-    fn widen_to_full_name<'t>(this: DivertTarget<'t>) -> DivertTarget<'t> {
-        let maybe_parent = this
-            .parent()
-            .map(|it| DivertTarget::try_from_raw(*it.raw()));
-        if let Some(Ok(parent)) = maybe_parent {
-            Self::widen_to_full_name(parent)
-        } else {
-            this
-        }
-    }
-
-    pub fn get_node_at<'a, T>(&'a self, pos: lsp_types::Position) -> Result<T, GetNodeError>
-    where
-        T: type_sitter::Node<'a>,
-    {
-        let (point, _byte) = self.ts_point(pos)?;
-        self.tree
-            .root_node()
-            .named_descendant_for_point_range(point, point)
-            .ok_or_else(|| InvalidPosition(pos))?
-            .pipe(T::try_from_raw)
-            .map_err(|_| GetNodeError::InvalidType)
-    }
-
-    pub fn named_cst_node_at(
-        &self,
-        pos: lsp_types::Position,
-    ) -> Result<AllNamed<'_>, InvalidPosition> {
-        let (point, _byte) = self.ts_point(pos)?;
-        self.tree
-            .root_node()
-            .named_descendant_for_point_range(point, point)
-            .and_then(|node| AllNamed::try_from_raw(node).ok())
-            .ok_or_else(|| InvalidPosition(pos))
-    }
-
-    pub fn ts_point(
-        &self,
-        pos: lsp_types::Position,
-    ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
-        let lines = &self.lines;
-        let line_col = if let Some(enc) = self.enc {
-            let wide = line_index::WideLineCol {
-                line: pos.line,
-                col: pos.character,
-            };
-            lines
-                .to_utf8(enc, wide)
-                .ok_or_else(|| InvalidPosition(pos))?
-        } else {
-            line_index::LineCol {
-                line: pos.line,
-                col: pos.character,
-            }
-        };
-        let point = tree_sitter::Point::new(pos.line as usize, pos.character as usize);
-        let byte = lines
-            .offset(line_col)
-            .ok_or_else(|| InvalidPosition(pos))?
-            .into();
-        Ok((point, byte))
-    }
-
-    pub fn ts_range(&self, range: lsp_types::Range) -> Result<tree_sitter::Range, InvalidPosition> {
-        let (start_point, start_byte) = self.ts_point(range.start)?;
-        let (end_point, end_byte) = self.ts_point(range.end)?;
-        Ok(tree_sitter::Range {
-            start_byte,
-            end_byte,
-            start_point,
-            end_point,
-        })
-    }
 }
+
 #[cfg(test)]
 mod tests {
 
@@ -530,19 +461,6 @@ mod tests {
         let mut document = new_doc(text, enc);
         document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
-    }
-
-    fn range(from: (u32, u32), to: (u32, u32)) -> lsp_types::Range {
-        lsp_types::Range {
-            start: lsp_types::Position {
-                line: from.0,
-                character: from.1,
-            },
-            end: lsp_types::Position {
-                line: to.0,
-                character: to.1,
-            },
-        }
     }
 
     fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit<&str> {

@@ -50,7 +50,7 @@ impl Usage {
 pub struct NodeId(usize);
 
 impl NodeId {
-    pub fn new<'a, N: type_sitter::Node<'a>>(node: N) -> Self {
+    pub(crate) fn new<'a, N: type_sitter::Node<'a>>(node: N) -> Self {
         Self(node.raw().id())
     }
 }
