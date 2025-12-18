@@ -2,6 +2,7 @@ use crate::{
     ids::{self, DefinitionInfo, NodeId},
     types::{AllNamed, ScopeBlock},
     visitor::{VisitInstruction, Visitor},
+    InkDocument,
 };
 use lsp_types::{Position, Range};
 use type_sitter::Node;
@@ -52,8 +53,7 @@ struct Environment {
 }
 
 pub struct Names<'a> {
-    text: &'a str,
-    lsp_range: &'a dyn Fn(tree_sitter::Range) -> lsp_types::Range,
+    doc: &'a InkDocument,
     ink_temp_extent: Option<Range>,
     knot: Option<Environment>,
     stitch: Option<Environment>,
@@ -61,13 +61,9 @@ pub struct Names<'a> {
 }
 
 impl<'a> Names<'a> {
-    pub(crate) fn new(
-        text: &'a str,
-        lsp_range: &'a dyn Fn(tree_sitter::Range) -> lsp_types::Range,
-    ) -> Self {
+    pub(crate) fn new(doc: &'a InkDocument) -> Self {
         Self {
-            text,
-            lsp_range,
+            doc,
             ink_temp_extent: None,
             knot: None,
             stitch: None,
@@ -352,11 +348,11 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
 /// Private Helpers
 impl<'a> Names<'a> {
     fn text<N: Node<'a>>(&self, n: N) -> String {
-        self.text[n.byte_range()].to_owned()
+        self.doc.node_text(n).to_owned()
     }
 
     fn lsp_range<N: Node<'a>>(&self, n: N) -> lsp_types::Range {
-        (self.lsp_range)(n.range())
+        self.doc.lsp_range(n.range())
     }
 
     fn lsp_range_between(
@@ -366,7 +362,7 @@ impl<'a> Names<'a> {
         start_point: tree_sitter::Point,
         end_point: tree_sitter::Point,
     ) -> lsp_types::Range {
-        (self.lsp_range)(tree_sitter::Range {
+        self.doc.lsp_range(tree_sitter::Range {
             start_byte,
             end_byte,
             start_point,

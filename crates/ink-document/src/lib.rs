@@ -68,7 +68,7 @@ mod doc_symbols;
 mod document;
 pub mod ids;
 mod names;
-mod visitor;
+mod visitor; // TODO: Extract visitor, traversal, etc into its own crate
 mod ws_symbols;
 
 pub use document::{

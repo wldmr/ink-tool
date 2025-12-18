@@ -1,12 +1,15 @@
+use crate::doc_symbols::DocumentSymbols;
 use crate::ids::{self, NodeId, UsageInfo};
-use crate::names::{self, Name};
+use crate::names::{Name, Names};
 use crate::traversal::{self, parent};
-use crate::types::{self, Definitions, DivertTarget, QualifiedName};
-use crate::visitor::Visitor as _;
-use crate::Meta;
+use crate::types;
+use crate::visitor::Visitor;
+use crate::ws_symbols::WorkspaceSymbols;
+use crate::{doc_symbols, Meta};
 use derive_more::derive::{Display, Error, From};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::{Position, Uri};
+use tap::Pipe as _;
 use tree_sitter::Parser;
 use type_sitter::{Node, UntypedNode};
 
@@ -14,11 +17,11 @@ use type_sitter::{Node, UntypedNode};
 // Everthing else works in terms of LSP types.
 
 pub struct InkDocument {
-    pub(crate) tree: tree_sitter::Tree,
-    pub(crate) text: String,
-    pub(crate) parser: tree_sitter::Parser,
-    pub(crate) enc: Option<WideEncoding>,
-    pub(crate) lines: line_index::LineIndex,
+    tree: tree_sitter::Tree,
+    text: String,
+    parser: tree_sitter::Parser,
+    enc: Option<WideEncoding>,
+    lines: line_index::LineIndex,
 }
 
 #[derive(Debug, Clone, Display, Error, From)]
@@ -126,6 +129,13 @@ impl InkDocument {
         &self.text
     }
 
+    pub fn root(&self) -> types::Ink<'_> {
+        self.tree
+            .root_node()
+            .pipe(types::Ink::try_from_raw)
+            .expect("Root node must be Ink")
+    }
+
     pub fn byte_range(&self, range: lsp_types::Range) -> std::ops::Range<usize> {
         let start = self.to_byte(range.start);
         let end = self.to_byte(range.end);
@@ -133,31 +143,31 @@ impl InkDocument {
     }
 
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
-        let node: Definitions = self.thing_under_cursor(pos)?;
+        let node: types::Definitions = self.thing_under_cursor(pos)?;
         let site = match node {
-            Definitions::External(external) => external.name().upcast(),
-            Definitions::Global(global) => global.name().upcast(),
-            Definitions::Knot(knot) => knot.name().upcast(),
-            Definitions::Label(label) => label.name().upcast(),
-            Definitions::List(list) => list.name().upcast(),
-            Definitions::ListValueDef(lvd) => lvd.name().upcast(),
-            Definitions::Param(param) => match param.value().ok()? {
+            types::Definitions::External(external) => external.name().upcast(),
+            types::Definitions::Global(global) => global.name().upcast(),
+            types::Definitions::Knot(knot) => knot.name().upcast(),
+            types::Definitions::Label(label) => label.name().upcast(),
+            types::Definitions::List(list) => list.name().upcast(),
+            types::Definitions::ListValueDef(lvd) => lvd.name().upcast(),
+            types::Definitions::Param(param) => match param.value().ok()? {
                 types::ParamValue::Divert(divert) => divert.target().upcast(),
                 types::ParamValue::Identifier(identifier) => identifier.upcast(),
             },
-            Definitions::Stitch(stitch) => stitch.name().upcast(),
-            Definitions::TempDef(temp_def) => temp_def.name().upcast(),
+            types::Definitions::Stitch(stitch) => stitch.name().upcast(),
+            types::Definitions::TempDef(temp_def) => temp_def.name().upcast(),
         };
 
         Some(DefinitionUnderCursor {
-            range: self.lsp_range(&site.range()),
-            term: self.text_of(site),
+            range: self.lsp_range(site.range()),
+            term: self.node_text(site),
         })
     }
 
     pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let node: DivertTarget = self.thing_under_cursor(pos)?;
+        let node: types::DivertTarget = self.thing_under_cursor(pos)?;
 
         // The “terms” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -178,7 +188,7 @@ impl InkDocument {
         //
         // would look for “knot.stitch” and “knot.stitch.label”, but not “knot”.
         let mut terms: Vec<&str> = Default::default();
-        let mut extract_terms_from_qname = |qname: QualifiedName| {
+        let mut extract_terms_from_qname = |qname: types::QualifiedName| {
             let start = qname.start_byte();
             for ident in qname.identifiers(&mut qname.walk()) {
                 let end = ident.end_byte();
@@ -205,9 +215,9 @@ impl InkDocument {
         };
 
         let (usage, range) = match node {
-            DivertTarget::Call(call) => {
+            types::DivertTarget::Call(call) => {
                 match call.name().ok() {
-                    Some(types::Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
+                    Some(types::Usages::Identifier(ident)) => terms.push(self.node_text(ident)),
                     Some(types::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
                     _ => {}
                 };
@@ -222,8 +232,8 @@ impl InkDocument {
                     call.name().range(),
                 )
             }
-            DivertTarget::Identifier(ident) => {
-                terms.push(self.text_of(ident));
+            types::DivertTarget::Identifier(ident) => {
+                terms.push(self.node_text(ident));
                 (
                     ids::Usage(
                         NodeId::new(ident),
@@ -235,7 +245,7 @@ impl InkDocument {
                     ident.range(),
                 )
             }
-            DivertTarget::QualifiedName(qname) => {
+            types::DivertTarget::QualifiedName(qname) => {
                 extract_terms_from_qname(qname);
                 (
                     ids::Usage(
@@ -252,7 +262,7 @@ impl InkDocument {
 
         Some(UsageUnderCursor {
             usage,
-            range: self.lsp_range(&range),
+            range: self.lsp_range(range),
             terms,
         })
     }
@@ -267,35 +277,25 @@ impl InkDocument {
             .map(|range| {
                 (
                     self.text[range.start_byte..range.end_byte].to_owned(),
-                    self.lsp_range(&range),
+                    self.lsp_range(range),
                 )
             })
             .collect::<Usages>()
     }
 
     pub fn names(&self) -> Vec<(Name, Meta)> {
-        let to_lsp_range = |r| self.lsp_range(&r);
-        let mut visitor = names::Names::new(&self.text, &to_lsp_range);
-        let mut names = Vec::new();
-        visitor.traverse(&mut self.tree.root_node().walk(), &mut names);
-        names
+        Names::new(self).traverse(self.root())
     }
 
     pub fn doc_symbols(&self) -> Vec<lsp_types::DocumentSymbol> {
-        let mut visitor = crate::doc_symbols::DocumentSymbols::new(self);
-        let mut cursor = self.tree.root_node().walk();
-        let mut dummy = crate::doc_symbols::dummy_file_symbol();
-        visitor.traverse(&mut cursor, &mut dummy);
-        dummy.children.unwrap_or_default()
+        DocumentSymbols::new(self)
+            .traverse_with_state(self.root(), doc_symbols::dummy_file_symbol())
+            .children
+            .unwrap()
     }
 
     pub fn workspace_symbols(&self, uri: &Uri) -> Vec<lsp_types::WorkspaceSymbol> {
-        let mut visitor = crate::ws_symbols::WorkspaceSymbols::new(&uri, self);
-        let mut cursor = self.tree.root_node().walk();
-        let mut syms = Vec::new();
-
-        visitor.traverse(&mut cursor, &mut syms);
-        syms
+        WorkspaceSymbols::new(&uri, self).traverse(self.root())
     }
 }
 
@@ -387,13 +387,13 @@ impl InkDocument {
         }
     }
 
-    fn text_of<'a, N: Node<'a>>(&self, n: N) -> &str {
+    pub fn node_text<'a, N: Node<'a>>(&self, n: N) -> &str {
         &self.text[n.byte_range()]
     }
 
-    fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
-        let start = self.lsp_position(node.start_point);
-        let end = self.lsp_position(node.end_point);
+    pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {
+        let start = self.lsp_position(range.start_point);
+        let end = self.lsp_position(range.end_point);
         lsp_types::Range { start, end }
     }
 }
