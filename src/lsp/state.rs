@@ -1,13 +1,13 @@
 use crate::lsp::{
     idset::Id,
     ink_visitors::names::Meta,
-    salsa::{self, DocId, InkGetters, InkSetters},
+    salsa::{self, opened_docs, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
-use mini_milc::Cached;
+use mini_milc::{Cached, Db};
 use tap::Tap as _;
 
 // This is quite an abomination, but we have to deal with it.
@@ -76,6 +76,16 @@ impl State {
         }
     }
 
+    pub fn open(&mut self, uri: Uri) {
+        let id = self.get_or_new_docid(uri);
+        self.db.modify(opened_docs, |docs| docs.insert(id));
+    }
+
+    pub fn close(&mut self, uri: Uri) {
+        let id = self.get_or_new_docid(uri);
+        self.db.modify(opened_docs, |docs| docs.remove(&id));
+    }
+
     pub fn edit<'a, E: Into<DocumentEdit>>(&mut self, uri: Uri, edit: E) {
         self.edits(uri, [edit]);
     }
@@ -85,12 +95,7 @@ impl State {
         uri: Uri,
         edits: impl IntoIterator<Item = E>,
     ) {
-        // Ensure the document is registered.
-        let id: Option<DocId> = self.db.doc_ids().get_id(&uri).clone();
-        let id: DocId = id.unwrap_or_else(|| {
-            self.db.modify_docs(|docs| docs.insert(uri.clone()));
-            self.db.doc_ids().get_id(&uri).unwrap()
-        });
+        let id = self.get_or_new_docid(uri);
         // Now actually modify it.
         self.db.modify_document(
             id,
@@ -306,6 +311,15 @@ impl State {
             .get_id(uri)
             .expect("don't call with with a non-existent document");
         self.db.document(id).byte_range(loc)
+    }
+
+    fn get_or_new_docid(&mut self, uri: Uri) -> Id<Uri> {
+        let id: Option<DocId> = self.db.doc_ids().get_id(&uri).clone();
+        let id: DocId = id.unwrap_or_else(|| {
+            self.db.modify_docs(|docs| docs.insert(uri.clone()));
+            self.db.doc_ids().get_id(&uri).unwrap()
+        });
+        id
     }
 
     fn get_doc_and_id(

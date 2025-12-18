@@ -11,7 +11,7 @@ use crate::lsp::{
 use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -31,6 +31,9 @@ composite_query! {
 
     #[derive(Hash, Copy)]
     struct doc_ids -> DocIds {;}
+
+    #[derive(Hash, Copy)]
+    struct opened_docs -> HashSet<DocId> {;}
 
     #[derive(Hash, Copy)]
     struct document_names -> Names {(DocId);}
@@ -54,6 +57,7 @@ composite_query! {
 // Inputs
 subquery!(Ops, document, InkDocument);
 subquery!(Ops, doc_ids, DocIds);
+subquery!(Ops, opened_docs, HashSet<DocId>);
 
 subquery!(Ops, document_names, Names, |self, db| {
     get_document_names(&db.document(self.0))
