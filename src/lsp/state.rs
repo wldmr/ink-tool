@@ -1,9 +1,10 @@
 use crate::lsp::{
+    ink_visitors::names::Meta,
     idset::Id,
     salsa::{self, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
-use ink_document::{DocumentEdit, InkDocument, Meta};
+use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use mini_milc::Cached;

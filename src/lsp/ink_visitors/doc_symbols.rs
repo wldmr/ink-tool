@@ -1,15 +1,25 @@
-use crate::{
-    document::InkDocument,
-    types::{AllNamed, GlobalKeyword},
-    visitor::{VisitInstruction, Visitor},
-};
+use std::ops::Deref;
+
 use builder::SymbolBuilder;
+use ink_document::InkDocument;
+use ink_syntax::{AllNamed, GlobalKeyword};
 use lsp_types::Range;
 use lsp_types::{DocumentSymbol, SymbolKind};
+use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKindCause, Node};
 
 // IDEA: Maybe this shouldn't return LSP types?
 
+pub fn document_symbols(doc: &impl Deref<Target = InkDocument>) -> Vec<lsp_types::DocumentSymbol> {
+    let init = SymbolBuilder::new(SymbolKind::FILE)
+        .name("dummy.ink")
+        .range(Range::default())
+        .build();
+    DocumentSymbols::new(doc.deref())
+        .traverse_with_state(doc.root(), init)
+        .children
+        .unwrap_or_default()
+}
 mod builder {
     use lsp_types::{DocumentSymbol, Range, SymbolKind};
     use std::marker::PhantomData;
@@ -83,18 +93,12 @@ mod builder {
     }
 }
 
-pub(crate) fn dummy_file_symbol() -> DocumentSymbol {
-    SymbolBuilder::new(SymbolKind::FILE)
-        .name("dummy.ink")
-        .range(Range::default())
-        .build()
-}
-pub(super) struct DocumentSymbols<'a> {
+struct DocumentSymbols<'a> {
     doc: &'a InkDocument,
 }
 
 impl<'a> DocumentSymbols<'a> {
-    pub(crate) fn new(doc: &'a InkDocument) -> Self {
+    pub fn new(doc: &'a InkDocument) -> Self {
         Self { doc }
     }
 

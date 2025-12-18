@@ -1,10 +1,12 @@
-use crate::{
+use std::ops::Deref;
+
+use ink_document::{
     ids::{self, DefinitionInfo, NodeId},
-    types::{AllNamed, ScopeBlock},
-    visitor::{VisitInstruction, Visitor},
     InkDocument,
 };
+use ink_syntax::{AllNamed, ScopeBlock};
 use lsp_types::{Position, Range};
+use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::Node;
 
 pub type Name = String;
@@ -14,6 +16,10 @@ pub struct Meta {
     pub id: ids::Definition,
     pub site: Range,
     pub extent: Option<Range>,
+}
+
+pub fn document_names(doc: &impl Deref<Target = InkDocument>) -> Vec<(Name, Meta)> {
+    Names::new(doc.deref()).traverse(doc.root())
 }
 
 impl Meta {
@@ -52,7 +58,7 @@ struct Environment {
     temp_extent: Range,
 }
 
-pub struct Names<'a> {
+struct Names<'a> {
     doc: &'a InkDocument,
     ink_temp_extent: Option<Range>,
     knot: Option<Environment>,
@@ -61,7 +67,7 @@ pub struct Names<'a> {
 }
 
 impl<'a> Names<'a> {
-    pub(crate) fn new(doc: &'a InkDocument) -> Self {
+    pub fn new(doc: &'a InkDocument) -> Self {
         Self {
             doc,
             ink_temp_extent: None,
@@ -103,15 +109,15 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 names.push(self.global(
                     def.name(),
                     match def.keyword().ok() {
-                        Some(kw) if kw.as_const().is_some() => ids::DefinitionInfo::Const,
-                        _ => ids::DefinitionInfo::Var,
+                        Some(kw) if kw.as_const().is_some() => DefinitionInfo::Const,
+                        _ => DefinitionInfo::Var,
                     },
                 ));
                 Ignore
             }
 
             List(list) => {
-                names.push(self.global(list.name(), ids::DefinitionInfo::List));
+                names.push(self.global(list.name(), DefinitionInfo::List));
                 let extent = self.lsp_range(list);
                 self.list = Some(Environment {
                     nodeid: NodeId::new(list.name()),
@@ -279,7 +285,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             }
 
             Param(param) => {
-                use crate::types::ParamValue::*;
+                use ink_syntax::ParamValue::*;
                 let name = param.value().map(|it| match it {
                     Divert(divert) => divert.target().upcast(),
                     Identifier(identifier) => identifier.upcast(),

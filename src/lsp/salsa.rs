@@ -1,7 +1,14 @@
 #![allow(non_camel_case_types)]
 
-use crate::lsp::idset::{Id, IdSet};
-use ink_document::{InkDocument, Meta};
+use crate::lsp::{
+    idset::{Id, IdSet},
+    ink_visitors::{
+        doc_symbols::document_symbols as get_document_symbols,
+        names::document_names as get_document_names, names::Meta,
+        ws_symbols::from_doc as get_workspace_symbols,
+    },
+};
+use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
 use std::collections::HashMap;
@@ -48,9 +55,9 @@ composite_query! {
 subquery!(Ops, document, InkDocument);
 subquery!(Ops, doc_ids, DocIds);
 
-subquery!(Ops, document_names, Names, |self, db| db
-    .document(self.0)
-    .names());
+subquery!(Ops, document_names, Names, |self, db| {
+    get_document_names(&db.document(self.0))
+});
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
     let mut names = WorkspaceNames::new();
@@ -89,11 +96,11 @@ subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
     let id = self.0;
     let doc = db.document(id);
     let uri = docs.get(id).unwrap();
-    doc.workspace_symbols(uri)
+    get_workspace_symbols(uri, &doc)
 });
 
 subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {
-    db.document(self.0).doc_symbols()
+    get_document_symbols(&db.document(self.0))
 });
 
 // Extension traits

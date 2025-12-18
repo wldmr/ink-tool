@@ -1,12 +1,16 @@
-use crate::{
-    types::{AllNamed, GlobalKeyword},
-    visitor::{VisitInstruction, Visitor},
-    InkDocument,
-};
+use std::ops::Deref;
+
+use ink_document::InkDocument;
+use ink_syntax::{AllNamed, GlobalKeyword};
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
+use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKindCause, Node};
 
-pub(crate) struct WorkspaceSymbols<'a> {
+pub fn from_doc(uri: &Uri, doc: &impl Deref<Target = InkDocument>) -> Vec<WorkspaceSymbol> {
+    WorkspaceSymbols::new(uri, doc.deref()).traverse(doc.root())
+}
+
+struct WorkspaceSymbols<'a> {
     uri: &'a Uri,
     doc: &'a InkDocument,
     knot: Option<&'a str>,
@@ -14,7 +18,7 @@ pub(crate) struct WorkspaceSymbols<'a> {
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    pub(crate) fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
+    fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
         Self {
             uri,
             doc,
@@ -23,7 +27,7 @@ impl<'a> WorkspaceSymbols<'a> {
         }
     }
 
-    pub fn namespace(&self) -> Option<String> {
+    fn namespace(&self) -> Option<String> {
         match (self.knot, self.stitch) {
             (None, None) => None,
             (None, Some(stitch)) => Some(format!("{stitch}")),

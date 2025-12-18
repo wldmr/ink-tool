@@ -3,7 +3,7 @@
 use type_sitter::{IncorrectKind, Node};
 
 /// Can walk a tree of tree-sitter nodes and build up a new structure
-pub(crate) trait Visitor<'a, N: Node<'a>>: Sized {
+pub trait Visitor<'a, N: Node<'a>>: Sized {
     type State;
 
     /// Called upon entering a node
@@ -104,7 +104,7 @@ fn traverse_children<'a, N: Node<'a>, V: Visitor<'a, N>>(
     state
 }
 
-pub(crate) enum VisitInstruction<T> {
+pub enum VisitInstruction<T> {
     /// Don't return anything for this node, and don't recurse into children.
     Ignore,
     /// Don't return anything for this node, but recurse into children.

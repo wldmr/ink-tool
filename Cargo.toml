@@ -3,11 +3,8 @@ name = "ink-tool"
 description = "Toolset for Inkle's Ink language"
 keywords = ["ink", "formatter", "language-server"]
 categories = ["command-line-utilities", "development-tools", "game-development"]
-version = "0.1.0"
-edition = "2021"
-
-[workspace]
-
+version.workspace = true
+edition.workspace = true
 
 [workspace.package]
 version = "0.1.0"
@@ -26,6 +23,15 @@ test-case = "3.3.1"
 tree-sitter = "0.25" # TODO: Stopgap measure? Ideally, we want this confined to the ink-document crate
 tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit = 'f632cbc'}
 walkdir = "2.5.0"
+tree-traversal = { path = "./crates/tree-traversal" }
+ink-syntax = { path = "./crates/ink-syntax" }
+
+[workspace.dependencies.type-sitter]
+version = "0.8"
+# path = "../type-sitter/type-sitter-lib"
+# git = "https://github.com/wldmr/type-sitter.git"
+git = "https://github.com/jakobeha/type-sitter.git"
+# branch = "main"
 
 [dependencies]
 assert2.workspace = true
@@ -37,7 +43,8 @@ futures = "0.3.31"
 html = "0.6.3"
 humantime = "2.1.0"
 indexmap = "2.12.1"
-ink-document = { path = "crates/ink-document" }
+ink-document = { path = "./crates/ink-document" }
+ink-syntax.workspace = true
 itertools = "0.13.0"
 jsonrpc = "0.18.0"
 line-index.workspace = true
@@ -50,8 +57,10 @@ serde = "1"
 serde_json = "1"
 tap.workspace = true
 tokio = { version = "1.43.0", features = ["rt"] }
+tree-traversal = { path = "./crates/tree-traversal" }
 tree-sitter-ink.workspace = true
 tree-sitter.workspace = true
+type-sitter.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
@@ -67,7 +76,6 @@ test-case.workspace = true
 cc="*"
 derive_builder = "0.20.0"
 markdown = "1.0.0-alpha.17"
-
 
 [profile.release]
 strip = true

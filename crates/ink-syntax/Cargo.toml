@@ -1,0 +1,18 @@
+[package]
+name = "ink-syntax"
+description = "Generated typed Ink syntax (based on tree-sitter grammar)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+type-sitter.workspace = true
+
+[build-dependencies]
+tree-sitter-ink.workspace = true
+
+[build-dependencies.type-sitter-gen]
+version = "0.8"
+# path = "../type-sitter/type-sitter-gen"
+# git = "https://github.com/wldmr/type-sitter.git"
+git = "https://github.com/jakobeha/type-sitter.git"
+# branch = "main"

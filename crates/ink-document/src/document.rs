@@ -1,16 +1,11 @@
-use crate::doc_symbols::DocumentSymbols;
 use crate::ids::{self, NodeId, UsageInfo};
-use crate::names::{Name, Names};
-use crate::traversal::{self, parent};
-use crate::types;
-use crate::visitor::Visitor;
-use crate::ws_symbols::WorkspaceSymbols;
-use crate::{doc_symbols, Meta};
 use derive_more::derive::{Display, Error, From};
+use ink_syntax as syntax;
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use lsp_types::{Position, Uri};
+use lsp_types::Position;
 use tap::Pipe as _;
 use tree_sitter::Parser;
+use tree_traversal::{depth_first, parent};
 use type_sitter::{Node, UntypedNode};
 
 // IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
@@ -129,10 +124,10 @@ impl InkDocument {
         &self.text
     }
 
-    pub fn root(&self) -> types::Ink<'_> {
+    pub fn root(&self) -> syntax::Ink<'_> {
         self.tree
             .root_node()
-            .pipe(types::Ink::try_from_raw)
+            .pipe(syntax::Ink::try_from_raw)
             .expect("Root node must be Ink")
     }
 
@@ -143,20 +138,20 @@ impl InkDocument {
     }
 
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
-        let node: types::Definitions = self.thing_under_cursor(pos)?;
+        let node: syntax::Definitions = self.thing_under_cursor(pos)?;
         let site = match node {
-            types::Definitions::External(external) => external.name().upcast(),
-            types::Definitions::Global(global) => global.name().upcast(),
-            types::Definitions::Knot(knot) => knot.name().upcast(),
-            types::Definitions::Label(label) => label.name().upcast(),
-            types::Definitions::List(list) => list.name().upcast(),
-            types::Definitions::ListValueDef(lvd) => lvd.name().upcast(),
-            types::Definitions::Param(param) => match param.value().ok()? {
-                types::ParamValue::Divert(divert) => divert.target().upcast(),
-                types::ParamValue::Identifier(identifier) => identifier.upcast(),
+            syntax::Definitions::External(external) => external.name().upcast(),
+            syntax::Definitions::Global(global) => global.name().upcast(),
+            syntax::Definitions::Knot(knot) => knot.name().upcast(),
+            syntax::Definitions::Label(label) => label.name().upcast(),
+            syntax::Definitions::List(list) => list.name().upcast(),
+            syntax::Definitions::ListValueDef(lvd) => lvd.name().upcast(),
+            syntax::Definitions::Param(param) => match param.value().ok()? {
+                syntax::ParamValue::Divert(divert) => divert.target().upcast(),
+                syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
             },
-            types::Definitions::Stitch(stitch) => stitch.name().upcast(),
-            types::Definitions::TempDef(temp_def) => temp_def.name().upcast(),
+            syntax::Definitions::Stitch(stitch) => stitch.name().upcast(),
+            syntax::Definitions::TempDef(temp_def) => temp_def.name().upcast(),
         };
 
         Some(DefinitionUnderCursor {
@@ -167,7 +162,7 @@ impl InkDocument {
 
     pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let node: types::DivertTarget = self.thing_under_cursor(pos)?;
+        let node: syntax::DivertTarget = self.thing_under_cursor(pos)?;
 
         // The “terms” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -188,7 +183,7 @@ impl InkDocument {
         //
         // would look for “knot.stitch” and “knot.stitch.label”, but not “knot”.
         let mut terms: Vec<&str> = Default::default();
-        let mut extract_terms_from_qname = |qname: types::QualifiedName| {
+        let mut extract_terms_from_qname = |qname: syntax::QualifiedName| {
             let start = qname.start_byte();
             for ident in qname.identifiers(&mut qname.walk()) {
                 let end = ident.end_byte();
@@ -199,12 +194,12 @@ impl InkDocument {
         };
 
         let find_redirect_kind = |node: UntypedNode| {
-            parent::<_, types::Redirect>(node)
+            parent::<_, syntax::Redirect>(node)
                 .next()
                 .map(|it| match it {
-                    types::Redirect::Divert(_) => ids::RedirectKind::Divert,
-                    types::Redirect::Thread(_) => ids::RedirectKind::Thread,
-                    types::Redirect::Tunnel(tunnel) => {
+                    syntax::Redirect::Divert(_) => ids::RedirectKind::Divert,
+                    syntax::Redirect::Thread(_) => ids::RedirectKind::Thread,
+                    syntax::Redirect::Tunnel(tunnel) => {
                         if tunnel.target().is_some() {
                             ids::RedirectKind::NamedTunnelReturn
                         } else {
@@ -215,10 +210,10 @@ impl InkDocument {
         };
 
         let (usage, range) = match node {
-            types::DivertTarget::Call(call) => {
+            syntax::DivertTarget::Call(call) => {
                 match call.name().ok() {
-                    Some(types::Usages::Identifier(ident)) => terms.push(self.node_text(ident)),
-                    Some(types::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
+                    Some(syntax::Usages::Identifier(ident)) => terms.push(self.node_text(ident)),
+                    Some(syntax::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
                     _ => {}
                 };
                 (
@@ -232,7 +227,7 @@ impl InkDocument {
                     call.name().range(),
                 )
             }
-            types::DivertTarget::Identifier(ident) => {
+            syntax::DivertTarget::Identifier(ident) => {
                 terms.push(self.node_text(ident));
                 (
                     ids::Usage(
@@ -245,7 +240,7 @@ impl InkDocument {
                     ident.range(),
                 )
             }
-            types::DivertTarget::QualifiedName(qname) => {
+            syntax::DivertTarget::QualifiedName(qname) => {
                 extract_terms_from_qname(qname);
                 (
                     ids::Usage(
@@ -269,10 +264,10 @@ impl InkDocument {
 
     pub fn usages(&self) -> Usages {
         let ink = type_sitter::UntypedNode::new(self.tree.root_node());
-        traversal::depth_first::<_, types::Usages>(ink)
+        depth_first::<_, syntax::Usages>(ink)
             .map(|node| match node {
-                types::Usages::Identifier(ident) => ident.range(),
-                types::Usages::QualifiedName(qname) => qname.range(),
+                syntax::Usages::Identifier(ident) => ident.range(),
+                syntax::Usages::QualifiedName(qname) => qname.range(),
             })
             .map(|range| {
                 (
@@ -281,21 +276,6 @@ impl InkDocument {
                 )
             })
             .collect::<Usages>()
-    }
-
-    pub fn names(&self) -> Vec<(Name, Meta)> {
-        Names::new(self).traverse(self.root())
-    }
-
-    pub fn doc_symbols(&self) -> Vec<lsp_types::DocumentSymbol> {
-        DocumentSymbols::new(self)
-            .traverse_with_state(self.root(), doc_symbols::dummy_file_symbol())
-            .children
-            .unwrap()
-    }
-
-    pub fn workspace_symbols(&self, uri: &Uri) -> Vec<lsp_types::WorkspaceSymbol> {
-        WorkspaceSymbols::new(&uri, self).traverse(self.root())
     }
 }
 

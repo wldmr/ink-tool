@@ -1,5 +1,6 @@
 [package]
 name = "ink-document"
+description = "Encapsulates parsing and editing a file containing Ink syntax"
 version.workspace = true
 edition.workspace = true
 
@@ -7,28 +8,12 @@ edition.workspace = true
 tree-sitter.workspace = true
 tree-sitter-ink.workspace = true
 lsp-types.workspace = true # TODO: Stopgap measure? Maybe don't depend on LSP here?
-log.workspace = true
 tap.workspace = true
 derive_more.workspace = true
 line-index.workspace = true
-
-[dependencies.type-sitter]
-version = "0.8"
-# path = "../type-sitter/type-sitter-lib"
-# git = "https://github.com/wldmr/type-sitter.git"
-git = "https://github.com/jakobeha/type-sitter.git"
-# branch = "main"
-
-[build-dependencies]
-tree-sitter-ink.workspace = true
-
-[build-dependencies.type-sitter-gen]
-version = "0.8"
-# path = "../type-sitter/type-sitter-gen"
-# git = "https://github.com/wldmr/type-sitter.git"
-git = "https://github.com/jakobeha/type-sitter.git"
-# branch = "main"
-
+tree-traversal.workspace = true
+type-sitter.workspace = true
+ink-syntax.workspace = true
 
 [dev-dependencies]
 test-case.workspace = true
