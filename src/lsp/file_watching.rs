@@ -21,7 +21,7 @@ pub(crate) fn read_initial_files(root: &std::path::Path, state: &SharedState) ->
             let path = path.to_str().ok_or("path wasn't a proper UTF-8 string")?;
             let uri = Uri::from_str(&format!("file://{path}"))?;
             let text = std::fs::read_to_string(path)?;
-            state.edit(uri, vec![(None, text)]);
+            state.edit(uri, text);
         }
     }
     Ok(())
@@ -99,8 +99,8 @@ pub(crate) fn start_file_watcher(
                 let uri = Uri::from_str(&format!("file://{path}")).unwrap();
                 match kind {
                     WatchEventKind::Edit => {
-                        let result = std::fs::read_to_string(path)
-                            .map(|text| state.edit(uri, vec![(None, text)]));
+                        let result =
+                            std::fs::read_to_string(path).map(|text| state.edit(uri, text));
                         if let Err(err) = result {
                             log::error!("document read error: {err:?}");
                             continue;

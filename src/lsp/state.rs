@@ -76,7 +76,15 @@ impl State {
         }
     }
 
-    pub fn edit<S: AsRef<str> + Into<String>>(&mut self, uri: Uri, edits: Vec<DocumentEdit<S>>) {
+    pub fn edit<'a, E: Into<DocumentEdit>>(&mut self, uri: Uri, edit: E) {
+        self.edits(uri, [edit]);
+    }
+
+    pub fn edits<'a, E: Into<DocumentEdit>>(
+        &mut self,
+        uri: Uri,
+        edits: impl IntoIterator<Item = E>,
+    ) {
         // Ensure the document is registered.
         let id: Option<DocId> = self.db.doc_ids().get_id(&uri).clone();
         let id: DocId = id.unwrap_or_else(|| {
@@ -87,7 +95,7 @@ impl State {
         self.db.modify_document(
             id,
             || InkDocument::new_empty(self.enc),
-            |doc| doc.edit(edits),
+            |doc| doc.edits(edits),
         );
     }
 
@@ -324,10 +332,6 @@ mod tests {
         <Uri as std::str::FromStr>::from_str(&format!("file://tmp/{name}")).unwrap()
     }
 
-    fn set_content(state: &mut State, uri: Uri, contents: impl Into<String>) {
-        state.edit(uri, vec![(None, contents.into())]);
-    }
-
     fn text_with_caret(input: &str) -> (String, lsp_types::Position) {
         let mut row = 0;
         let mut col = 0;
@@ -352,15 +356,14 @@ mod tests {
     }
 
     mod completions {
-        use super::{set_content, tests::text_with_caret, uri};
+        use super::{tests::text_with_caret, uri};
         use itertools::Itertools;
         use pretty_assertions::assert_eq;
 
         #[test]
         fn state() {
             let mut state = super::new_state();
-            set_content(
-                &mut state,
+            state.edit(
                 uri("context.ink"),
                 "
                 VAR some_var = true
@@ -374,7 +377,7 @@ mod tests {
             );
             let (contents, caret) = text_with_caret("{o@}");
             let uri = uri("test.ink");
-            set_content(&mut state, uri.clone(), contents);
+            state.edit(uri.clone(), contents);
             let completions = state.completions(uri, caret).unwrap().unwrap();
             assert_eq!(
                 completions
@@ -388,7 +391,7 @@ mod tests {
     }
 
     mod links {
-        use super::{new_state, set_content, State};
+        use super::{new_state, State};
         use crate::test_utils::{
             self,
             text_annotations::{Annotation, AnnotationScanner},
@@ -661,7 +664,7 @@ mod tests {
 
             for (uri, contents) in &ink_files {
                 // parse actual links via tree-sitter (i.e. normally)
-                set_content(&mut state, uri.clone(), contents);
+                state.edit(uri.clone(), contents);
                 // parse expected links via annotations
                 checks.add_annotations(&uri, annotation_scanner.scan(contents))
             }

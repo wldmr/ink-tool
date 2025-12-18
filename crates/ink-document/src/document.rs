@@ -69,7 +69,83 @@ impl std::hash::Hash for InkDocument {
     }
 }
 
-pub type DocumentEdit<S> = (Option<lsp_types::Range>, S);
+/// Our own type capturing partial or full-file edits.
+///
+/// Mostly for convenience in terms of conversion and some readability.
+pub enum DocumentEdit {
+    Whole(String),
+    Part(lsp_types::Range, String),
+}
+
+/// This is the main conversion for the LSP
+impl<'a> From<lsp_types::TextDocumentContentChangeEvent> for DocumentEdit {
+    fn from(value: lsp_types::TextDocumentContentChangeEvent) -> Self {
+        match value.range {
+            Some(range) => DocumentEdit::Part(range, value.text),
+            None => DocumentEdit::Whole(value.text),
+        }
+    }
+}
+
+/// This conversion is for the file watcher, where we always read in the complete file.
+impl From<String> for DocumentEdit {
+    fn from(value: String) -> Self {
+        DocumentEdit::Whole(value)
+    }
+}
+
+// The following impls are to make testing a little more convenient.
+
+impl<'a> From<&'a str> for DocumentEdit {
+    fn from(value: &'a str) -> Self {
+        DocumentEdit::Whole(value.into())
+    }
+}
+
+impl<'a> From<&'a String> for DocumentEdit {
+    fn from(value: &'a String) -> Self {
+        DocumentEdit::Whole(value.into())
+    }
+}
+
+impl<'a> From<(lsp_types::Range, &'a str)> for DocumentEdit {
+    fn from(value: (lsp_types::Range, &'a str)) -> Self {
+        DocumentEdit::Part(value.0, value.1.into())
+    }
+}
+
+impl From<(lsp_types::Range, String)> for DocumentEdit {
+    fn from(value: (lsp_types::Range, String)) -> Self {
+        DocumentEdit::Part(value.0, value.1.into())
+    }
+}
+
+impl<'a> From<(Option<lsp_types::Range>, &'a str)> for DocumentEdit {
+    fn from((range, text): (Option<lsp_types::Range>, &'a str)) -> Self {
+        match range {
+            Some(range) => DocumentEdit::Part(range, text.into()),
+            None => DocumentEdit::Whole(text.into()),
+        }
+    }
+}
+
+impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
+    fn from((range, text): (std::ops::Range<(u32, u32)>, &str)) -> DocumentEdit {
+        DocumentEdit::Part(
+            lsp_types::Range {
+                start: lsp_types::Position {
+                    line: range.start.0,
+                    character: range.start.1,
+                },
+                end: lsp_types::Position {
+                    line: range.end.0,
+                    character: range.end.1,
+                },
+            },
+            text.to_owned(),
+        )
+    }
+}
 
 pub struct UsageUnderCursor<'a> {
     pub usage: ids::Usage,
@@ -107,25 +183,29 @@ impl InkDocument {
         Self::new(String::new(), enc)
     }
 
-    pub fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
-        // log::trace!("applying {} edits", edits.len());
-        for (range, new_text) in edits.into_iter() {
-            let edit = range.map(|range| self.input_edit(range, new_text.as_ref()));
-            let modified_tree = if let Some(edit) = edit {
+    pub fn edit(&mut self, edit: impl Into<DocumentEdit>) {
+        let modified_tree = match edit.into() {
+            DocumentEdit::Part(range, text) => {
+                let edit = self.input_edit(range, &text);
                 self.text
-                    .replace_range(edit.start_byte..edit.old_end_byte, new_text.as_ref());
+                    .replace_range(edit.start_byte..edit.old_end_byte, &text);
                 self.tree.edit(&edit);
                 Some(&self.tree)
-            } else {
-                self.text = new_text.into();
+            }
+            DocumentEdit::Whole(text) => {
+                self.text = text;
                 None
-            };
-            self.tree = self
-                .parser
-                .parse(&self.text, modified_tree)
-                .expect("parsing must work");
-            self.lines = LineIndex::new(&self.text);
-        }
+            }
+        };
+        self.tree = self
+            .parser
+            .parse(&self.text, modified_tree)
+            .expect("parsing must work");
+        self.lines = LineIndex::new(&self.text);
+    }
+
+    pub fn edits<'a, E: Into<DocumentEdit>>(&mut self, edits: impl IntoIterator<Item = E>) {
+        edits.into_iter().for_each(|edit| self.edit(edit));
     }
 
     /// The full text of the file, as an owned string.
@@ -389,8 +469,7 @@ impl InkDocument {
 
 #[cfg(test)]
 mod tests {
-
-    use super::{DocumentEdit, InkDocument};
+    use super::InkDocument;
     use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
     use test_case::test_case;
@@ -401,12 +480,12 @@ mod tests {
     fn multiple_edits() {
         let text = "hello world\nhow's it hanging?".to_string();
         let mut document = new_doc(text, None);
-        document.edit(vec![
-            edit((0, 0), (0, 1), "H"),      // Hello world
-            edit((0, 1), (0, 5), "i"),      // Hi world
-            edit((0, 3), (0, 8), "gang!"),  // Hi gang!
-            edit((1, 0), (1, 1), "H"),      // How's it hanging?
-            edit((1, 9), (1, 16), "going"), // How's it going?
+        document.edits([
+            ((0, 0)..(0, 1), "H"),      // Hello world
+            ((0, 1)..(0, 5), "i"),      // Hi world
+            ((0, 3)..(0, 8), "gang!"),  // Hi gang!
+            ((1, 0)..(1, 1), "H"),      // How's it hanging?
+            ((1, 9)..(1, 16), "going"), // How's it going?
         ]);
         assert_str_eq!(document.text, "Hi gang!\nHow's it going?");
     }
@@ -415,12 +494,9 @@ mod tests {
     fn giving_no_range_means_replace_all_text() {
         let text = "some text".to_string();
         let mut document = new_doc(text, None);
-        document.edit(vec![
-            (
-                None,
-                "some ignored text\nthis will be completely overwritted\nby the next edit",
-            ),
-            (None, "final version"),
+        document.edits([
+            "some ignored text\nthis will be completely overwritted\nby the next edit",
+            "final version",
         ]);
         assert_str_eq!(document.text, "final version");
     }
@@ -431,10 +507,10 @@ mod tests {
         // No \r, because I don't expect old Macs will use this language server.
         let text = "line one\r\nline two\nline three".to_string();
         let mut document = new_doc(text, None);
-        document.edit(vec![
-            edit((0, 5), (0, 8), "1"),
-            edit((1, 5), (1, 8), "2"),
-            edit((2, 5), (2, 10), "3"),
+        document.edits([
+            ((0, 5)..(0, 8), "1"),
+            ((1, 5)..(1, 8), "2"),
+            ((2, 5)..(2, 10), "3"),
         ]);
         assert_str_eq!(document.text, "line 1\r\nline 2\nline 3");
     }
@@ -448,24 +524,8 @@ mod tests {
     fn wide_encodings(enc: Option<WideEncoding>, code_units: u32) {
         let text = "🥺🥺".to_string();
         let mut document = new_doc(text, enc);
-        document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
+        document.edit(((0, code_units)..(0, code_units), " "));
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
-    }
-
-    fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit<&str> {
-        (
-            Some(lsp_types::Range {
-                start: lsp_types::Position {
-                    line: from.0,
-                    character: from.1,
-                },
-                end: lsp_types::Position {
-                    line: to.0,
-                    character: to.1,
-                },
-            }),
-            text,
-        )
     }
 
     /// Creates a UTF-8 encoded document and an LSP `Position` based on where the first `@` symbol is.
