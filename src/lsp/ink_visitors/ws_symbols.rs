@@ -57,7 +57,7 @@ impl<'a> WorkspaceSymbols<'a> {
 /// This isn't a method to enable partial borrowing. If it were a method,
 /// we'd force `self` to be immutable, but that breaks the mut methods.
 fn text_of<'a>(doc: &InkDocument, node: impl type_sitter::Node<'a>) -> Option<&str> {
-    let name = doc.text()[node.byte_range()].trim();
+    let name = doc.node_text(node).trim();
     if name.is_empty() {
         None
     } else {

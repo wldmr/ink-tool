@@ -1,6 +1,6 @@
 use crate::lsp::{
-    ink_visitors::names::Meta,
     idset::Id,
+    ink_visitors::names::Meta,
     salsa::{self, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
@@ -70,7 +70,7 @@ impl State {
 
     pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
         if let Some(id) = self.db.doc_ids().get_id(&uri) {
-            Ok(self.db.document(id).text().to_owned())
+            Ok(self.db.document(id).full_text())
         } else {
             Err(DocumentNotFound(uri))
         }

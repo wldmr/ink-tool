@@ -128,8 +128,12 @@ impl InkDocument {
         }
     }
 
-    pub fn text(&self) -> &str {
-        &self.text
+    /// The full text of the file, as an owned string.
+    pub fn full_text(&self) -> String {
+        // NOTE: We don’t give out slices because there’s a some chance we’ll replace the
+        // underlying string with something more editing-efficient (like a Rope or even
+        // just a `Vec<String>`), which likely isn't contiguous.
+        self.text.to_owned()
     }
 
     pub fn root(&self) -> syntax::Ink<'_> {
