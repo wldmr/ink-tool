@@ -149,6 +149,7 @@ fn handle_notification(
         DidOpenTextDocument,
         DidCloseTextDocument,
         DidChangeTextDocument,
+        DidChangeWatchedFiles,
     }
 }
 

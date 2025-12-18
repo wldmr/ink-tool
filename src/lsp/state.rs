@@ -76,6 +76,13 @@ impl State {
         }
     }
 
+    pub fn is_open(&mut self, uri: &Uri) -> Result<bool, DocumentNotFound> {
+        let Some(id) = self.db.doc_ids().get_id(&uri) else {
+            return Err(DocumentNotFound(uri.clone()));
+        };
+        Ok(self.db.get(opened_docs).contains(&id))
+    }
+
     pub fn open(&mut self, uri: Uri) {
         let id = self.get_or_new_docid(uri);
         self.db.modify(opened_docs, |docs| docs.insert(id));
