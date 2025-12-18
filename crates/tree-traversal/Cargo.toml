@@ -1,0 +1,15 @@
+[package]
+name = "tree-traversal"
+description = "Facilities for conveniently traversing type-sitter trees"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+log.workspace = true
+type-sitter.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true
+assert2.workspace = true
+indoc.workspace = true
+pretty_assertions.workspace = true

@@ -46,7 +46,7 @@ Within the definining knot (and nested stitches), the label can be referenced wi
 //     ^^^ references knot.foo
 
 And so are {knot.foo}, {knot.bar} and {knot.stitch.bar}.
-//          ---- ---    ---- ---                   ^^^ references knot.bar
+//                                                 ^^^ references knot.bar
 //                                          ^^^^^^     references knot.bar knot.stitch
 //                                     ^^^^            references knot.bar knot.stitch knot
 //                           ^^^ references knot.bar

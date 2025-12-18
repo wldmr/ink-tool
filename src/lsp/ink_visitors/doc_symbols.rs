@@ -1,39 +1,25 @@
-use crate::{
-    ink_syntax::{
-        types::{AllNamed, GlobalKeyword},
-        VisitInstruction, Visitor,
-    },
-    lsp::{document::InkDocument, salsa::DocId},
-};
+use std::ops::Deref;
+
 use builder::SymbolBuilder;
-use line_index::{LineCol, LineIndex, WideEncoding};
-use lsp_types::{DocumentSymbol, Range, SymbolKind};
+use ink_document::InkDocument;
+use ink_syntax::{AllNamed, GlobalKeyword};
+use lsp_types::Range;
+use lsp_types::{DocumentSymbol, SymbolKind};
+use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKindCause, Node};
 
 // IDEA: Maybe this shouldn't return LSP types?
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
-pub(in crate::lsp::salsa) struct DocumentSymbolsQ(pub DocId);
-
-impl mini_milc::Subquery<super::Ops, Vec<DocumentSymbol>> for DocumentSymbolsQ {
-    fn value(
-        &self,
-        db: &impl mini_milc::Db<super::Ops>,
-        old: mini_milc::Old<Vec<DocumentSymbol>>,
-    ) -> mini_milc::Updated<Vec<DocumentSymbol>> {
-        use crate::lsp::salsa::InkGetters as _;
-        let doc = db.document(self.0.clone());
-        let mut syms = DocumentSymbols::new(&*doc);
-        let mut cursor = doc.tree.root_node().walk();
-        let mut dummy = SymbolBuilder::new(SymbolKind::FILE)
-            .name("dummy.ink")
-            .range(Range::default())
-            .build();
-        syms.traverse(&mut cursor, &mut dummy);
-        old.update(dummy.children.unwrap_or_default())
-    }
+pub fn document_symbols(doc: &impl Deref<Target = InkDocument>) -> Vec<lsp_types::DocumentSymbol> {
+    let init = SymbolBuilder::new(SymbolKind::FILE)
+        .name("dummy.ink")
+        .range(Range::default())
+        .build();
+    DocumentSymbols::new(doc.deref())
+        .traverse_with_state(doc.root(), init)
+        .children
+        .unwrap_or_default()
 }
-
 mod builder {
     use lsp_types::{DocumentSymbol, Range, SymbolKind};
     use std::marker::PhantomData;
@@ -107,53 +93,13 @@ mod builder {
     }
 }
 
-pub(crate) fn lsp_position(
-    lines: &LineIndex,
-    enc: Option<WideEncoding>,
-    point: tree_sitter::Point,
-) -> lsp_types::Position {
-    let native = LineCol {
-        line: point.row as u32,
-        col: point.column as u32,
-    };
-
-    if let Some(enc) = enc {
-        let wide = lines.to_wide(enc, native).unwrap();
-        lsp_types::Position {
-            line: wide.line,
-            character: wide.col,
-        }
-    } else {
-        lsp_types::Position {
-            line: native.line,
-            character: native.col,
-        }
-    }
-}
-
-pub(crate) fn lsp_range(
-    lines: &LineIndex,
-    enc: Option<WideEncoding>,
-    node: &tree_sitter::Range,
-) -> lsp_types::Range {
-    let start = lsp_position(lines, enc, node.start_point);
-    let end = lsp_position(lines, enc, node.end_point);
-    lsp_types::Range { start, end }
-}
-
-pub(super) struct DocumentSymbols<'a> {
-    text: &'a str,
-    lines: &'a LineIndex,
-    enc: Option<WideEncoding>,
+struct DocumentSymbols<'a> {
+    doc: &'a InkDocument,
 }
 
 impl<'a> DocumentSymbols<'a> {
-    pub(crate) fn new(doc: &'a InkDocument) -> Self {
-        Self {
-            text: &doc.text,
-            lines: &doc.lines,
-            enc: doc.enc,
-        }
+    pub fn new(doc: &'a InkDocument) -> Self {
+        Self { doc }
     }
 
     /// add a child to the topmost parent
@@ -175,15 +121,19 @@ impl<'a> DocumentSymbols<'a> {
     /// Returns the fully qualified name (i.e. the concatenation of all its parents’
     /// names plus the local name) if [`Self::qualified_names`] is `true`.
     fn text(&self, n: impl Node<'a>) -> Option<String> {
-        let name = self.text[n.byte_range()].trim();
+        let name = self.text_of(n).trim();
         if name.is_empty() {
             return None;
         }
         Some(name.to_owned())
     }
 
-    fn lsp_range(&self, range: &tree_sitter::Range) -> lsp_types::Range {
-        lsp_range(&self.lines, self.enc, range)
+    fn text_of<N: Node<'a>>(&self, node: N) -> &str {
+        self.doc.node_text(node)
+    }
+
+    fn lsp_range<N: Node<'a>>(&self, node: N) -> lsp_types::Range {
+        self.doc.lsp_range(node.range())
     }
 }
 
@@ -275,7 +225,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
 
                 let sym = SymbolBuilder::new(kind)
                     .name(name)
-                    .range(self.lsp_range(&block.range()))
+                    .range(self.lsp_range(block))
                     .maybe_detail(knot.params().and_then(|params| self.text(params)))
                     .build();
 
@@ -292,7 +242,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
 
                 let sym = SymbolBuilder::new(SymbolKind::CLASS)
                     .name(name)
-                    .range(self.lsp_range(&block.range()))
+                    .range(self.lsp_range(block))
                     .maybe_detail(stitch.params().and_then(|params| self.text(params)))
                     .build();
 
@@ -303,7 +253,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 if let Some(name) = self.text(external.name()) {
                     let sym = SymbolBuilder::new(SymbolKind::INTERFACE)
                         .name(name)
-                        .range(self.lsp_range(&external.name().range()))
+                        .range(self.lsp_range(external.name()))
                         .maybe_detail(external.params().ok().and_then(|params| self.text(params)))
                         .build();
                     self.push_sym(parent, sym);
@@ -317,7 +267,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                         if let Some(name) = self.text(label.name()) {
                             let sym = SymbolBuilder::new(SymbolKind::KEY)
                                 .name(name)
-                                .range(self.lsp_range(&block.range()))
+                                .range(self.lsp_range(block))
                                 .maybe_detail(
                                     choice.marks().ok().and_then(|marks| self.text(marks)),
                                 )
@@ -336,7 +286,7 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                         if let Some(name) = self.text(name_node) {
                             let sym = SymbolBuilder::new(SymbolKind::KEY)
                                 .name(name)
-                                .range(self.lsp_range(&block.range()))
+                                .range(self.lsp_range(block))
                                 .maybe_detail(
                                     gather
                                         .gather_marks()
@@ -360,8 +310,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 if let Some(name) = self.text(global.name()) {
                     let sym = SymbolBuilder::new(kind)
                         .name(name)
-                        .range(self.lsp_range(&global.range()))
-                        .selection_range(self.lsp_range(&global.name().range()))
+                        .range(self.lsp_range(global))
+                        .selection_range(self.lsp_range(global.name()))
                         .build();
                     self.push_sym(parent, sym);
                 }
@@ -375,8 +325,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                     .unwrap_or_else(|| String::from("DUMMY LIST"));
                 let sym = SymbolBuilder::new(SymbolKind::ENUM)
                     .name(name)
-                    .range(self.lsp_range(&list.range()))
-                    .selection_range(self.lsp_range(&name_node.range()))
+                    .range(self.lsp_range(list))
+                    .selection_range(self.lsp_range(name_node))
                     .build();
 
                 DescendWith(sym)
@@ -387,18 +337,14 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 if let Some(name) = self.text(name_node) {
                     let mut sym = SymbolBuilder::new(SymbolKind::ENUM_MEMBER)
                         .name(name)
-                        .range(self.lsp_range(&def.range()))
-                        .selection_range(self.lsp_range(&name_node.range()))
+                        .range(self.lsp_range(def))
+                        .selection_range(self.lsp_range(name_node))
                         .build();
                     sym.detail = match (def.value(), def.lparen()) {
                         (None, None) => None,
                         (None, Some(_)) => Some("()".to_string()),
-                        (Some(value), None) => {
-                            Some(format!("= {}", &self.text[value.byte_range()]))
-                        }
-                        (Some(value), Some(_)) => {
-                            Some(format!("(= {})", &self.text[value.byte_range()]))
-                        }
+                        (Some(value), None) => Some(format!("= {}", self.text_of(value))),
+                        (Some(value), Some(_)) => Some(format!("(= {})", self.text_of(value))),
                     };
                     self.push_sym(parent, sym);
                 }
@@ -410,8 +356,8 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for DocumentSymbols<'tree> {
                 if let Some(name) = self.text(name_node) {
                     let sym = SymbolBuilder::new(SymbolKind::VARIABLE)
                         .name(name)
-                        .range(self.lsp_range(&temp.range()))
-                        .selection_range(self.lsp_range(&name_node.range()))
+                        .range(self.lsp_range(temp))
+                        .selection_range(self.lsp_range(name_node))
                         .build();
                     self.push_sym(parent, sym);
                 }

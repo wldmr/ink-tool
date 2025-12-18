@@ -3,63 +3,79 @@ name = "ink-tool"
 description = "Toolset for Inkle's Ink language"
 keywords = ["ink", "formatter", "language-server"]
 categories = ["command-line-utilities", "development-tools", "game-development"]
+version.workspace = true
+edition.workspace = true
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[workspace.dependencies]
 assert2 = "0.3.15"
-axum = "0.8.1"
-clap = { version = "4.5.18", features = ["derive"] }
 derive_more = { version = "1.0.0", features = ["display", "debug", "error", "from", "into", "deref", "deref_mut"] }
-fern = "0.7.1"
-futures = "0.3.31"
-html = "0.6.3"
-humantime = "2.1.0"
-itertools = "0.13.0"
-jsonrpc = "0.18.0"
+indoc = "2.0.5"
 line-index = "0.1.1"
 log = "0.4.25"
-lsp-server = "0.7.7"
 lsp-types = "0.97.0"
-notify = "6.1.1"
-serde = "1"
-serde_json = "1"
+pretty_assertions = "1.4.0"
 tap = "1"
-tokio = { version = "1.43.0", features = ["rt"] }
-tree-sitter = "0.25"
+test-case = "3.3.1"
+tree-sitter = "0.25" # TODO: Stopgap measure? Ideally, we want this confined to the ink-document crate
 tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit = 'f632cbc'}
 walkdir = "2.5.0"
-mini-milc = { git = "ssh://git@codeberg.org/wldmr/milc.git", commit = 'b61397626b'}
-indexmap = "2.12.1"
+tree-traversal = { path = "./crates/tree-traversal" }
+ink-syntax = { path = "./crates/ink-syntax" }
 
-[dev-dependencies]
-annotate-snippets = "0.11.5"
-derive-quickcheck-arbitrary = "0.1.3"
-indoc = "2.0.5"
-pretty_assertions = "1.4.0"
-quickcheck = "1.0.3"
-strum = { version = "0.26.3", features = ["derive"] }
-test-case = "3.3.1"
-
-[build-dependencies]
-cc="*"
-derive_builder = "0.20.0"
-markdown = "1.0.0-alpha.17"
-tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit = 'f632cbc'}
-
-[dependencies.type-sitter]
+[workspace.dependencies.type-sitter]
 version = "0.8"
 # path = "../type-sitter/type-sitter-lib"
 # git = "https://github.com/wldmr/type-sitter.git"
 git = "https://github.com/jakobeha/type-sitter.git"
 # branch = "main"
 
-[build-dependencies.type-sitter-gen]
-version = "0.8"
-# path = "../type-sitter/type-sitter-gen"
-# git = "https://github.com/wldmr/type-sitter.git"
-git = "https://github.com/jakobeha/type-sitter.git"
-# branch = "main"
+[dependencies]
+assert2.workspace = true
+axum = "0.8.1"
+clap = { version = "4.5.18", features = ["derive"] }
+derive_more.workspace = true
+fern = "0.7.1"
+futures = "0.3.31"
+html = "0.6.3"
+humantime = "2.1.0"
+indexmap = "2.12.1"
+ink-document = { path = "./crates/ink-document" }
+ink-syntax.workspace = true
+itertools = "0.13.0"
+jsonrpc = "0.18.0"
+line-index.workspace = true
+log.workspace = true
+lsp-server = "0.7.7"
+lsp-types.workspace = true
+mini-milc = { git = "ssh://git@codeberg.org/wldmr/milc.git", commit = 'b61397626b'}
+notify = "6.1.1"
+serde = "1"
+serde_json = "1"
+tap.workspace = true
+tokio = { version = "1.43.0", features = ["rt"] }
+tree-traversal = { path = "./crates/tree-traversal" }
+tree-sitter-ink.workspace = true
+tree-sitter.workspace = true
+type-sitter.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+annotate-snippets = "0.11.5"
+derive-quickcheck-arbitrary = "0.1.3"
+indoc.workspace = true
+pretty_assertions.workspace = true
+quickcheck = "1.0.3"
+strum = { version = "0.26.3", features = ["derive"] }
+test-case.workspace = true
+
+[build-dependencies]
+cc="*"
+derive_builder = "0.20.0"
+markdown = "1.0.0-alpha.17"
 
 [profile.release]
 strip = true

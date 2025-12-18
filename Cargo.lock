@@ -771,6 +771,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b248f5224d1d606005e02c97f5aa4e88eeb230488bcc03bc9ca4d7991399f2b5"
 
 [[package]]
+name = "ink-document"
+version = "0.1.0"
+dependencies = [
+ "assert2",
+ "derive_more",
+ "indoc",
+ "ink-syntax",
+ "line-index",
+ "lsp-types",
+ "pretty_assertions",
+ "tap",
+ "test-case",
+ "tree-sitter",
+ "tree-sitter-ink",
+ "tree-traversal",
+ "type-sitter",
+]
+
+[[package]]
+name = "ink-syntax"
+version = "0.1.0"
+dependencies = [
+ "tree-sitter-ink",
+ "type-sitter",
+ "type-sitter-gen",
+]
+
+[[package]]
 name = "ink-tool"
 version = "0.1.0"
 dependencies = [
@@ -788,6 +816,8 @@ dependencies = [
  "humantime",
  "indexmap",
  "indoc",
+ "ink-document",
+ "ink-syntax",
  "itertools",
  "jsonrpc",
  "line-index",
@@ -807,8 +837,8 @@ dependencies = [
  "tokio",
  "tree-sitter",
  "tree-sitter-ink",
+ "tree-traversal",
  "type-sitter",
- "type-sitter-gen",
  "walkdir",
 ]
 
@@ -1667,6 +1697,18 @@ name = "tree-sitter-language"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4013970217383f67b18aef68f6fb2e8d409bc5755227092d32efb0422ba24b8"
+
+[[package]]
+name = "tree-traversal"
+version = "0.1.0"
+dependencies = [
+ "assert2",
+ "indoc",
+ "log",
+ "pretty_assertions",
+ "test-case",
+ "type-sitter",
+]
 
 [[package]]
 name = "type-sitter"

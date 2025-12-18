@@ -8,10 +8,10 @@ use lsp_types::*;
 use state::State;
 use std::{ops::Not, path::Path};
 
-mod document;
 mod file_watching;
 mod http_server;
 mod idset;
+mod ink_visitors;
 mod location;
 mod notification_handlers;
 mod request_handlers;

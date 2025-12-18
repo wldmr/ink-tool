@@ -87,23 +87,6 @@ impl TextRegion {
     }
 }
 
-impl<'a, T: type_sitter::Node<'a>> From<T> for TextRegion {
-    fn from(node: T) -> Self {
-        TextRegion {
-            start: TextPos {
-                byte: node.start_byte(),
-                row: node.start_position().row as u32,
-                col: node.start_position().column as u32,
-            },
-            end: TextPos {
-                byte: node.end_byte(),
-                row: node.end_position().row as u32,
-                col: node.end_position().column as u32,
-            },
-        }
-    }
-}
-
 impl From<TextRegion> for lsp_types::Range {
     fn from(value: TextRegion) -> Self {
         Self {

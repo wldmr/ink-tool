@@ -1,0 +1,22 @@
+[package]
+name = "ink-document"
+description = "Encapsulates parsing and editing a file containing Ink syntax"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tree-sitter.workspace = true
+tree-sitter-ink.workspace = true
+lsp-types.workspace = true # TODO: Stopgap measure? Maybe don't depend on LSP here?
+tap.workspace = true
+derive_more.workspace = true
+line-index.workspace = true
+tree-traversal.workspace = true
+type-sitter.workspace = true
+ink-syntax.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true
+assert2.workspace = true
+indoc.workspace = true
+pretty_assertions.workspace = true

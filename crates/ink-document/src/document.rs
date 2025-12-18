@@ -1,28 +1,44 @@
-use crate::ink_syntax;
-use crate::ink_syntax::traversal::parent;
-use crate::ink_syntax::types::{AllNamed, Definitions, DivertTarget, QualifiedName, Usages};
-use crate::lsp::document::ids::{DefinitionInfo, NodeId, UsageInfo};
-use crate::lsp::idset::Id;
-use crate::lsp::salsa::GetNodeError;
-use crate::lsp::state::InvalidPosition;
+use crate::ids::{self, NodeId, UsageInfo};
+use derive_more::derive::{Display, Error, From};
+use ink_syntax::{self as syntax, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use lsp_types::{Position, Uri};
-use tap::Pipe as _;
-use tree_sitter::Parser;
+use lsp_types::Position;
+use tree_traversal::{depth_first, parent};
 use type_sitter::{Node, UntypedNode};
 
-// IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
-// Everthing else works in terms of LSP types.
-
-pub mod ids;
-
-pub(crate) struct InkDocument {
-    pub(crate) tree: tree_sitter::Tree,
-    pub(crate) text: String,
-    pub(crate) parser: tree_sitter::Parser,
-    pub(crate) enc: Option<WideEncoding>,
-    pub(crate) lines: line_index::LineIndex,
+/// Encapsulates Parsing/editing an Ink file.
+///
+/// This is mostly a convenience wrapper to not have to deal with encodings. Other
+/// than that it is actually fairly porous: It takes LSP types and exposes
+/// tree-sitter/type-sitter types. This is intentional; it is a bridge between the
+/// LSP world and tree-sitter world. Full encapsulation would mean not knowing about
+/// LSP and not telling about tree-sitter/type-sitter. This would require recreating
+/// a lot of the niceties that those libraries bring, and that is just wasted
+/// effort.
+///
+/// It is unlikely that we’ll move away from tree-sitter or LSP, so we won’t bother
+/// hiding it.
+pub struct InkDocument {
+    tree: type_sitter::Tree<Ink<'static>>,
+    text: String,
+    parser: type_sitter::Parser<Ink<'static>>,
+    enc: Option<WideEncoding>,
+    lines: line_index::LineIndex,
 }
+
+#[derive(Debug, Clone, Display, Error, From)]
+#[display("Could not go to node.")]
+pub enum GetNodeError {
+    #[display("Node type didn't match")]
+    InvalidType,
+    PositionOutOfBounds(InvalidPosition),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
+#[display("Not a valid position: {}:{}", _0.line, _0.character)]
+pub struct InvalidPosition(#[error(not(source))] pub(crate) Position);
+
+pub type Usages = Vec<(String, lsp_types::Range)>;
 
 impl Default for InkDocument {
     fn default() -> Self {
@@ -53,7 +69,83 @@ impl std::hash::Hash for InkDocument {
     }
 }
 
-pub(crate) type DocumentEdit<S> = (Option<lsp_types::Range>, S);
+/// Our own type capturing partial or full-file edits.
+///
+/// Mostly for convenience in terms of conversion and some readability.
+pub enum DocumentEdit {
+    Whole(String),
+    Part(lsp_types::Range, String),
+}
+
+/// This is the main conversion for the LSP
+impl<'a> From<lsp_types::TextDocumentContentChangeEvent> for DocumentEdit {
+    fn from(value: lsp_types::TextDocumentContentChangeEvent) -> Self {
+        match value.range {
+            Some(range) => DocumentEdit::Part(range, value.text),
+            None => DocumentEdit::Whole(value.text),
+        }
+    }
+}
+
+/// This conversion is for the file watcher, where we always read in the complete file.
+impl From<String> for DocumentEdit {
+    fn from(value: String) -> Self {
+        DocumentEdit::Whole(value)
+    }
+}
+
+// The following impls are to make testing a little more convenient.
+
+impl<'a> From<&'a str> for DocumentEdit {
+    fn from(value: &'a str) -> Self {
+        DocumentEdit::Whole(value.into())
+    }
+}
+
+impl<'a> From<&'a String> for DocumentEdit {
+    fn from(value: &'a String) -> Self {
+        DocumentEdit::Whole(value.into())
+    }
+}
+
+impl<'a> From<(lsp_types::Range, &'a str)> for DocumentEdit {
+    fn from(value: (lsp_types::Range, &'a str)) -> Self {
+        DocumentEdit::Part(value.0, value.1.into())
+    }
+}
+
+impl From<(lsp_types::Range, String)> for DocumentEdit {
+    fn from(value: (lsp_types::Range, String)) -> Self {
+        DocumentEdit::Part(value.0, value.1.into())
+    }
+}
+
+impl<'a> From<(Option<lsp_types::Range>, &'a str)> for DocumentEdit {
+    fn from((range, text): (Option<lsp_types::Range>, &'a str)) -> Self {
+        match range {
+            Some(range) => DocumentEdit::Part(range, text.into()),
+            None => DocumentEdit::Whole(text.into()),
+        }
+    }
+}
+
+impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
+    fn from((range, text): (std::ops::Range<(u32, u32)>, &str)) -> DocumentEdit {
+        DocumentEdit::Part(
+            lsp_types::Range {
+                start: lsp_types::Position {
+                    line: range.start.0,
+                    character: range.start.1,
+                },
+                end: lsp_types::Position {
+                    line: range.end.0,
+                    character: range.end.1,
+                },
+            },
+            text.to_owned(),
+        )
+    }
+}
 
 pub struct UsageUnderCursor<'a> {
     pub usage: ids::Usage,
@@ -68,11 +160,12 @@ pub struct DefinitionUnderCursor<'a> {
 
 /// Public API
 impl InkDocument {
-    pub(crate) fn new(text: String, enc: Option<WideEncoding>) -> Self {
-        let mut parser = Parser::new();
+    pub fn new(text: String, enc: Option<WideEncoding>) -> Self {
+        let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_ink::LANGUAGE.into())
             .expect("setting the language mustn't fail");
+        let mut parser = type_sitter::Parser::wrap(parser);
         let tree = parser
             .parse(&text, None)
             .expect("can only return None with timeout, cancellation flag or missing language");
@@ -86,57 +179,79 @@ impl InkDocument {
         }
     }
 
-    pub(crate) fn new_empty(enc: Option<WideEncoding>) -> Self {
+    pub fn new_empty(enc: Option<WideEncoding>) -> Self {
         Self::new(String::new(), enc)
     }
 
-    pub(crate) fn edit<S: AsRef<str> + Into<String>>(&mut self, edits: Vec<DocumentEdit<S>>) {
-        // log::trace!("applying {} edits", edits.len());
-        for (range, new_text) in edits.into_iter() {
-            let edit = range.map(|range| self.input_edit(range, new_text.as_ref()));
-            let modified_tree = if let Some(edit) = edit {
+    pub fn edit(&mut self, edit: impl Into<DocumentEdit>) {
+        let modified_tree = match edit.into() {
+            DocumentEdit::Part(range, text) => {
+                let edit = self.input_edit(range, &text);
                 self.text
-                    .replace_range(edit.start_byte..edit.old_end_byte, new_text.as_ref());
+                    .replace_range(edit.start_byte..edit.old_end_byte, &text);
                 self.tree.edit(&edit);
                 Some(&self.tree)
-            } else {
-                self.text = new_text.into();
+            }
+            DocumentEdit::Whole(text) => {
+                self.text = text;
                 None
-            };
-            self.tree = self
-                .parser
-                .parse(&self.text, modified_tree)
-                .expect("parsing must work");
-            self.lines = LineIndex::new(&self.text);
-        }
+            }
+        };
+        self.tree = self
+            .parser
+            .parse(&self.text, modified_tree)
+            .expect("parsing must work");
+        self.lines = LineIndex::new(&self.text);
+    }
+
+    pub fn edits<'a, E: Into<DocumentEdit>>(&mut self, edits: impl IntoIterator<Item = E>) {
+        edits.into_iter().for_each(|edit| self.edit(edit));
+    }
+
+    /// The full text of the file, as an owned string.
+    pub fn full_text(&self) -> String {
+        // NOTE: We don’t give out slices because there’s a some chance we’ll replace the
+        // underlying string with something more editing-efficient (like a Rope or even
+        // just a `Vec<String>`), which likely isn't contiguous.
+        self.text.to_owned()
+    }
+
+    pub fn root(&self) -> syntax::Ink<'_> {
+        self.tree.root_node().expect("Root node must be Ink")
+    }
+
+    pub fn byte_range(&self, range: lsp_types::Range) -> std::ops::Range<usize> {
+        let start = self.to_byte(range.start);
+        let end = self.to_byte(range.end);
+        start..end
     }
 
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
-        let node: Definitions = self.thing_under_cursor(pos)?;
+        let node: syntax::Definitions = self.thing_under_cursor(pos)?;
         let site = match node {
-            Definitions::External(external) => external.name().upcast(),
-            Definitions::Global(global) => global.name().upcast(),
-            Definitions::Knot(knot) => knot.name().upcast(),
-            Definitions::Label(label) => label.name().upcast(),
-            Definitions::List(list) => list.name().upcast(),
-            Definitions::ListValueDef(lvd) => lvd.name().upcast(),
-            Definitions::Param(param) => match param.value().ok()? {
-                ink_syntax::types::ParamValue::Divert(divert) => divert.target().upcast(),
-                ink_syntax::types::ParamValue::Identifier(identifier) => identifier.upcast(),
+            syntax::Definitions::External(external) => external.name().upcast(),
+            syntax::Definitions::Global(global) => global.name().upcast(),
+            syntax::Definitions::Knot(knot) => knot.name().upcast(),
+            syntax::Definitions::Label(label) => label.name().upcast(),
+            syntax::Definitions::List(list) => list.name().upcast(),
+            syntax::Definitions::ListValueDef(lvd) => lvd.name().upcast(),
+            syntax::Definitions::Param(param) => match param.value().ok()? {
+                syntax::ParamValue::Divert(divert) => divert.target().upcast(),
+                syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
             },
-            Definitions::Stitch(stitch) => stitch.name().upcast(),
-            Definitions::TempDef(temp_def) => temp_def.name().upcast(),
+            syntax::Definitions::Stitch(stitch) => stitch.name().upcast(),
+            syntax::Definitions::TempDef(temp_def) => temp_def.name().upcast(),
         };
 
         Some(DefinitionUnderCursor {
-            range: self.lsp_range(&site.range()),
-            term: self.text_of(site),
+            range: self.lsp_range(site.range()),
+            term: self.node_text(site),
         })
     }
 
-    pub fn usage_at(&self, file: Id<Uri>, pos: Position) -> Option<UsageUnderCursor<'_>> {
+    pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let node: DivertTarget<'_> = self.thing_under_cursor(pos)?;
+        let node: syntax::DivertTarget = self.thing_under_cursor(pos)?;
 
         // The “terms” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -157,7 +272,7 @@ impl InkDocument {
         //
         // would look for “knot.stitch” and “knot.stitch.label”, but not “knot”.
         let mut terms: Vec<&str> = Default::default();
-        let mut extract_terms_from_qname = |qname: QualifiedName| {
+        let mut extract_terms_from_qname = |qname: syntax::QualifiedName| {
             let start = qname.start_byte();
             for ident in qname.identifiers(&mut qname.walk()) {
                 let end = ident.end_byte();
@@ -168,12 +283,12 @@ impl InkDocument {
         };
 
         let find_redirect_kind = |node: UntypedNode| {
-            parent::<_, ink_syntax::types::Redirect>(node)
+            parent::<_, syntax::Redirect>(node)
                 .next()
                 .map(|it| match it {
-                    ink_syntax::types::Redirect::Divert(_) => ids::RedirectKind::Divert,
-                    ink_syntax::types::Redirect::Thread(_) => ids::RedirectKind::Thread,
-                    ink_syntax::types::Redirect::Tunnel(tunnel) => {
+                    syntax::Redirect::Divert(_) => ids::RedirectKind::Divert,
+                    syntax::Redirect::Thread(_) => ids::RedirectKind::Thread,
+                    syntax::Redirect::Tunnel(tunnel) => {
                         if tunnel.target().is_some() {
                             ids::RedirectKind::NamedTunnelReturn
                         } else {
@@ -184,15 +299,15 @@ impl InkDocument {
         };
 
         let (usage, range) = match node {
-            DivertTarget::Call(call) => {
+            syntax::DivertTarget::Call(call) => {
                 match call.name().ok() {
-                    Some(Usages::Identifier(ident)) => terms.push(self.text_of(ident)),
-                    Some(Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
+                    Some(syntax::Usages::Identifier(ident)) => terms.push(self.node_text(ident)),
+                    Some(syntax::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
                     _ => {}
                 };
                 (
                     ids::Usage(
-                        NodeId::new(file, call.name()),
+                        NodeId::new(call.name()),
                         UsageInfo {
                             redirect: find_redirect_kind(call.upcast()),
                             params: true,
@@ -201,11 +316,11 @@ impl InkDocument {
                     call.name().range(),
                 )
             }
-            DivertTarget::Identifier(ident) => {
-                terms.push(self.text_of(ident));
+            syntax::DivertTarget::Identifier(ident) => {
+                terms.push(self.node_text(ident));
                 (
                     ids::Usage(
-                        NodeId::new(file, ident),
+                        NodeId::new(ident),
                         UsageInfo {
                             redirect: find_redirect_kind(ident.upcast()),
                             params: false,
@@ -214,11 +329,11 @@ impl InkDocument {
                     ident.range(),
                 )
             }
-            DivertTarget::QualifiedName(qname) => {
+            syntax::DivertTarget::QualifiedName(qname) => {
                 extract_terms_from_qname(qname);
                 (
                     ids::Usage(
-                        NodeId::new(file, qname),
+                        NodeId::new(qname),
                         UsageInfo {
                             redirect: find_redirect_kind(qname.upcast()),
                             params: false,
@@ -231,9 +346,24 @@ impl InkDocument {
 
         Some(UsageUnderCursor {
             usage,
-            range: self.lsp_range(&range),
+            range: self.lsp_range(range),
             terms,
         })
+    }
+
+    pub fn usages(&self) -> Usages {
+        depth_first::<_, syntax::Usages>(self.root())
+            .map(|node| match node {
+                syntax::Usages::Identifier(ident) => ident.range(),
+                syntax::Usages::QualifiedName(qname) => qname.range(),
+            })
+            .map(|range| {
+                (
+                    self.text[range.start_byte..range.end_byte].to_owned(),
+                    self.lsp_range(range),
+                )
+            })
+            .collect::<Usages>()
     }
 }
 
@@ -247,12 +377,13 @@ impl InkDocument {
     fn thing_under_cursor<'a, N: type_sitter::Node<'a>>(&'a self, pos: Position) -> Option<N> {
         let byte_pos = self.to_byte(pos);
         let root = self.tree.root_node();
+        let root = root.raw(); // annoyingly, type-sitter doesn't have any "descendant" methods.
 
         // We’ll try to find the biggest interesting node that surrounds the cursor
         // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
         // and we want the latter if it is there.
         root.named_descendant_for_byte_range(byte_pos, byte_pos)
-            .map(UntypedNode::try_from_raw)
+            .map(UntypedNode::new)
             .and_then(|node| parent::<_, N>(node).last())
             .or_else(|| {
                 // If we couldn’t find anything interesting at pos, try one byte to the left. This
@@ -261,7 +392,7 @@ impl InkDocument {
                 // found to refer to `please_compl` if we didn’t account for this.
                 let one_to_the_left = byte_pos.checked_sub(1)?;
                 root.named_descendant_for_byte_range(one_to_the_left, one_to_the_left)
-                    .map(UntypedNode::try_from_raw)
+                    .map(UntypedNode::new)
                     .and_then(|node| parent::<_, N>(node).last())
             })
     }
@@ -325,97 +456,20 @@ impl InkDocument {
         }
     }
 
-    fn text_of<'a, N: Node<'a>>(&self, n: N) -> &str {
+    pub fn node_text<'a, N: Node<'a>>(&self, n: N) -> &str {
         &self.text[n.byte_range()]
     }
 
-    pub(super) fn lsp_range(&self, node: &tree_sitter::Range) -> lsp_types::Range {
-        let start = self.lsp_position(node.start_point);
-        let end = self.lsp_position(node.end_point);
+    pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {
+        let start = self.lsp_position(range.start_point);
+        let end = self.lsp_position(range.end_point);
         lsp_types::Range { start, end }
     }
-
-    /// Walk up the parents of this node; return the largest node that can be a (potentially qualified) name of something.
-    fn widen_to_full_name<'t>(this: DivertTarget<'t>) -> DivertTarget<'t> {
-        let maybe_parent = this
-            .parent()
-            .map(|it| DivertTarget::try_from_raw(*it.raw()));
-        if let Some(Ok(parent)) = maybe_parent {
-            Self::widen_to_full_name(parent)
-        } else {
-            this
-        }
-    }
-
-    pub fn get_node_at<'a, T>(&'a self, pos: lsp_types::Position) -> Result<T, GetNodeError>
-    where
-        T: type_sitter::Node<'a>,
-    {
-        let (point, _byte) = self.ts_point(pos)?;
-        self.tree
-            .root_node()
-            .named_descendant_for_point_range(point, point)
-            .ok_or_else(|| InvalidPosition(pos))?
-            .pipe(T::try_from_raw)
-            .map_err(|_| GetNodeError::InvalidType)
-    }
-
-    pub fn named_cst_node_at(
-        &self,
-        pos: lsp_types::Position,
-    ) -> Result<AllNamed<'_>, InvalidPosition> {
-        let (point, _byte) = self.ts_point(pos)?;
-        self.tree
-            .root_node()
-            .named_descendant_for_point_range(point, point)
-            .and_then(|node| AllNamed::try_from_raw(node).ok())
-            .ok_or_else(|| InvalidPosition(pos))
-    }
-
-    pub fn ts_point(
-        &self,
-        pos: lsp_types::Position,
-    ) -> Result<(tree_sitter::Point, usize), InvalidPosition> {
-        let lines = &self.lines;
-        let line_col = if let Some(enc) = self.enc {
-            let wide = line_index::WideLineCol {
-                line: pos.line,
-                col: pos.character,
-            };
-            lines
-                .to_utf8(enc, wide)
-                .ok_or_else(|| InvalidPosition(pos))?
-        } else {
-            line_index::LineCol {
-                line: pos.line,
-                col: pos.character,
-            }
-        };
-        let point = tree_sitter::Point::new(pos.line as usize, pos.character as usize);
-        let byte = lines
-            .offset(line_col)
-            .ok_or_else(|| InvalidPosition(pos))?
-            .into();
-        Ok((point, byte))
-    }
-
-    pub fn ts_range(&self, range: lsp_types::Range) -> Result<tree_sitter::Range, InvalidPosition> {
-        let (start_point, start_byte) = self.ts_point(range.start)?;
-        let (end_point, end_byte) = self.ts_point(range.end)?;
-        Ok(tree_sitter::Range {
-            start_byte,
-            end_byte,
-            start_point,
-            end_point,
-        })
-    }
 }
+
 #[cfg(test)]
 mod tests {
-    use crate::lsp::salsa;
-
-    use super::{DocumentEdit, InkDocument};
-    use indoc::indoc;
+    use super::InkDocument;
     use line_index::WideEncoding;
     use pretty_assertions::assert_str_eq;
     use test_case::test_case;
@@ -426,12 +480,12 @@ mod tests {
     fn multiple_edits() {
         let text = "hello world\nhow's it hanging?".to_string();
         let mut document = new_doc(text, None);
-        document.edit(vec![
-            edit((0, 0), (0, 1), "H"),      // Hello world
-            edit((0, 1), (0, 5), "i"),      // Hi world
-            edit((0, 3), (0, 8), "gang!"),  // Hi gang!
-            edit((1, 0), (1, 1), "H"),      // How's it hanging?
-            edit((1, 9), (1, 16), "going"), // How's it going?
+        document.edits([
+            ((0, 0)..(0, 1), "H"),      // Hello world
+            ((0, 1)..(0, 5), "i"),      // Hi world
+            ((0, 3)..(0, 8), "gang!"),  // Hi gang!
+            ((1, 0)..(1, 1), "H"),      // How's it hanging?
+            ((1, 9)..(1, 16), "going"), // How's it going?
         ]);
         assert_str_eq!(document.text, "Hi gang!\nHow's it going?");
     }
@@ -440,12 +494,9 @@ mod tests {
     fn giving_no_range_means_replace_all_text() {
         let text = "some text".to_string();
         let mut document = new_doc(text, None);
-        document.edit(vec![
-            (
-                None,
-                "some ignored text\nthis will be completely overwritted\nby the next edit",
-            ),
-            (None, "final version"),
+        document.edits([
+            "some ignored text\nthis will be completely overwritted\nby the next edit",
+            "final version",
         ]);
         assert_str_eq!(document.text, "final version");
     }
@@ -456,10 +507,10 @@ mod tests {
         // No \r, because I don't expect old Macs will use this language server.
         let text = "line one\r\nline two\nline three".to_string();
         let mut document = new_doc(text, None);
-        document.edit(vec![
-            edit((0, 5), (0, 8), "1"),
-            edit((1, 5), (1, 8), "2"),
-            edit((2, 5), (2, 10), "3"),
+        document.edits([
+            ((0, 5)..(0, 8), "1"),
+            ((1, 5)..(1, 8), "2"),
+            ((2, 5)..(2, 10), "3"),
         ]);
         assert_str_eq!(document.text, "line 1\r\nline 2\nline 3");
     }
@@ -473,37 +524,8 @@ mod tests {
     fn wide_encodings(enc: Option<WideEncoding>, code_units: u32) {
         let text = "🥺🥺".to_string();
         let mut document = new_doc(text, enc);
-        document.edit(vec![edit((0, code_units), (0, code_units), " ")]);
+        document.edit(((0, code_units)..(0, code_units), " "));
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
-    }
-
-    fn range(from: (u32, u32), to: (u32, u32)) -> lsp_types::Range {
-        lsp_types::Range {
-            start: lsp_types::Position {
-                line: from.0,
-                character: from.1,
-            },
-            end: lsp_types::Position {
-                line: to.0,
-                character: to.1,
-            },
-        }
-    }
-
-    fn edit(from: (u32, u32), to: (u32, u32), text: &str) -> DocumentEdit<&str> {
-        (
-            Some(lsp_types::Range {
-                start: lsp_types::Position {
-                    line: from.0,
-                    character: from.1,
-                },
-                end: lsp_types::Position {
-                    line: to.0,
-                    character: to.1,
-                },
-            }),
-            text,
-        )
     }
 
     /// Creates a UTF-8 encoded document and an LSP `Position` based on where the first `@` symbol is.

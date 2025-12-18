@@ -4,9 +4,8 @@ use lsp_server::ResponseError;
 impl NotificationHandler for lsp_types::notification::DidOpenTextDocument {
     fn execute(params: Self::Params, state: &SharedState) -> Result<(), ResponseError> {
         let uri = params.text_document.uri;
-        let edit = vec![(None, params.text_document.text)];
         let mut state = state.lock()?;
-        state.edit(uri, edit);
+        state.edit(uri, params.text_document.text);
         Ok(())
     }
 }
@@ -20,13 +19,8 @@ impl NotificationHandler for lsp_types::notification::DidCloseTextDocument {
 
 impl NotificationHandler for lsp_types::notification::DidChangeTextDocument {
     fn execute(params: Self::Params, state: &SharedState) -> Result<(), ResponseError> {
-        let edits = params
-            .content_changes
-            .into_iter()
-            .map(|it| (it.range, it.text))
-            .collect();
         let mut state = state.lock()?;
-        state.edit(params.text_document.uri, edits);
+        state.edits(params.text_document.uri, params.content_changes);
         Ok(())
     }
 }

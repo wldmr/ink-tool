@@ -1,14 +1,12 @@
-use crate::{
-    ink_syntax::{
-        types::{AllNamed, ScopeBlock},
-        VisitInstruction, Visitor,
-    },
-    lsp::{
-        document::ids::{self, Definition, DefinitionInfo, NodeId},
-        salsa::DocId,
-    },
+use std::ops::Deref;
+
+use ink_document::{
+    ids::{self, DefinitionInfo, NodeId},
+    InkDocument,
 };
+use ink_syntax::{AllNamed, ScopeBlock};
 use lsp_types::{Position, Range};
+use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::Node;
 
 pub type Name = String;
@@ -20,15 +18,23 @@ pub struct Meta {
     pub extent: Option<Range>,
 }
 
+pub fn document_names(doc: &impl Deref<Target = InkDocument>) -> Vec<(Name, Meta)> {
+    Names::new(doc.deref()).traverse(doc.root())
+}
+
 impl Meta {
-    pub fn visible_at(&self, doc: DocId, pos: Position) -> bool {
+    pub fn is_locally_visible_at(&self, pos: Position) -> bool {
         match self.extent {
-            Some(Range { start, end }) => doc == self.id.file() && start <= pos && pos <= end,
-            None => true,
+            Some(Range { start, end }) => start <= pos && pos <= end,
+            None => false,
         }
     }
 
-    pub(crate) fn cmp_extent(&self, other: &Meta) -> std::cmp::Ordering {
+    pub fn is_global(&self) -> bool {
+        self.extent.is_none()
+    }
+
+    pub fn cmp_extent(&self, other: &Meta) -> std::cmp::Ordering {
         use std::cmp::Ordering::*;
         match (self.extent, other.extent) {
             (Some(here), Some(there)) => {
@@ -52,10 +58,8 @@ struct Environment {
     temp_extent: Range,
 }
 
-pub struct Names<'a> {
-    docid: DocId,
-    text: &'a str,
-    lsp_range: &'a dyn Fn(tree_sitter::Range) -> lsp_types::Range,
+struct Names<'a> {
+    doc: &'a InkDocument,
     ink_temp_extent: Option<Range>,
     knot: Option<Environment>,
     stitch: Option<Environment>,
@@ -63,15 +67,9 @@ pub struct Names<'a> {
 }
 
 impl<'a> Names<'a> {
-    pub fn new(
-        docid: DocId,
-        text: &'a str,
-        lsp_range: &'a dyn Fn(tree_sitter::Range) -> lsp_types::Range,
-    ) -> Self {
+    pub fn new(doc: &'a InkDocument) -> Self {
         Self {
-            docid,
-            text,
-            lsp_range,
+            doc,
             ink_temp_extent: None,
             knot: None,
             stitch: None,
@@ -122,7 +120,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 names.push(self.global(list.name(), DefinitionInfo::List));
                 let extent = self.lsp_range(list);
                 self.list = Some(Environment {
-                    nodeid: NodeId::new(self.docid, list.name()),
+                    nodeid: NodeId::new(list.name()),
                     name: self.text(list.name()),
                     extent,
                     temp_extent: extent, // doesn't really make sense, but we don't want to define a new environment type just for lists.
@@ -176,7 +174,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 let name = block.header().map(|it| it.name());
                 self.stitch = None;
                 self.knot = Some(Environment {
-                    nodeid: NodeId::new(self.docid, name),
+                    nodeid: NodeId::new(name),
                     name: self.text(name),
                     extent: self.lsp_range(block),
                     temp_extent: {
@@ -219,7 +217,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 let extent = self.lsp_range(block);
 
                 self.stitch = Some(Environment {
-                    nodeid: NodeId::new(self.docid, name),
+                    nodeid: NodeId::new(name),
                     name: block
                         .header()
                         .map(|it| self.text(it.name()))
@@ -287,7 +285,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             }
 
             Param(param) => {
-                use crate::ink_syntax::types::ParamValue::*;
+                use ink_syntax::ParamValue::*;
                 let name = param.value().map(|it| match it {
                     Divert(divert) => divert.target().upcast(),
                     Identifier(identifier) => identifier.upcast(),
@@ -356,11 +354,11 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
 /// Private Helpers
 impl<'a> Names<'a> {
     fn text<N: Node<'a>>(&self, n: N) -> String {
-        self.text[n.byte_range()].to_owned()
+        self.doc.node_text(n).to_owned()
     }
 
     fn lsp_range<N: Node<'a>>(&self, n: N) -> lsp_types::Range {
-        (self.lsp_range)(n.range())
+        self.doc.lsp_range(n.range())
     }
 
     fn lsp_range_between(
@@ -370,7 +368,7 @@ impl<'a> Names<'a> {
         start_point: tree_sitter::Point,
         end_point: tree_sitter::Point,
     ) -> lsp_types::Range {
-        (self.lsp_range)(tree_sitter::Range {
+        self.doc.lsp_range(tree_sitter::Range {
             start_byte,
             end_byte,
             start_point,
@@ -396,7 +394,7 @@ impl<'a> Names<'a> {
         (
             name,
             Meta {
-                id: Definition::new(self.docid, site, info),
+                id: ids::Definition::new(site, info),
                 extent: extent,
                 site: self.lsp_range(site),
             },
