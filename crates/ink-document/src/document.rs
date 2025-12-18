@@ -1,20 +1,27 @@
 use crate::ids::{self, NodeId, UsageInfo};
 use derive_more::derive::{Display, Error, From};
-use ink_syntax as syntax;
+use ink_syntax::{self as syntax, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
-use tap::Pipe as _;
-use tree_sitter::Parser;
 use tree_traversal::{depth_first, parent};
 use type_sitter::{Node, UntypedNode};
 
-// IMPORTANT: This module (and submodules) should be the only place that knows about tree-sitter types.
-// Everthing else works in terms of LSP types.
-
+/// Encapsulates Parsing/editing an Ink file.
+///
+/// This is mostly a convenience wrapper to not have to deal with encodings. Other
+/// than that it is actually fairly porous: It takes LSP types and exposes
+/// tree-sitter/type-sitter types. This is intentional; it is a bridge between the
+/// LSP world and tree-sitter world. Full encapsulation would mean not knowing about
+/// LSP and not telling about tree-sitter/type-sitter. This would require recreating
+/// a lot of the niceties that those libraries bring, and that is just wasted
+/// effort.
+///
+/// It is unlikely that we’ll move away from tree-sitter or LSP, so we won’t bother
+/// hiding it.
 pub struct InkDocument {
-    tree: tree_sitter::Tree,
+    tree: type_sitter::Tree<Ink<'static>>,
     text: String,
-    parser: tree_sitter::Parser,
+    parser: type_sitter::Parser<Ink<'static>>,
     enc: Option<WideEncoding>,
     lines: line_index::LineIndex,
 }
@@ -78,10 +85,11 @@ pub struct DefinitionUnderCursor<'a> {
 /// Public API
 impl InkDocument {
     pub fn new(text: String, enc: Option<WideEncoding>) -> Self {
-        let mut parser = Parser::new();
+        let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_ink::LANGUAGE.into())
             .expect("setting the language mustn't fail");
+        let mut parser = type_sitter::Parser::wrap(parser);
         let tree = parser
             .parse(&text, None)
             .expect("can only return None with timeout, cancellation flag or missing language");
@@ -125,10 +133,7 @@ impl InkDocument {
     }
 
     pub fn root(&self) -> syntax::Ink<'_> {
-        self.tree
-            .root_node()
-            .pipe(syntax::Ink::try_from_raw)
-            .expect("Root node must be Ink")
+        self.tree.root_node().expect("Root node must be Ink")
     }
 
     pub fn byte_range(&self, range: lsp_types::Range) -> std::ops::Range<usize> {
@@ -263,8 +268,7 @@ impl InkDocument {
     }
 
     pub fn usages(&self) -> Usages {
-        let ink = type_sitter::UntypedNode::new(self.tree.root_node());
-        depth_first::<_, syntax::Usages>(ink)
+        depth_first::<_, syntax::Usages>(self.root())
             .map(|node| match node {
                 syntax::Usages::Identifier(ident) => ident.range(),
                 syntax::Usages::QualifiedName(qname) => qname.range(),
@@ -289,6 +293,7 @@ impl InkDocument {
     fn thing_under_cursor<'a, N: type_sitter::Node<'a>>(&'a self, pos: Position) -> Option<N> {
         let byte_pos = self.to_byte(pos);
         let root = self.tree.root_node();
+        let root = root.raw(); // annoyingly, type-sitter doesn't have any "descendant" methods.
 
         // We’ll try to find the biggest interesting node that surrounds the cursor
         // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
