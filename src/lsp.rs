@@ -113,6 +113,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
             },
             completion_item: None,
         }),
+        rename_provider: Some(OneOf::Left(true)),
         position_encoding: find_utf8(params).or(Some(PositionEncodingKind::UTF16)),
         ..Default::default()
     }
@@ -137,6 +138,7 @@ fn handle_request(request: Request, state: &SharedState) -> Result<Response, Req
         Completion,
         GotoDefinition,
         References,
+        Rename,
     }
 }
 

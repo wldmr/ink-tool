@@ -96,3 +96,14 @@ impl RequestHandler for request::References {
         Ok(response)
     }
 }
+
+impl RequestHandler for request::Rename {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        let edits = state.lock()?.rename_symbol(
+            params.text_document_position.text_document.uri,
+            params.text_document_position.position,
+            params.new_name,
+        )?;
+        Ok(edits)
+    }
+}

@@ -87,6 +87,13 @@ impl<'a> From<lsp_types::TextDocumentContentChangeEvent> for DocumentEdit {
     }
 }
 
+/// This is the main conversion for the LSP
+impl<'a> From<lsp_types::TextEdit> for DocumentEdit {
+    fn from(value: lsp_types::TextEdit) -> Self {
+        DocumentEdit::Part(value.range, value.new_text)
+    }
+}
+
 /// This conversion is for the file watcher, where we always read in the complete file.
 impl From<String> for DocumentEdit {
     fn from(value: String) -> Self {

@@ -10,6 +10,8 @@ use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use mini_milc::{Cached, Db};
 use tap::Tap as _;
 
+mod rename;
+
 // This is quite an abomination, but we have to deal with it.
 type DbType = mini_milc::salsa::Salsa<
     // Query
@@ -344,12 +346,48 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn new_state() -> State {
+    use std::str::FromStr;
+    pub(super) fn new_state() -> State {
         State::new(None, true)
     }
 
-    fn uri(name: &str) -> Uri {
+    impl State {
+        pub(super) fn with_comment_separated_files(mut self, files: impl AsRef<str>) -> Self {
+            for (uri, text) in comment_separated_files(files.as_ref()).unwrap() {
+                self.edit(uri, text);
+            }
+            self
+        }
+    }
+
+    pub(super) fn comment_separated_files(texts: &str) -> Result<Vec<(Uri, String)>, String> {
+        static PREFIX: &'static str = "// file:";
+        static SUFFIX: &'static str = ".ink";
+
+        let mut uri = uri("main.ink");
+        let mut text = String::new();
+        let mut vec = Vec::new();
+        for line in texts.trim().lines() {
+            let line = line.trim();
+            if line.starts_with(PREFIX) && line.ends_with(SUFFIX) {
+                let Some((_, filename)) = line.split_once(PREFIX) else {
+                    return Err(format!("Could not parse file name comment line : `{line}`"));
+                };
+                if !text.is_empty() {
+                    let file_text = std::mem::take(&mut text);
+                    vec.push((uri.clone(), file_text));
+                }
+                uri = Uri::from_str(&format!("file://{}", filename.trim()))
+                    .map_err(|e| format!("Could not create uri from {filename}: {e:?}"))?;
+            } else {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+        vec.push((uri, text)); // pick up the last stragglers
+        Ok(vec)
+    }
+    pub(super) fn uri(name: &str) -> Uri {
         <Uri as std::str::FromStr>::from_str(&format!("file://tmp/{name}")).unwrap()
     }
 
