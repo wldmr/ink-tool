@@ -36,7 +36,7 @@ pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 pub(crate) struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
 #[derive(Debug, Clone, Display, Error, derive_more::From)]
-#[display("Could not go to position")]
+#[display("Could not go to position: {}", self)]
 pub(crate) enum GotoLocationError {
     DocumentNotFound(DocumentNotFound),
     PositionOutOfBounds(InvalidPosition),
@@ -287,13 +287,15 @@ impl State {
         let (doc, this_doc) = self.get_doc_and_id(from_uri)?;
         let docs = self.db.doc_ids();
         let mut result = Default::default();
-        let Some(def) = doc.definition_at(from_position) else {
+        let Some(usage) = doc.usage_at(from_position) else {
             return Ok(result);
         };
+
         let doc_names = self.db.document_names(this_doc);
-        let my_names = doc_names
-            .iter()
-            .filter(|(_name, meta)| meta.site == def.range);
+        let my_names = doc_names.iter().filter(|(name, meta)| {
+            usage.terms.contains(&name.as_str())
+                && (meta.is_global() || meta.is_locally_visible_at(from_position))
+        });
 
         let ws_usages = self.db.workspace_usages();
         for (name, meta) in my_names {
@@ -346,7 +348,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
+
     pub(super) fn new_state() -> State {
         State::new(None, true)
     }
@@ -364,7 +366,7 @@ mod tests {
         static PREFIX: &'static str = "// file:";
         static SUFFIX: &'static str = ".ink";
 
-        let mut uri = uri("main.ink");
+        let mut current_uri = uri("main.ink");
         let mut text = String::new();
         let mut vec = Vec::new();
         for line in texts.trim().lines() {
@@ -375,16 +377,15 @@ mod tests {
                 };
                 if !text.is_empty() {
                     let file_text = std::mem::take(&mut text);
-                    vec.push((uri.clone(), file_text));
+                    vec.push((current_uri.clone(), file_text));
                 }
-                uri = Uri::from_str(&format!("file://{}", filename.trim()))
-                    .map_err(|e| format!("Could not create uri from {filename}: {e:?}"))?;
+                current_uri = uri(filename.trim());
             } else {
                 text.push_str(line);
                 text.push('\n');
             }
         }
-        vec.push((uri, text)); // pick up the last stragglers
+        vec.push((current_uri, text)); // pick up the last stragglers
         Ok(vec)
     }
     pub(super) fn uri(name: &str) -> Uri {
