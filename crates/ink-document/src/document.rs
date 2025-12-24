@@ -155,7 +155,6 @@ impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
 }
 
 pub struct UsageUnderCursor<'a> {
-    pub usage: ids::Usage,
     pub range: lsp_types::Range,
     pub terms: Vec<&'a str>,
 }
@@ -289,70 +288,26 @@ impl InkDocument {
             }
         };
 
-        let find_redirect_kind = |node: UntypedNode| {
-            parent::<_, syntax::Redirect>(node)
-                .next()
-                .map(|it| match it {
-                    syntax::Redirect::Divert(_) => ids::RedirectKind::Divert,
-                    syntax::Redirect::Thread(_) => ids::RedirectKind::Thread,
-                    syntax::Redirect::Tunnel(tunnel) => {
-                        if tunnel.target().is_some() {
-                            ids::RedirectKind::NamedTunnelReturn
-                        } else {
-                            ids::RedirectKind::Tunnel
-                        }
-                    }
-                })
-        };
-
-        let (usage, range) = match node {
+        let range = match node {
             syntax::DivertTarget::Call(call) => {
                 match call.name().ok() {
                     Some(syntax::Usages::Identifier(ident)) => terms.push(self.node_text(ident)),
                     Some(syntax::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
                     _ => {}
                 };
-                (
-                    ids::Usage(
-                        NodeId::new(call.name()),
-                        UsageInfo {
-                            redirect: find_redirect_kind(call.upcast()),
-                            params: true,
-                        },
-                    ),
-                    call.name().range(),
-                )
+                call.name().range()
             }
             syntax::DivertTarget::Identifier(ident) => {
                 terms.push(self.node_text(ident));
-                (
-                    ids::Usage(
-                        NodeId::new(ident),
-                        UsageInfo {
-                            redirect: find_redirect_kind(ident.upcast()),
-                            params: false,
-                        },
-                    ),
-                    ident.range(),
-                )
+                ident.range()
             }
             syntax::DivertTarget::QualifiedName(qname) => {
                 extract_terms_from_qname(qname);
-                (
-                    ids::Usage(
-                        NodeId::new(qname),
-                        UsageInfo {
-                            redirect: find_redirect_kind(qname.upcast()),
-                            params: false,
-                        },
-                    ),
-                    qname.range(),
-                )
+                qname.range()
             }
         };
 
         Some(UsageUnderCursor {
-            usage,
             range: self.lsp_range(range),
             terms,
         })
@@ -360,10 +315,7 @@ impl InkDocument {
 
     pub fn usages(&self) -> Usages {
         depth_first::<_, syntax::Usages>(self.root())
-            .map(|node| match node {
-                syntax::Usages::Identifier(ident) => ident.range(),
-                syntax::Usages::QualifiedName(qname) => qname.range(),
-            })
+            .map(|node| node.range())
             .map(|range| {
                 (
                     self.text[range.start_byte..range.end_byte].to_owned(),
