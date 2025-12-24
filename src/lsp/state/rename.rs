@@ -25,7 +25,7 @@ pub(crate) enum RenameError {
 impl super::State {
     pub fn rename_symbol(
         &self,
-        uri: Uri,
+        uri: &Uri,
         pos: lsp_types::Position,
         new_name: impl Into<String>,
     ) -> Result<Option<WorkspaceEdit>, RenameError> {
@@ -47,7 +47,7 @@ mod tests {
         let mut state = new_state().with_comment_separated_files(init);
 
         let edits = state
-            .rename_symbol(uri, pos, new)
+            .rename_symbol(&uri, pos, new)
             .expect("no errors")
             .expect("some workspace edit");
 

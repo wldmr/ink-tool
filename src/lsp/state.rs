@@ -147,7 +147,7 @@ impl State {
 
     pub fn completions(
         &self,
-        uri: Uri,
+        uri: &Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
         let (doc, this_doc) = self.get_doc_and_id(uri)?;
@@ -235,7 +235,7 @@ impl State {
 
     pub fn goto_definition(
         &self,
-        uri: Uri,
+        uri: &Uri,
         pos: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
         let (doc, this_doc) = self.get_doc_and_id(uri)?;
@@ -281,7 +281,7 @@ impl State {
 
     pub fn goto_references(
         &self,
-        from_uri: Uri,
+        from_uri: &Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
         let (doc, this_doc) = self.get_doc_and_id(from_uri)?;
@@ -333,10 +333,10 @@ impl State {
 
     fn get_doc_and_id(
         &self,
-        uri: Uri,
+        uri: &Uri,
     ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, Id<Uri>), DocumentNotFound> {
-        let Some(id) = self.db.doc_ids().get_id(&uri) else {
-            return Err(DocumentNotFound(uri));
+        let Some(id) = self.db.doc_ids().get_id(uri) else {
+            return Err(DocumentNotFound(uri.clone()));
         };
         let doc = self.db.document(id);
         Ok((doc, id))
@@ -437,7 +437,7 @@ mod tests {
             let (contents, caret) = text_with_caret("{o@}");
             let uri = uri("test.ink");
             state.edit(uri.clone(), contents);
-            let completions = state.completions(uri, caret).unwrap().unwrap();
+            let completions = state.completions(&uri, caret).unwrap().unwrap();
             assert_eq!(
                 completions
                     .into_iter()
@@ -571,7 +571,7 @@ mod tests {
                 for (usage_uri, usage_ann, reference_kind, names) in &self.references {
                     let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
                     let found_definitions = state
-                        .goto_definition((*usage_uri).clone(), usage_lsp_position.start)
+                        .goto_definition(usage_uri, usage_lsp_position.start)
                         .expect("we should be within range");
                     let per_file_defs = |level: Level| {
                         let per_file = found_definitions
