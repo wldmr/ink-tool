@@ -451,10 +451,13 @@ mod tests {
 
     mod links {
         use super::{new_state, State};
-        use crate::test_utils::{
-            self,
-            text_annotations::{Annotation, AnnotationScanner},
-            Compact,
+        use crate::{
+            lsp::state::tests::uri,
+            test_utils::{
+                self,
+                text_annotations::{Annotation, AnnotationScanner},
+                Compact,
+            },
         };
         use assert2::assert;
         use itertools::Itertools;
@@ -727,6 +730,29 @@ mod tests {
                 // parse expected links via annotations
                 checks.add_annotations(&uri, annotation_scanner.scan(contents))
             }
+
+            checks.check(&state);
+        }
+
+        #[test]
+        fn goto_reference_arg() {
+            use indoc::indoc;
+            let text = indoc! {r"
+                VAR number = 1
+                //  ^^^^^^ defines number
+                {  raise(number)  }
+                //       ^^^^^^ references number
+                == function raise(ref arg)
+                ~ arg = arg + 1
+            "};
+
+            let mut state = new_state();
+            let annotation_scanner = AnnotationScanner::new();
+            let mut checks = LinkCheck::default();
+
+            let main_uri = uri("main.ink");
+            state.edit(main_uri.clone(), text);
+            checks.add_annotations(&main_uri, annotation_scanner.scan(text));
 
             checks.check(&state);
         }

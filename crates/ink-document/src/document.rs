@@ -1,4 +1,3 @@
-use crate::ids::{self, NodeId, UsageInfo};
 use derive_more::derive::{Display, Error, From};
 use ink_syntax::{self as syntax, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
@@ -159,6 +158,7 @@ pub struct UsageUnderCursor<'a> {
     pub terms: Vec<&'a str>,
 }
 
+#[derive(Debug)]
 pub struct DefinitionUnderCursor<'a> {
     pub range: lsp_types::Range,
     pub term: &'a str,
@@ -233,8 +233,11 @@ impl InkDocument {
     }
 
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
-        let node: syntax::Definitions = self.thing_under_cursor(pos)?;
-        let site = match node {
+        let usage: syntax::Usages = self.thing_under_cursor(pos)?;
+        let definition: syntax::Definitions = parent(usage).next()?;
+
+        // Select the actual "name" part of the definition node as the intended target.
+        let target: UntypedNode<'_> = match definition {
             syntax::Definitions::External(external) => external.name().upcast(),
             syntax::Definitions::Global(global) => global.name().upcast(),
             syntax::Definitions::Knot(knot) => knot.name().upcast(),
@@ -250,14 +253,15 @@ impl InkDocument {
         };
 
         Some(DefinitionUnderCursor {
-            range: self.lsp_range(site.range()),
-            term: self.node_text(site),
+            range: self.lsp_range(target.range()),
+            term: self.node_text(target),
         })
     }
 
     pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let node: syntax::DivertTarget = self.thing_under_cursor(pos)?;
+        let usage: syntax::Usages = self.thing_under_cursor(pos)?;
+        let usage: syntax::Usages = parent(usage).last()?; // widen to catch qualified names
 
         // The “terms” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -288,20 +292,12 @@ impl InkDocument {
             }
         };
 
-        let range = match node {
-            syntax::DivertTarget::Call(call) => {
-                match call.name().ok() {
-                    Some(syntax::Usages::Identifier(ident)) => terms.push(self.node_text(ident)),
-                    Some(syntax::Usages::QualifiedName(qname)) => extract_terms_from_qname(qname),
-                    _ => {}
-                };
-                call.name().range()
-            }
-            syntax::DivertTarget::Identifier(ident) => {
+        let range = match usage {
+            syntax::Usages::Identifier(ident) => {
                 terms.push(self.node_text(ident));
                 ident.range()
             }
-            syntax::DivertTarget::QualifiedName(qname) => {
+            syntax::Usages::QualifiedName(qname) => {
                 extract_terms_from_qname(qname);
                 qname.range()
             }
@@ -338,12 +334,8 @@ impl InkDocument {
         let root = self.tree.root_node();
         let root = root.raw(); // annoyingly, type-sitter doesn't have any "descendant" methods.
 
-        // We’ll try to find the biggest interesting node that surrounds the cursor
-        // position. Why the biggest? Because an Identifier is a part of a QualifiedName,
-        // and we want the latter if it is there.
         root.named_descendant_for_byte_range(byte_pos, byte_pos)
-            .map(UntypedNode::new)
-            .and_then(|node| parent::<_, N>(node).last())
+            .and_then(|node| N::try_from_raw(node).ok())
             .or_else(|| {
                 // If we couldn’t find anything interesting at pos, try one byte to the left. This
                 // is to catch the (rather common) cases where the cursor is at the end of a word.
@@ -351,8 +343,7 @@ impl InkDocument {
                 // found to refer to `please_compl` if we didn’t account for this.
                 let one_to_the_left = byte_pos.checked_sub(1)?;
                 root.named_descendant_for_byte_range(one_to_the_left, one_to_the_left)
-                    .map(UntypedNode::new)
-                    .and_then(|node| parent::<_, N>(node).last())
+                    .and_then(|node| N::try_from_raw(node).ok())
             })
     }
 
