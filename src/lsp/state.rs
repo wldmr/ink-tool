@@ -152,14 +152,9 @@ impl State {
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
         let (doc, this_doc) = self.get_doc_and_id(uri)?;
 
-        let Some(search_terms) = doc.usage_at(position) else {
+        let Some(usage) = doc.usage_at(position) else {
             return Ok(Default::default());
         };
-
-        let Some(longest) = search_terms.terms.into_iter().max_by_key(|it| it.len()) else {
-            return Ok(Default::default());
-        };
-        log::debug!("Trying completion for '{longest}'.");
 
         let ws_names = self.db.workspace_names();
         use ink_document::ids::DefinitionInfo::*;
@@ -167,7 +162,7 @@ impl State {
         Ok(Some(
             ws_names
                 .iter()
-                .filter(|(key, _)| key.contains(longest))
+                .filter(|(key, _)| key.contains(usage.term))
                 .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
                 .filter(|(_, (docid, meta))| {
                     meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(position))
@@ -176,8 +171,8 @@ impl State {
                     label: key.clone(),
                     label_details: None,
                     kind: Some(match meta.id.info() {
-                        ToplevelScope { .. } => CompletionItemKind::MODULE,
-                        SubScope { .. } => CompletionItemKind::CLASS,
+                        Section { .. } => CompletionItemKind::MODULE,
+                        Subsection { .. } => CompletionItemKind::CLASS,
                         Function => CompletionItemKind::FUNCTION,
                         External => CompletionItemKind::INTERFACE,
                         Var => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
@@ -190,14 +185,14 @@ impl State {
                     }),
                     // TODO: Fetch actual definition
                     detail: Some(match meta.id.info() {
-                        ToplevelScope { stitch, params } => {
+                        Section { stitch, params } => {
                             format!(
                                 "{} {key}{}",
                                 if stitch { "=" } else { "==" },
                                 if params { "(…)" } else { "" }
                             )
                         }
-                        SubScope { params, .. } => {
+                        Subsection { params, .. } => {
                             format!("= {key}{}", if params { "(…)" } else { "" })
                         }
                         Function => format!("== function {key}(…)"),
@@ -220,7 +215,7 @@ impl State {
                     insert_text_format: None,
                     insert_text_mode: None,
                     text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                        range: search_terms.range,
+                        range: usage.range,
                         new_text: key.to_owned(),
                     })),
                     additional_text_edits: None,
@@ -248,32 +243,30 @@ impl State {
         let ws_names = self.db.workspace_names();
         let mut result = Vec::new();
 
-        for term in search_terms.terms {
-            let Some(metas) = ws_names.get(term) else {
-                continue;
-            };
+        let Some(metas) = ws_names.get(search_terms.term) else {
+            return Ok(result);
+        };
 
-            let (globals, locals): (Vec<&(DocId, Meta)>, Vec<&(DocId, Meta)>) = metas
-                .iter()
-                .filter(|(docid, meta)| {
-                    meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(pos))
-                })
-                .partition(|(_, meta)| meta.is_global());
+        let (globals, locals): (Vec<&(DocId, Meta)>, Vec<&(DocId, Meta)>) = metas
+            .iter()
+            .filter(|(docid, meta)| {
+                meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(pos))
+            })
+            .partition(|(_, meta)| meta.is_global());
 
-            // Find "most local" thing.
-            let local = locals.into_iter().min_by(|a, b| a.1.cmp_extent(&b.1));
-            if let Some((file, def)) = local {
-                result.push(lsp_types::Location::new(docs[*file].clone(), def.site));
-            } else {
-                // We "allow" ambiguity for globals, since we can't know which definition the user meant
-                // (there'll be an error message and they'll have to fix it).
-                result.extend(
-                    globals
-                        .into_iter()
-                        .copied()
-                        .map(|(file, def)| lsp_types::Location::new(docs[file].clone(), def.site)),
-                );
-            }
+        // Find "most local" thing.
+        let local = locals.into_iter().min_by(|a, b| a.1.cmp_extent(&b.1));
+        if let Some((file, def)) = local {
+            result.push(lsp_types::Location::new(docs[*file].clone(), def.site));
+        } else {
+            // We "allow" ambiguity for globals, since we can't know which definition the user meant
+            // (there'll be an error message and they'll have to fix it).
+            result.extend(
+                globals
+                    .into_iter()
+                    .copied()
+                    .map(|(file, def)| lsp_types::Location::new(docs[file].clone(), def.site)),
+            );
         }
 
         return Ok(result);
@@ -293,7 +286,7 @@ impl State {
 
         let doc_names = self.db.document_names(this_doc);
         let my_names = doc_names.iter().filter(|(name, meta)| {
-            usage.terms.contains(&name.as_str())
+            usage.term.contains(&name.as_str())
                 && (meta.is_global() || meta.is_locally_visible_at(from_position))
         });
 

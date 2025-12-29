@@ -58,13 +58,13 @@ impl NodeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefinitionInfo {
     /// Usually a Knot, but stitches can be topelevel as well.
-    ToplevelScope {
+    Section {
         stitch: bool,
         params: bool,
     },
     /// Only ever a stitch, but to be consistent with the "scope" naming.
-    SubScope {
-        parent: Option<NodeId>,
+    Subsection {
+        parent: NodeId,
         params: bool,
     },
     Function,

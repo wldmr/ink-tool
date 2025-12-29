@@ -20,10 +20,13 @@ VAR bar = baz
 // ^^^ references foo
 
 * {pass ? (buck, pass.bar, foo.bar)} Nice and unambiguous.
-//                         ^^^^^^^ references foo.bar
-//                         ^^^^^^^ references-not pass.bar
-//               ^^^^^^^^ references pass.bar
-//               ^^^^^^^^ references-not foo.bar
+//                             ^^^ references foo.bar
+//                             ^^^ references-not pass.bar
+//                             ^^^ references-not foo
+//                         ^^^ references foo
+//                    ^^^ references pass.bar
+//                    ^^^ references-not foo.bar
+//               ^^^^ references pass
 //         ^^^^ references pass.buck
 // ^^^^ references pass
 

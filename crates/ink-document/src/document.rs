@@ -155,7 +155,7 @@ impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
 
 pub struct UsageUnderCursor<'a> {
     pub range: lsp_types::Range,
-    pub terms: Vec<&'a str>,
+    pub term: &'a str,
 }
 
 #[derive(Debug)]
@@ -263,7 +263,7 @@ impl InkDocument {
         let usage: syntax::Usages = self.thing_under_cursor(pos)?;
         let usage: syntax::Usages = parent(usage).last()?; // widen to catch qualified names
 
-        // The “terms” that this usage references. A qualified name can refer to multiple
+        // The “term” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
         // potentially contains the terms
         //
@@ -271,7 +271,7 @@ impl InkDocument {
         // - `foo.bar`, and
         // - `foo.bar.baz`
         //
-        // “Potentially”, because we only return the names that end to the *right* of the
+        // “Potentially”, because we only return the name that ends to the right of the
         // cursor. This is because we assume that the user is being specific when they
         // place the cursor over the last part of a qualified name.
         //
@@ -280,33 +280,28 @@ impl InkDocument {
         //     knot.stitch.label
         //            ^
         //
-        // would look for “knot.stitch” and “knot.stitch.label”, but not “knot”.
-        let mut terms: Vec<&str> = Default::default();
-        let mut extract_terms_from_qname = |qname: syntax::QualifiedName| {
-            let start = qname.start_byte();
-            for ident in qname.identifiers(&mut qname.walk()) {
-                let end = ident.end_byte();
-                if end >= byte_pos {
-                    terms.push(&self.text[start..end]);
-                };
-            }
-        };
-
-        let range = match usage {
-            syntax::Usages::Identifier(ident) => {
-                terms.push(self.node_text(ident));
-                ident.range()
-            }
+        // would look for “knot.stitch”, but not “knot” or “knot.stitch.label”.
+        let usage = match usage {
+            syntax::Usages::Identifier(ident) => UsageUnderCursor {
+                range: self.lsp_range(ident.range()),
+                term: &self.text[ident.byte_range()],
+            },
             syntax::Usages::QualifiedName(qname) => {
-                extract_terms_from_qname(qname);
-                qname.range()
+                let start = qname.start_byte();
+                // the first ident that ends after the cursor:
+                let ident = qname
+                    .identifiers(&mut qname.walk())
+                    .filter(|ident| ident.end_byte() > byte_pos)
+                    .next()
+                    .expect("we started with something under the cursor");
+                UsageUnderCursor {
+                    range: self.lsp_range(ident.range()),
+                    term: &self.text[start..ident.end_byte()],
+                }
             }
         };
 
-        Some(UsageUnderCursor {
-            range: self.lsp_range(range),
-            terms,
-        })
+        Some(usage)
     }
 
     pub fn usages(&self) -> Usages {
