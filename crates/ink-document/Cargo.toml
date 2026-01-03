@@ -20,3 +20,4 @@ test-case.workspace = true
 assert2.workspace = true
 indoc.workspace = true
 pretty_assertions.workspace = true
+text-annotations.workspace = true

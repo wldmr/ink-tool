@@ -1,25 +1,38 @@
 use std::{iter::Peekable, str::CharIndices};
 
-/// Finds annotations in a piece of text
-#[derive(Debug, Clone)]
-pub struct AnnotationScanner {
-    annotation_line_start: String,
+/// Defines how Annotations are found in a piece of text
+#[derive(Debug, Clone, Copy)]
+pub struct AnnotationConfig {
+    annotation_line_start: &'static str,
     interval_char: char,
     guide_char: char,
 }
 
-impl AnnotationScanner {
-    /// Construct a scanner that treats lines starting with `line_comment` as comments
+impl Default for AnnotationConfig {
+    fn default() -> Self {
+        SLASH_CARET_PIPE
+    }
+}
+
+/// Default configuration for most languages.
+pub static SLASH_CARET_PIPE: AnnotationConfig = AnnotationConfig {
+    annotation_line_start: "//",
+    interval_char: '^',
+    guide_char: '|',
+};
+
+pub fn scan_default_annotations(text: &str) -> Annotations<'_> {
+    Annotations::scan_default(text)
+}
+
+impl AnnotationConfig {
+    /// Construct a default config.
     pub fn new() -> Self {
-        Self {
-            annotation_line_start: String::from("//"),
-            interval_char: '^',
-            guide_char: '|',
-        }
+        Self::default()
     }
 
     /// The string that introduces an annotation. Default: `//`
-    pub fn annotation(self, line_start: impl Into<String>) -> Self {
+    pub fn annotation(self, line_start: impl Into<&'static str>) -> Self {
         Self {
             annotation_line_start: line_start.into(),
             ..self
@@ -40,8 +53,8 @@ impl AnnotationScanner {
     }
 
     /// Finds all the annotations
-    pub fn scan<'a>(&'a self, text: &'a str) -> impl Iterator<Item = Annotation<'a>> {
-        Annonations::new(self, text)
+    pub fn scan<'a>(&self, text: &'a str) -> Annotations<'a> {
+        Annotations::scan(*self, text)
     }
 }
 
@@ -69,7 +82,7 @@ impl<'a> Annotation<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct TextRegion {
     // (inclusive)
     pub start: TextPos,
@@ -148,7 +161,7 @@ impl<'a> Iterator for TextPosIter<'a> {
 }
 
 /// Iterates over some text and extracts annotations on pieces of text.
-struct Annonations<'a> {
+pub struct Annotations<'a> {
     inner: Peekable<TextPosIter<'a>>,
     comment_starter: &'a str,
     interval_char: char,
@@ -159,12 +172,16 @@ struct Annonations<'a> {
     content_line: TextRegion,
 }
 
-impl<'a> Annonations<'a> {
-    fn new(scanner: &'a AnnotationScanner, text: &'a str) -> Self {
+impl<'a> Annotations<'a> {
+    pub fn scan_default(text: &'a str) -> Self {
+        Self::scan(AnnotationConfig::new(), text)
+    }
+
+    pub fn scan(config: AnnotationConfig, text: &'a str) -> Self {
         Self {
-            comment_starter: &scanner.annotation_line_start,
-            interval_char: scanner.interval_char,
-            guide_char: scanner.guide_char,
+            comment_starter: &config.annotation_line_start,
+            interval_char: config.interval_char,
+            guide_char: config.guide_char,
             text,
             inner: TextPosIter::new(text).peekable(),
             content_line: Default::default(),
@@ -172,7 +189,7 @@ impl<'a> Annonations<'a> {
     }
 }
 
-impl<'a> Iterator for Annonations<'a> {
+impl<'a> Iterator for Annotations<'a> {
     type Item = Annotation<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -196,7 +213,7 @@ enum ParseResult<'a> {
     Ignore,
 }
 
-impl<'a> Annonations<'a> {
+impl<'a> Annotations<'a> {
     fn try_parse_annotation(&mut self) -> Option<ParseResult<'a>> {
         // Invariant: We are at the beginning of the line here.
         let (line_start, _) = self.inner.peek().cloned()?;
@@ -314,7 +331,6 @@ mod tests {
 
     #[test]
     fn parsing() {
-        let scanner = AnnotationScanner::new();
         let text = indoc! {"\
             fn plus(a: u32, b: u32) -> u32 {
             // |  | ^ param            |||
@@ -330,8 +346,7 @@ mod tests {
             //  ^^^^^ sum
             }"};
         assert_eq!(
-            scanner
-                .scan(text)
+            scan_default_annotations(text)
                 .map(|it| (row_cols(it), it.claim(), it.text()))
                 .sorted_unstable()
                 .collect::<Vec<_>>(),
@@ -350,8 +365,8 @@ mod tests {
 
     #[test]
     fn customizing() {
-        let scanner = AnnotationScanner::new()
-            .annotation('%')
+        let custom = AnnotationConfig::new()
+            .annotation("%")
             .interval('=')
             .guide('.');
         let text = indoc! {"\
@@ -365,7 +380,7 @@ mod tests {
             }"
         };
         assert_eq!(
-            scanner
+            custom
                 .scan(text)
                 .map(|it| (row_cols(it), it.claim(), it.text()))
                 .sorted_unstable()

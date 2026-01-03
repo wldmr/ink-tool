@@ -783,6 +783,7 @@ dependencies = [
  "pretty_assertions",
  "tap",
  "test-case",
+ "text-annotations",
  "tree-sitter",
  "tree-sitter-ink",
  "tree-traversal",
@@ -834,6 +835,7 @@ dependencies = [
  "strum",
  "tap",
  "test-case",
+ "text-annotations",
  "tokio",
  "tree-sitter",
  "tree-sitter-ink",
@@ -1587,6 +1589,18 @@ dependencies = [
  "quote",
  "syn",
  "test-case-core",
+]
+
+[[package]]
+name = "text-annotations"
+version = "0.1.0"
+dependencies = [
+ "assert2",
+ "indoc",
+ "itertools",
+ "lsp-types",
+ "pretty_assertions",
+ "type-sitter",
 ]
 
 [[package]]

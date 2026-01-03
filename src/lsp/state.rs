@@ -447,11 +447,7 @@ mod tests {
         use super::{new_state, State};
         use crate::{
             lsp::state::tests::uri,
-            test_utils::{
-                self,
-                text_annotations::{Annotation, AnnotationScanner},
-                Compact,
-            },
+            test_utils::{self, Compact},
         };
         use assert2::assert;
         use itertools::Itertools;
@@ -462,6 +458,7 @@ mod tests {
         };
         use tap::Pipe;
         use test_case::test_case;
+        use text_annotations::{scan_default_annotations, Annotation};
 
         #[derive(Debug, Default)]
         struct LinkCheck<'a> {
@@ -674,7 +671,7 @@ mod tests {
 
             fn annotation_to_snippet(
                 file: &'a Uri,
-                ann: &crate::test_utils::text_annotations::Annotation<'a>,
+                ann: &text_annotations::Annotation<'a>,
                 label: &'a str,
             ) -> annotate_snippets::Snippet<'a> {
                 annotate_snippets::Snippet::source(ann.full_text)
@@ -715,14 +712,13 @@ mod tests {
                 .unwrap();
 
             let mut state = new_state();
-            let annotation_scanner = AnnotationScanner::new();
             let mut checks = LinkCheck::default();
 
             for (uri, contents) in &ink_files {
                 // parse actual links via tree-sitter (i.e. normally)
                 state.edit(uri.clone(), contents);
                 // parse expected links via annotations
-                checks.add_annotations(&uri, annotation_scanner.scan(contents))
+                checks.add_annotations(&uri, scan_default_annotations(contents))
             }
 
             checks.check(&state);
@@ -741,14 +737,69 @@ mod tests {
             "};
 
             let mut state = new_state();
-            let annotation_scanner = AnnotationScanner::new();
             let mut checks = LinkCheck::default();
 
             let main_uri = uri("main.ink");
             state.edit(main_uri.clone(), text);
-            checks.add_annotations(&main_uri, annotation_scanner.scan(text));
+            checks.add_annotations(&main_uri, scan_default_annotations(text));
 
             checks.check(&state);
+        }
+
+        mod labels {
+            use crate::lsp::state::tests::{new_state, uri};
+            use assert2::check;
+            use itertools::Itertools;
+            use std::collections::HashMap;
+            use text_annotations::{scan_default_annotations, TextRegion};
+
+            const TEXT: &str = indoc::indoc! {r"
+                -> knot.stitch.label
+                //             ^^^^^ defines label-ref1
+                //      ^^^^^^ defines stitch-ref1
+                // ^^^^ defines knot-ref1
+
+                -> knot.label
+                //      ^^^^^ defines label-ref2
+                // ^^^^ defines knot-ref2
+
+                == knot
+                // ^^^^ defines knot
+                =  stitch
+                // ^^^^^^ defines stitch
+                - (label)
+                // ^^^^^ defines label
+            "};
+
+            fn named_ranges<'a, T: From<TextRegion> + std::fmt::Debug>(
+                text: &'a str,
+            ) -> HashMap<&'a str, T> {
+                scan_default_annotations(text)
+                    .filter_map(|ann| match ann.claim().split_once(' ') {
+                        Some(("defines", name)) => Some((name.trim(), ann.text_location.into())),
+                        _ => None,
+                    })
+                    .into_grouping_map()
+                    .reduce(|first, key, second| {
+                        panic!("Found multiple occurrences of `{key}`: {first:?}, {second:?}")
+                    })
+            }
+
+            #[test]
+            fn goto_definition_label() {
+                let state = new_state().with_comment_separated_files(TEXT);
+
+                let loc = named_ranges::<lsp_types::Range>(TEXT);
+
+                let redirect_label = lsp_types::Position::new(0, 15);
+                let defs = state
+                    .goto_references(&uri("main.ink"), redirect_label)
+                    .unwrap();
+
+                check!(defs[0].range == loc["label-ref1"]);
+                check!(defs[1].range == loc["label-ref2"]);
+                check!(defs[2].range == loc["label"]);
+            }
         }
     }
 }

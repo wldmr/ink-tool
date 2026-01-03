@@ -153,12 +153,13 @@ impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct UsageUnderCursor<'a> {
     pub range: lsp_types::Range,
     pub term: &'a str,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DefinitionUnderCursor<'a> {
     pub range: lsp_types::Range,
     pub term: &'a str,
@@ -502,5 +503,42 @@ mod tests {
 
     fn new_doc(text: impl Into<String>, enc: Option<WideEncoding>) -> InkDocument {
         InkDocument::new(text.into(), enc)
+    }
+
+    mod usages {
+        use crate::InkDocument;
+        use assert2::check;
+        use indoc::indoc;
+        use std::collections::HashMap;
+        use text_annotations::scan_default_annotations;
+
+        #[test]
+        fn label() {
+            let text = indoc! {"
+                { knot.stitch.label }
+                //|  | |    | ^^^^^ label
+                //|  | ^^^^^^ stitch
+                //^^^^ knot
+            "};
+
+            let mut doc = InkDocument::new_empty(None);
+            doc.edit(text);
+            let locs: HashMap<&str, lsp_types::Range> = scan_default_annotations(text)
+                .map(|ann| (ann.text(), ann.text_location.into()))
+                .collect();
+
+            let knot_usage = doc.usage_at(locs["knot"].start).unwrap();
+            let stitch_usage = doc.usage_at(locs["stitch"].start).unwrap();
+            let label_usage = doc.usage_at(locs["label"].start).unwrap();
+
+            check!(knot_usage.term == "knot");
+            check!(knot_usage.range == locs["knot"]);
+
+            check!(stitch_usage.term == "knot.stitch");
+            check!(stitch_usage.range == locs["stitch"]);
+
+            check!(label_usage.term == "knot.stitch.label");
+            check!(label_usage.range == locs["label"]);
+        }
     }
 }

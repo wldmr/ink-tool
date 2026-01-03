@@ -1,4 +1,3 @@
-pub mod text_annotations;
 macro_rules! check_eq {
     ($a:expr, $b:expr) => {
         if $a == $b {

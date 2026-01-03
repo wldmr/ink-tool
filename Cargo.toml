@@ -25,6 +25,8 @@ tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", commit
 walkdir = "2.5.0"
 tree-traversal = { path = "./crates/tree-traversal" }
 ink-syntax = { path = "./crates/ink-syntax" }
+itertools = "0.13.0"
+text-annotations = { path = "./crates/text-annotations" }
 
 [workspace.dependencies.type-sitter]
 version = "0.8"
@@ -45,7 +47,8 @@ humantime = "2.1.0"
 indexmap = "2.12.1"
 ink-document = { path = "./crates/ink-document" }
 ink-syntax.workspace = true
-itertools = "0.13.0"
+itertools.workspace = true
+text-annotations.workspace = true
 jsonrpc = "0.18.0"
 line-index.workspace = true
 log.workspace = true
