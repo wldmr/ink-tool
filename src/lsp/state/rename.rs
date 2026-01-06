@@ -1,5 +1,6 @@
 use derive_more::derive::{Display, Error};
-use lsp_types::{Uri, WorkspaceEdit};
+use itertools::Itertools;
+use lsp_types::{TextEdit, Uri, WorkspaceEdit};
 use std::collections::HashMap;
 
 impl From<RenameError> for lsp_server::ResponseError {
@@ -29,51 +30,180 @@ impl super::State {
         pos: lsp_types::Position,
         new_name: impl Into<String>,
     ) -> Result<Option<WorkspaceEdit>, RenameError> {
-        Ok(Some(WorkspaceEdit::new(HashMap::new())))
+        let new_name = new_name.into();
+        let edits: HashMap<Uri, Vec<lsp_types::TextEdit>> = self
+            .goto_references(uri, pos)?
+            .into_iter()
+            .map(move |it| (it.uri, TextEdit::new(it.range, new_name.clone())))
+            .into_group_map();
+        let edits = WorkspaceEdit::new(edits);
+        Ok(Some(edits))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::lsp::state::{
-        tests::{comment_separated_files, new_state, uri},
-        State,
-    };
-    use assert2::check;
-    use indoc::indoc;
-    use lsp_types::{Position, Uri};
+    fn test_rename(assertion: &str, input: &str, expectation: &str) {
+        use crate::lsp::state::tests::{comment_separated_files, new_state};
+        use text_annotations::scan_default_annotations;
 
-    fn do_rename(init: &str, (uri, pos, new): (Uri, Position, &str)) -> State {
-        let mut state = new_state().with_comment_separated_files(init);
+        // crate::test_utils::setup_logging(log::LevelFilter::Trace);
 
-        let edits = state
-            .rename_symbol(&uri, pos, new)
-            .expect("no errors")
-            .expect("some workspace edit");
+        let mut state = new_state();
+        let mut renames = Vec::new();
 
-        // TRIPWIRE: Symbol renaming shouldn't result in any complicated file-related operations.
-        check!(edits.document_changes == None);
-        check!(edits.change_annotations == None);
-
-        let edits = edits.changes.expect("There should be changes");
-        for (uri, edits) in edits {
-            state.edits(uri, edits);
+        for (uri, text) in comment_separated_files(input).unwrap() {
+            for ann in scan_default_annotations(&text) {
+                let new_text = match ann.claim().split_once(' ') {
+                    Some(("rename-symbol", new_text)) => new_text,
+                    _ => continue,
+                };
+                renames.push((uri.clone(), ann.text_location.start, new_text.to_owned()))
+            }
+            state.edit(uri, text);
         }
 
-        state
-    }
-
-    fn test_rename_symbol(input: &str, rename: (Uri, Position, &str), expectation: &str) {
-        let state = do_rename(input, rename);
+        for (uri, pos, text) in renames {
+            let edits = match state.rename_symbol(&uri, pos.into(), text) {
+                Ok(Some(edits)) => edits.changes.expect("some edits"),
+                other => panic!("{other:?}"),
+            };
+            for (uri, edits) in edits {
+                for edit in edits {
+                    state.edit(uri.clone(), edit);
+                }
+            }
+        }
 
         for (uri, text) in comment_separated_files(expectation).unwrap() {
-            check!(state.text(uri).unwrap() == text);
+            pretty_assertions::assert_str_eq!(
+                state.text(&uri).unwrap(),
+                text,
+                "{}: {assertion}",
+                uri.path().as_str()
+            );
         }
     }
 
-    #[test]
-    fn knot() {
-        let input = indoc! {"
+    macro_rules! test_rename {
+        ($assertion:literal, $ident:ident, $input:expr, $expect:expr) => {
+            #[test]
+            fn $ident() {
+                test_rename($assertion, $input, $expect)
+            }
+        };
+
+        ($ident:ident, $input:expr, $expect:expr) => {
+            test_rename!("", $ident, $input, $expect);
+        };
+    }
+
+    mod var {
+        use super::test_rename;
+
+        test_rename![
+            definition,
+            "
+            VAR var = 1
+            //  ^ rename-symbol renamed
+            {var}
+            ",
+            "
+            VAR renamed = 1
+            //  ^ rename-symbol renamed
+            {renamed}
+            "
+        ];
+
+        test_rename![
+            reference,
+            "
+            VAR var = 1
+            {var}
+            //^ rename-symbol renamed
+            ",
+            "
+            VAR renamed = 1
+            {renamed}
+            //^ rename-symbol renamed
+            "
+        ];
+    }
+
+    mod list {
+        use super::test_rename;
+
+        test_rename![
+            list_definition,
+            "
+            LIST list = item1, item2
+            //          ^ rename-symbol renamed_item1
+            //   ^ rename-symbol renamed_list
+            {list.item1}
+            {list.item2}
+            {item1}
+            {item2}
+            ",
+            "
+            LIST renamed_list = renamed_item1, item2
+            //          ^ rename-symbol renamed_item1
+            //   ^ rename-symbol renamed_list
+            {renamed_list.renamed_item1}
+            {renamed_list.item2}
+            {renamed_item1}
+            {item2}
+            "
+        ];
+
+        test_rename![
+            list_reference,
+            "
+            LIST list = item1, item2
+            {list.item1}
+            //    ^ rename-symbol renamed_item1
+            {list.item2}
+            // ^ rename-symbol renamed_list
+            ",
+            "
+            LIST renamed_list = renamed_item1, item2
+            {renamed_list.renamed_item1}
+            //    ^ rename-symbol renamed_item1
+            {renamed_list.item2}
+            // ^ rename-symbol renamed_list
+            "
+        ];
+    }
+
+    mod knot {
+        use super::test_rename;
+
+        test_rename![
+            knot_definition,
+            "
+            // file: def.ink
+            === knot ===
+            //  ^ rename-symbol new
+            = stitch
+            - (label) text
+
+            // file: ref.ink
+            -> knot.stitch.label
+            ",
+            "
+            // file: def.ink
+            === new ===
+            //  ^ rename-symbol new
+            = stitch
+            - (label) text
+
+            // file: ref.ink
+            -> new.stitch.label
+            "
+        ];
+
+        test_rename![
+            knot_usage,
+            "
             // file: def.ink
             === knot ===
             = stitch
@@ -81,8 +211,9 @@ mod tests {
 
             // file: ref.ink
             -> knot.stitch.label
-        "};
-        let expectation = indoc! {"
+            // ^ rename-symbol new
+            ",
+            "
             // file: def.ink
             === new ===
             = stitch
@@ -90,58 +221,126 @@ mod tests {
 
             // file: ref.ink
             -> new.stitch.label
-        "};
-
-        test_rename_symbol(
-            input,
-            (uri("def.ink"), Position::new(0, 4), "new"), // at definition site
-            expectation,
-        );
-
-        test_rename_symbol(
-            input,
-            (uri("ref.ink"), Position::new(0, 3), "new"), // at usage site
-            expectation,
-        );
+            // ^ rename-symbol new
+            "
+        ];
     }
 
-    #[test]
-    fn stitch() {
-        let input = indoc! {"
+    mod stitch {
+        use super::test_rename;
+
+        test_rename![
+            stitch_definition,
+            "
+            // file: def.ink
+            === knot ===
+            = stitch
+            //^ rename-symbol new
+            - (label) text
+
+            // file: ref.ink
+            -> knot.stitch.label
+            ",
+            "
+            // file: def.ink
+            === knot ===
+            = new
+            //^ rename-symbol new
+            - (label) text
+
+            // file: ref.ink
+            -> knot.new.label
+            "
+        ];
+
+        test_rename![
+            stitch_reference,
+            "
             // file: def.ink
             === knot ===
             = stitch
             - (label) text
 
+            === other ===
+            = stitch
+            This is unaffected
+
             // file: ref.ink
             -> knot.stitch.label
-        "};
-        let expectation = indoc! {"
+            //      ^ rename-symbol new
+            ",
+            "
             // file: def.ink
             === knot ===
             = new
             - (label) text
 
+            === other ===
+            = stitch
+            This is unaffected
+
             // file: ref.ink
             -> knot.new.label
-        "};
+            //      ^ rename-symbol new
+            "
+        ];
 
-        test_rename_symbol(
-            input,
-            (uri("def.ink"), Position::new(1, 2), "new"), // at definition site
-            expectation,
-        );
+        test_rename![
+            "Renaming a stitch doesn't affect other stitches with the same name",
+            stitch_rename_is_specific,
+            "
+            === knot ===
+            = stitch
+            //^ rename-symbol renamed
+            This is affected
 
-        test_rename_symbol(
-            input,
-            (uri("ref.ink"), Position::new(0, 3), "new"), // at usage site
-            expectation,
-        );
+            === other ===
+            = stitch
+            This is unaffected
+            ",
+            "
+            === knot ===
+            = renamed
+            //^ rename-symbol renamed
+            This is affected
+
+            === other ===
+            = stitch
+            This is unaffected
+            "
+        ];
     }
 
-    #[test]
-    fn label() {
-        let input = indoc! {"
+    mod label {
+        use super::test_rename;
+
+        test_rename![
+            label_definition,
+            "
+            // file: def.ink
+            === knot ===
+            = stitch
+            - (label) text
+            // ^ rename-symbol new
+
+            // file: ref.ink
+            -> knot.stitch.label
+            ",
+            "
+            // file: def.ink
+            === knot ===
+            = stitch
+            - (new) text
+            // ^ rename-symbol new
+
+            // file: ref.ink
+            -> knot.stitch.new
+            "
+        ];
+
+        test_rename![
+            label_reference,
+            "
             // file: def.ink
             === knot ===
             = stitch
@@ -149,8 +348,9 @@ mod tests {
 
             // file: ref.ink
             -> knot.stitch.label
-        "};
-        let expectation = indoc! {"
+            //             ^ rename-symbol new
+            ",
+            "
             // file: def.ink
             === knot ===
             = stitch
@@ -158,94 +358,88 @@ mod tests {
 
             // file: ref.ink
             -> knot.stitch.new
-        "};
-
-        test_rename_symbol(
-            input,
-            (uri("def.ink"), Position::new(1, 2), "new"), // at definition site
-            expectation,
-        );
-
-        test_rename_symbol(
-            input,
-            (uri("ref.ink"), Position::new(0, 3), "new"), // at usage site
-            expectation,
-        );
+            //             ^ rename-symbol new
+            "
+        ];
     }
 
-    #[test]
-    fn param() {
-        let input = indoc! {"
+    mod param {
+        use super::test_rename;
+
+        test_rename![
+            "Renaming does not affect similarly named parameters of subsections",
+            param_definition_site1_shadowing,
+            "
             === knot(p1, p2) ===
+            //       ^ rename-symbol new
+            {p1 + p2}
+            = stitch(p1)
+            //       -- unaffected
+            {p1 + p2}
+            ",
+            "
+            === knot(new, p2) ===
+            //       ^ rename-symbol new
+            {new + p2}
+            = stitch(p1)
+            //       -- unaffected
+            {p1 + p2}
+            "
+        ];
+
+        test_rename![
+            param_usage1,
+            "
+            === knot(p1, p2) ===
+            {p1 + p2}
+            //^ rename-symbol new
+            = stitch(p1)
+            {p1 + p2}
+            ",
+            "
+            === knot(new, p2) ===
+            {new + p2}
+            //^ rename-symbol new
+            = stitch(p1)
+            {p1 + p2}
+            "
+        ];
+
+        test_rename![
+            "Renaming does affect all usages (that aren't shadowed) (definition site)",
+            param_definition_site2_shadowing,
+            "
+            === knot(p1, p2) ===
+            //           ^ rename-symbol new
             {p1 + p2}
             = stitch(p1)
             {p1 + p2}
-        "};
+            ",
+            "
+            === knot(p1, new) ===
+            //           ^ rename-symbol new
+            {p1 + p2}
+            = stitch(p1)
+            {p1 + new}
+            "
+        ];
 
-        {
-            // renaming p1 of knot (respects name shadowing)
-            let expectation = indoc! {"
-                === knot(new, p2) ===
-                {new + p2}
-                = stitch(p1)
-                {p1 + p2}
-            "};
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(0, 9), "new"), // at definition site
-                expectation,
-            );
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(1, 1), "new"), // at usage site
-                expectation,
-            );
-        }
-
-        {
-            // renaming p1 of stitch (respects name shadowing)
-            let expectation = indoc! {"
-                === knot(p1, p2) ===
-                {p1 + p2}
-                = stitch(new)
-                {new + p2}
-            "};
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(2, 2), "new"), // at definition site
-                expectation,
-            );
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(3, 1), "new"), // at usage site
-                expectation,
-            );
-        }
-
-        {
-            // renaming shared p2 (no shadowing)
-            let expectation = indoc! {"
-                === knot(p1, new) ===
-                {p1 + new}
-                = stitch(p2)
-                {p1 + new}
-            "};
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(0, 13), "new"), // at def site
-                expectation,
-            );
-
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(1, 6), "new"), // at usage site 1
-                expectation,
-            );
-            test_rename_symbol(
-                input,
-                (uri("main.ink"), Position::new(3, 6), "new"), // at usage site 2
-                expectation,
-            );
-        }
+        test_rename![
+            param_usage2,
+            "
+            === knot(p1, p2) ===
+            {p1 + p2}
+            //    ^ rename-symbol new
+            = stitch(p1)
+            {p1 + p2}
+            ",
+            "
+            === knot(p1, new) ===
+            {p1 + new}
+            //    ^ rename-symbol new
+            = stitch(p1)
+            {p1 + new}
+            "
+        ];
     }
 }

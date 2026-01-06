@@ -70,11 +70,11 @@ impl State {
             .tap(|it| log::debug!("Common file name prefix: `{it}``"))
     }
 
-    pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if let Some(id) = self.db.doc_ids().get_id(&uri) {
+    pub fn text(&self, uri: &Uri) -> Result<String, DocumentNotFound> {
+        if let Some(id) = self.db.doc_ids().get_id(uri) {
             Ok(self.db.document(id).full_text())
         } else {
-            Err(DocumentNotFound(uri))
+            Err(DocumentNotFound(uri.clone()))
         }
     }
 
