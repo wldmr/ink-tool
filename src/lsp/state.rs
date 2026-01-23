@@ -1,6 +1,5 @@
 use crate::lsp::{
     idset::Id,
-    ink_visitors::names::Meta,
     salsa::{self, opened_docs, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
@@ -10,6 +9,7 @@ use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use mini_milc::{Cached, Db};
 use tap::Tap as _;
 
+mod goto_definition;
 mod references;
 mod rename;
 
@@ -227,50 +227,6 @@ impl State {
                 })
                 .collect(),
         ))
-    }
-
-    pub fn goto_definition(
-        &self,
-        uri: &Uri,
-        pos: Position,
-    ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let (doc, this_doc) = self.get_doc_and_id(uri)?;
-        let docs = self.db.doc_ids();
-
-        let Some(search_terms) = doc.usage_at(pos) else {
-            return Ok(Vec::new());
-        };
-
-        let ws_names = self.db.workspace_names();
-        let mut result = Vec::new();
-
-        let Some(metas) = ws_names.get(search_terms.term) else {
-            return Ok(result);
-        };
-
-        let (globals, locals): (Vec<&(DocId, Meta)>, Vec<&(DocId, Meta)>) = metas
-            .iter()
-            .filter(|(docid, meta)| {
-                meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(pos))
-            })
-            .partition(|(_, meta)| meta.is_global());
-
-        // Find "most local" thing.
-        let local = locals.into_iter().min_by(|a, b| a.1.cmp_extent(&b.1));
-        if let Some((file, def)) = local {
-            result.push(lsp_types::Location::new(docs[*file].clone(), def.site));
-        } else {
-            // We "allow" ambiguity for globals, since we can't know which definition the user meant
-            // (there'll be an error message and they'll have to fix it).
-            result.extend(
-                globals
-                    .into_iter()
-                    .copied()
-                    .map(|(file, def)| lsp_types::Location::new(docs[file].clone(), def.site)),
-            );
-        }
-
-        return Ok(result);
     }
 
     #[cfg(test)]
