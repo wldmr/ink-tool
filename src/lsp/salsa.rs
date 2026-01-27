@@ -4,7 +4,8 @@ use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
         doc_symbols::document_symbols as get_document_symbols,
-        names::document_names as get_document_names, names::Meta,
+        globals::Globals,
+        names::{self, Meta},
         ws_symbols::from_doc as get_workspace_symbols,
     },
 };
@@ -18,9 +19,6 @@ pub(crate) type DocIds = IdSet<Uri>;
 
 type Names = Vec<(String, Meta)>;
 type WorkspaceNames = HashMap<String, Vec<(DocId, Meta)>>;
-
-type Usages = Vec<(String, lsp_types::Range)>;
-type WorkspaceUsages = HashMap<String, Vec<(DocId, lsp_types::Range)>>;
 
 composite_query! {
     #[derive(Hash, Copy)]
@@ -51,7 +49,8 @@ composite_query! {
     struct document_usages -> Usages {(DocId);}
 
     #[derive(Hash, Copy)]
-    struct workspace_usages -> WorkspaceUsages {;}
+    struct globals -> Globals {(DocId);}
+
 }
 
 // Inputs
@@ -60,7 +59,12 @@ subquery!(Ops, doc_ids, DocIds);
 subquery!(Ops, opened_docs, HashSet<DocId>);
 
 subquery!(Ops, document_names, Names, |self, db| {
-    get_document_names(&db.document(self.0))
+    names::document_names(&db.document(self.0))
+});
+
+subquery!(Ops, globals, Globals, |self, db| {
+    let doc = db.document(self.0);
+    crate::lsp::ink_visitors::globals::globals(&doc)
 });
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
@@ -73,26 +77,6 @@ subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
         }
     }
     names
-});
-
-subquery!(Ops, document_usages, Usages, |self, db| db
-    .document(self.0)
-    .usages());
-
-subquery!(Ops, workspace_usages, WorkspaceUsages, |self, db| {
-    let mut usages = WorkspaceUsages::new();
-    for id in db.doc_ids().ids() {
-        for (name, range) in db.document_usages(id).iter() {
-            // Ensure that the entry exists, only cloning the name if necessary.
-            // (The entry API requires an owned key, but given that the same name will be
-            // referenced quite often, we don’t want to eagerly clone all the occurrences)
-            if !usages.contains_key(name) {
-                usages.insert(name.clone(), Default::default());
-            }
-            usages.get_mut(name).unwrap().push((id, *range));
-        }
-    }
-    usages
 });
 
 subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
@@ -133,12 +117,10 @@ pub trait InkGetters: Db<Ops> {
         self.get(workspace_names)
     }
 
-    fn document_usages(&self, id: DocId) -> Cached<'_, Ops, Usages> {
-        self.get(document_usages(id))
     }
 
-    fn workspace_usages(&self) -> Cached<'_, Ops, WorkspaceUsages> {
-        self.get(workspace_usages)
+    fn globals(&self, id: DocId) -> Cached<'_, Ops, Globals> {
+        self.get(globals(id))
     }
 }
 impl<D: Db<Ops>> InkGetters for D {}

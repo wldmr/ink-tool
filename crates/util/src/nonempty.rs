@@ -41,6 +41,28 @@ impl<T> TryFrom<Option<T>> for Vec1<T> {
     }
 }
 
+impl<T> From<[T; 1]> for Vec1<T> {
+    fn from([single_value]: [T; 1]) -> Self {
+        Vec1::new(single_value)
+    }
+}
+
+macro_rules! from_array {
+    ($($n:literal),+) => {
+        $(
+            impl<T> From<[T; $n]> for Vec1<T> {
+                fn from([first, tail @ ..]: [T; $n]) -> Self {
+                    Self {
+                        first,
+                        rest: tail.into_iter().collect(),
+                    }
+                }
+            }
+        )+
+    };
+}
+from_array!(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20);
+
 impl<T> TryFrom<Vec<T>> for Vec1<T> {
     type Error = Vec<T>;
 
@@ -54,6 +76,18 @@ impl<T> TryFrom<Vec<T>> for Vec1<T> {
                 rest: iter.collect(),
             })
         }
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq<[T; N]> for Vec1<T> {
+    fn eq(&self, other: &[T; N]) -> bool {
+        self.iter().eq(other)
+    }
+}
+
+impl<T: PartialEq> PartialEq<Vec<T>> for Vec1<T> {
+    fn eq(&self, other: &Vec<T>) -> bool {
+        self.iter().eq(other)
     }
 }
 
