@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! check_eq {
     ($a:expr, $b:expr) => {
         if $a == $b {
@@ -14,6 +15,7 @@ macro_rules! check_eq {
     };
 }
 
+#[macro_export]
 macro_rules! in_case {
     ($prereq:expr => $($stmts:stmt);+) => {
         if $prereq {
@@ -24,12 +26,12 @@ macro_rules! in_case {
     };
 }
 
-pub(crate) use check_eq;
-pub(crate) use in_case;
+pub use check_eq;
+pub use in_case;
 
 /// Wrapper to enable a more compact debug representation for tests.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub(crate) struct Compact<T>(pub(crate) T);
+pub struct Compact<T>(pub T);
 
 impl std::fmt::Debug for Compact<lsp_types::Location> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

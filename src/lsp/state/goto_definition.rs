@@ -43,13 +43,11 @@ impl super::State {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        lsp::state::tests::{new_state, uri},
-        test_utils::Compact,
-    };
+    use crate::lsp::state::tests::{new_state, uri};
     use assert2::check;
     use itertools::Itertools;
     use std::collections::HashMap;
+    use util::testing::Compact;
 
     #[test]
     fn next_label() {

@@ -208,12 +208,12 @@ impl RangeBounds<FileTextRange> for &Location {
 
 #[cfg(test)]
 mod tests {
+    use quickcheck::{quickcheck, TestResult};
+    use util::testing::in_case;
+
     mod file_range {
-        use crate::{
-            lsp::location::{TextPos, TextRange},
-            test_utils::in_case,
-        };
-        use quickcheck::{quickcheck, TestResult};
+        use super::*;
+        use crate::lsp::location::{TextPos, TextRange};
 
         quickcheck! {
             fn creating_file_range_is_symmetric(a: TextPos, b: TextPos) -> bool {
@@ -247,8 +247,8 @@ mod tests {
     }
 
     mod location_id {
-        use crate::{lsp::location::FileTextRange, test_utils::in_case};
-        use quickcheck::{quickcheck, TestResult};
+        use super::*;
+        use crate::lsp::location::FileTextRange;
 
         quickcheck! {
             fn same_file_contains_matches_range(a: FileTextRange, b: FileTextRange) -> bool {

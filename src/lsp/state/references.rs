@@ -42,12 +42,9 @@ impl super::State {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        lsp::state::{
-            tests::{new_state, uri},
-            State,
-        },
-        test_utils::{self, Compact},
+    use crate::lsp::state::{
+        tests::{new_state, uri},
+        State,
     };
     use assert2::assert;
     use itertools::Itertools;
@@ -59,6 +56,7 @@ mod tests {
     use tap::Pipe;
     use test_case::test_case;
     use text_annotations::{scan_default_annotations, Annotation};
+    use util::testing::Compact;
 
     #[derive(Debug, Default)]
     struct LinkCheck<'a> {
@@ -297,7 +295,7 @@ mod tests {
     #[test_case("examples/links/ambiguous/")]
     #[test_case("examples/links/knots_and_stitches/")]
     fn test_links(fs_location: &str) {
-        test_utils::setup_logging(log::LevelFilter::Trace);
+        util::testing::setup_logging(log::LevelFilter::Trace);
 
         let ink_files = walkdir::WalkDir::new(fs_location)
             .into_iter()

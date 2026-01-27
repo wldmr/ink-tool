@@ -12,7 +12,7 @@ use std::{
 type N = u8;
 
 #[derive(Clone, Copy)]
-pub(crate) struct Constrained {
+pub struct Constrained {
     min: N,
     max: N,
     desired: Option<N>,
@@ -104,7 +104,7 @@ impl AddAssign for Constrained {
 }
 
 impl Constrained {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             min: N::MIN,
             max: N::MAX,
@@ -113,28 +113,28 @@ impl Constrained {
     }
 
     /// Construct an unconstrained(!) desired value.
-    pub(crate) fn desired(value: N) -> Self {
+    pub fn desired(value: N) -> Self {
         let mut me = Self::new();
         me.desired = Some(value);
         me
     }
 
     /// Construct a value of at least this. Does not set a desired value.
-    pub(crate) fn at_least(value: N) -> Self {
+    pub fn at_least(value: N) -> Self {
         let mut me = Self::new();
         me.min = value;
         me
     }
 
     /// Construct a value of at most this. Does not set a desired value.
-    pub(crate) fn at_most(value: N) -> Self {
+    pub fn at_most(value: N) -> Self {
         let mut me = Self::new();
         me.max = value;
         me
     }
 
     /// Construct a value between `min` and `max`.
-    pub(crate) fn between(min: N, max: N) -> Self {
+    pub fn between(min: N, max: N) -> Self {
         Self::at_least(min) + Self::at_most(max)
     }
 
@@ -143,13 +143,13 @@ impl Constrained {
     /// 1. The desired value, if it is within the bounds.
     /// 2. If the desired value exceeds the bounds, the bound that it ran up against.
     /// 3. If there is no desired value, the lower bound.
-    pub(crate) fn value(&self) -> N {
+    pub fn value(&self) -> N {
         self.desired
             .map(|it| it.clamp(self.min, self.max))
             .unwrap_or(self.min)
     }
 
-    pub(crate) fn combine_mut(&mut self, other: Constrained) {
+    pub fn combine_mut(&mut self, other: Constrained) {
         self.min = Ord::max(self.min, other.min);
         self.max = Ord::min(self.max, other.max);
         if self.min > self.max && self.max != 0 {
@@ -167,7 +167,7 @@ impl Constrained {
         }
     }
 
-    pub(crate) fn combine(&self, other: &Constrained) -> Self {
+    pub fn combine(&self, other: &Constrained) -> Self {
         let mut new = self.clone();
         new.combine_mut(other.clone());
         new
@@ -178,8 +178,8 @@ impl Constrained {
 mod tests {
     use super::Constrained as C;
     use super::*;
-    use crate::fmt::util::testing::in_case;
     use quickcheck::{quickcheck, Arbitrary, TestResult};
+    use util::in_case;
 
     impl Arbitrary for Constrained {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
