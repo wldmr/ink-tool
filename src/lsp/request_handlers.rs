@@ -71,7 +71,7 @@ impl RequestHandler for request::GotoDefinition {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         use lsp_types::GotoDefinitionResponse::*;
         let defs = state.lock()?.goto_definition(
-            &params.text_document_position_params.text_document.uri,
+            params.text_document_position_params.text_document.uri,
             params.text_document_position_params.position,
         )?;
         let response = match defs.len() {
@@ -86,7 +86,7 @@ impl RequestHandler for request::GotoDefinition {
 impl RequestHandler for request::References {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         let refs = state.lock()?.goto_references(
-            &params.text_document_position.text_document.uri,
+            params.text_document_position.text_document.uri,
             params.text_document_position.position,
         )?;
         let response = match refs.len() {
@@ -100,7 +100,7 @@ impl RequestHandler for request::References {
 impl RequestHandler for request::Rename {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         let edits = state.lock()?.rename_symbol(
-            &params.text_document_position.text_document.uri,
+            params.text_document_position.text_document.uri,
             params.text_document_position.position,
             params.new_name,
         )?;

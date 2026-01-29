@@ -4,11 +4,15 @@ use lsp_types::{Position, Uri};
 impl super::State {
     pub fn goto_references(
         &self,
-        from_uri: &Uri,
+        from_uri: Uri,
         from_position: Position,
     ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let (doc, this_doc) = self.get_doc_and_id(from_uri)?;
         let docs = self.db.doc_ids();
+        let this_doc = docs
+            .get_id(&from_uri)
+            .ok_or_else(|| DocumentNotFound(from_uri.clone()))?;
+        let doc = self.db.document(this_doc);
+
         let Some(usage) = doc.usage_at(from_position) else {
             return Ok(Vec::new());
         };
@@ -163,7 +167,7 @@ mod tests {
             for (usage_uri, usage_ann, reference_kind, names) in &self.references {
                 let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
                 let found_definitions = state
-                    .goto_definition(usage_uri, usage_lsp_position.start)
+                    .goto_definition((*usage_uri).clone(), usage_lsp_position.start)
                     .expect("we should be within range");
                 let per_file_defs = |level: Level| {
                     let per_file = found_definitions
