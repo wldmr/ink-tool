@@ -1,19 +1,47 @@
 mod visitor;
 
-use std::iter::{from_fn, successors};
-use type_sitter::Node as _;
+use std::iter::from_fn;
+use type_sitter::Node;
 
 pub use visitor::{VisitInstruction, Visitor};
 
-// Walk up the tree, emitting all nodes of type `Out`
-pub fn parent<'a, In, Out>(start: In) -> impl Iterator<Item = Out> + use<'a, In, Out>
-where
-    In: type_sitter::Node<'a>,
-    Out: type_sitter::Node<'a>,
-{
-    // parents can't be found with cursors because a cursor can't go outside its defining node.
-    successors(Some(start.upcast()), |node| node.parent())
-        .filter_map(|node| node.downcast::<Out>().ok())
+/// Walk up from `start`, ending at `root`, emitting all nodes of type `Out`
+///
+/// Includes `start` if it is of type `Out`.
+pub fn parents<'a, Out: Node<'a>>(root: impl Node<'a>, start: impl Node<'a>) -> Parents<'a, Out> {
+    let mut cursor = root.walk();
+    cursor.0.reset_to(&start.walk().0); // typesitter doesn't have a reset_to method. :-/
+    Parents {
+        // Include the start node if it already matches the type.
+        next: cursor
+            .node()
+            .downcast()
+            .ok()
+            .or_else(|| next_parent(&mut cursor)),
+        cursor,
+    }
+}
+
+/// Iterator that walks all parents of type `T`
+pub struct Parents<'a, T: Node<'a>> {
+    next: Option<T>,
+    cursor: type_sitter::TreeCursor<'a>,
+}
+
+impl<'a, T: Node<'a>> Iterator for Parents<'a, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        std::mem::replace(&mut self.next, next_parent(&mut self.cursor))
+    }
+}
+
+fn next_parent<'a, T: Node<'a>>(cursor: &mut type_sitter::TreeCursor<'a>) -> Option<T> {
+    while cursor.goto_parent() {
+        if let Ok(found) = cursor.node().downcast() {
+            return Some(found);
+        }
+    }
+    None
 }
 
 // Walk down from `start`. Includes initial node (if it is of the `T` type).
