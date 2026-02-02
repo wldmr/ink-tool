@@ -2,7 +2,7 @@ use derive_more::derive::{Display, Error, From};
 use ink_syntax::{self as syntax, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
-use tree_traversal::{depth_first, parents};
+use tree_traversal::TreeTraversal;
 use type_sitter::{Node, UntypedNode};
 
 /// Encapsulates Parsing/editing an Ink file.
@@ -235,7 +235,7 @@ impl InkDocument {
 
     pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
         let usage: syntax::Usages = self.thing_under_cursor(pos)?;
-        let definition: syntax::Definitions = parents(self.root(), usage).next()?;
+        let definition: syntax::Definitions = usage.ascend_to(self.root()).next()?;
 
         // Select the actual "name" part of the definition node as the intended target.
         let target: UntypedNode<'_> = match definition {
@@ -261,8 +261,8 @@ impl InkDocument {
 
     pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
-        let usage: syntax::Usages = self.thing_under_cursor(pos)?;
-        let usage: syntax::Usages = parents(self.root(), usage).last()?; // widen to catch qualified names
+        let usage = self.thing_under_cursor::<syntax::Usages>(pos)?;
+        let usage = usage.parent_of_type::<syntax::Usages>()?; // widen to catch qualified names
 
         // The “term” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -306,7 +306,8 @@ impl InkDocument {
     }
 
     pub fn usages(&self) -> Usages {
-        depth_first::<_, syntax::Usages>(self.root())
+        self.root()
+            .depth_first::<syntax::Usages>()
             .map(|node| node.range())
             .map(|range| {
                 (
@@ -314,7 +315,7 @@ impl InkDocument {
                     self.lsp_range(range),
                 )
             })
-            .collect::<Usages>()
+            .collect()
     }
 }
 

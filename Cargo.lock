@@ -1719,9 +1719,11 @@ version = "0.1.0"
 dependencies = [
  "assert2",
  "indoc",
+ "ink-syntax",
  "log",
  "pretty_assertions",
  "test-case",
+ "tree-sitter-ink",
  "type-sitter",
 ]
 
