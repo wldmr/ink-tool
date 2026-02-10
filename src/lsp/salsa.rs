@@ -1,5 +1,7 @@
 #![allow(non_camel_case_types)]
 
+mod composition;
+
 use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
@@ -9,9 +11,10 @@ use crate::lsp::{
         ws_symbols::from_doc as get_workspace_symbols,
     },
 };
+use composition::composite_query;
 use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
-use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
+use mini_milc::{subquery, Cached, Db, HasChanged};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) type DocId = Id<Uri>;
@@ -20,38 +23,20 @@ pub(crate) type DocIds = IdSet<Uri>;
 type Names = Vec<(String, Meta)>;
 type WorkspaceNames = HashMap<String, Vec<(DocId, Meta)>>;
 
-composite_query! {
-    #[derive(Hash, Copy)]
-    pub enum Ops -> OpsV;
-
-    #[derive(Hash, Copy)]
-    struct document -> InkDocument {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct doc_ids -> DocIds {;}
-
-    #[derive(Hash, Copy)]
-    struct opened_docs -> HashSet<DocId> {;}
-
-    #[derive(Hash, Copy)]
-    struct document_names -> Names {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct document_symbols -> Vec<DocumentSymbol> {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct workspace_symbols -> Vec<WorkspaceSymbol> {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct workspace_names -> WorkspaceNames {;}
-
-    #[derive(Hash, Copy)]
-    struct document_usages -> Usages {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct globals -> Globals {(DocId);}
-
-}
+composite_query!({
+    pub impl Ops<OpsV, InkGetters> {
+        fn document(id: DocId) -> InkDocument;
+        fn doc_ids() -> DocIds;
+        fn opened_docs() -> HashSet<DocId>;
+        // fn definition_of(id: LocId) -> LspResult<LocId>;
+        fn document_names(id: DocId) -> Names;
+        fn document_symbols(id: DocId) -> Vec<DocumentSymbol>;
+        fn workspace_symbols(id: DocId) -> Vec<WorkspaceSymbol>;
+        fn workspace_names() -> WorkspaceNames;
+        fn locals(id: DocId) -> Locals;
+        fn globals(id: DocId) -> Globals;
+    }
+});
 
 // Inputs
 subquery!(Ops, document, InkDocument);
@@ -59,11 +44,16 @@ subquery!(Ops, doc_ids, DocIds);
 subquery!(Ops, opened_docs, HashSet<DocId>);
 
 subquery!(Ops, document_names, Names, |self, db| {
-    names::document_names(&db.document(self.0))
+    names::document_names(&db.document(self.id))
+});
+
+subquery!(Ops, locals, Locals, |self, db| {
+    let doc = db.document(self.id);
+    crate::lsp::ink_visitors::locals::locals(&doc)
 });
 
 subquery!(Ops, globals, Globals, |self, db| {
-    let doc = db.document(self.0);
+    let doc = db.document(self.id);
     crate::lsp::ink_visitors::globals::globals(&doc)
 });
 
@@ -81,53 +71,22 @@ subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
 
 subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
     let docs = db.doc_ids();
-    let id = self.0;
-    let doc = db.document(id);
-    let uri = docs.get(id).unwrap();
+    let doc = db.document(self.id);
+    let uri = docs.get(self.id).unwrap();
     get_workspace_symbols(uri, &doc)
 });
 
 subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {
-    get_document_symbols(&db.document(self.0))
+    get_document_symbols(&db.document(self.id))
 });
 
-// Extension traits
-pub trait InkGetters: Db<Ops> {
-    fn doc_ids(&self) -> Cached<'_, Ops, DocIds> {
-        self.get(doc_ids)
-    }
-
-    fn document(&self, id: DocId) -> Cached<'_, Ops, InkDocument> {
-        self.get(document(id))
-    }
-
-    fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Vec<DocumentSymbol>> {
-        self.get(document_symbols(id))
-    }
-
-    fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Vec<WorkspaceSymbol>> {
-        self.get(workspace_symbols(id))
-    }
-
-    fn document_names(&self, id: DocId) -> Cached<'_, Ops, Names> {
-        self.get(document_names(id))
-    }
-
-    fn workspace_names(&self) -> Cached<'_, Ops, WorkspaceNames> {
-        self.get(workspace_names)
-    }
-
-    }
-
-    fn globals(&self, id: DocId) -> Cached<'_, Ops, Globals> {
-        self.get(globals(id))
-    }
-}
-impl<D: Db<Ops>> InkGetters for D {}
-
 pub trait InkSetters: Db<Ops> {
+    fn modify_opened<C: HasChanged>(&mut self, f: impl FnOnce(&mut HashSet<DocId>) -> C) -> bool {
+        self.modify(opened_docs {}, f)
+    }
+
     fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut DocIds) -> C) -> bool {
-        self.modify(doc_ids, f)
+        self.modify(doc_ids {}, f)
     }
 
     fn modify_document<C: HasChanged>(
@@ -136,7 +95,7 @@ pub trait InkSetters: Db<Ops> {
         default: impl FnOnce() -> InkDocument,
         update: impl FnOnce(&mut InkDocument) -> C,
     ) -> bool {
-        self.modify_with_default(document(id), default, update)
+        self.modify_with_default(document { id }, default, update)
     }
 }
 impl<D: InkGetters> InkSetters for D {}

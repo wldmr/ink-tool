@@ -1,12 +1,12 @@
 use crate::lsp::{
     idset::Id,
-    salsa::{self, opened_docs, DocId, InkGetters, InkSetters},
+    salsa::{self, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
-use mini_milc::{Cached, Db};
+use mini_milc::Cached;
 use tap::Tap as _;
 
 mod goto_definition;
@@ -83,17 +83,17 @@ impl State {
         let Some(id) = self.db.doc_ids().get_id(&uri) else {
             return Err(DocumentNotFound(uri.clone()));
         };
-        Ok(self.db.get(opened_docs).contains(&id))
+        Ok(self.db.opened_docs().contains(&id))
     }
 
     pub fn open(&mut self, uri: Uri) {
         let id = self.get_or_new_docid(uri);
-        self.db.modify(opened_docs, |docs| docs.insert(id));
+        self.db.modify_opened(|docs| docs.insert(id));
     }
 
     pub fn close(&mut self, uri: Uri) {
         let id = self.get_or_new_docid(uri);
-        self.db.modify(opened_docs, |docs| docs.remove(&id));
+        self.db.modify_opened(|docs| docs.remove(&id));
     }
 
     pub fn edit<'a, E: Into<DocumentEdit>>(&mut self, uri: Uri, edit: E) {
