@@ -28,9 +28,10 @@ macro_rules! in_case {
 
 pub use check_eq;
 pub use in_case;
+pub mod delay_panics;
 
 /// Wrapper to enable a more compact debug representation for tests.
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub struct Compact<T>(pub T);
 
 impl std::fmt::Debug for Compact<lsp_types::Location> {
