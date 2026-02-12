@@ -1,5 +1,5 @@
 use derive_more::derive::{Display, Error, From};
-use ink_syntax::{self as syntax, Ink};
+use ink_syntax::{self as syntax, Identifier, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
 use tree_traversal::TreeTraversal;
@@ -153,9 +153,16 @@ impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
     }
 }
 
+/// The identifier under the cursor, plus optionally any *preceding* identifiers.
 #[derive(Debug, PartialEq, Eq)]
 pub struct UsageUnderCursor<'a> {
+    /// Specific identifier that the cursor was under
+    pub ident: Identifier<'a>,
+    /// Range of `ident`
     pub range: lsp_types::Range,
+    /// The “most specific” qualified name that includes the cursor.
+    ///
+    /// That means for `a.b.c`, if the cursor was on `b`, then `term` == `a.b`.
     pub term: &'a str,
 }
 
@@ -262,7 +269,7 @@ impl InkDocument {
     pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
         let byte_pos = self.to_byte(pos);
         let usage = self.thing_under_cursor::<syntax::Usages>(pos)?;
-        let usage = usage.parent_of_type::<syntax::Usages>()?; // widen to catch qualified names
+        let usage = usage.parent_of_type::<syntax::Usages>().unwrap_or(usage); // widen to catch qualified names
 
         // The “term” that this usage references. A qualified name can refer to multiple
         // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
@@ -284,6 +291,7 @@ impl InkDocument {
         // would look for “knot.stitch”, but not “knot” or “knot.stitch.label”.
         let usage = match usage {
             syntax::Usages::Identifier(ident) => UsageUnderCursor {
+                ident,
                 range: self.lsp_range(ident.range()),
                 term: &self.text[ident.byte_range()],
             },
@@ -293,9 +301,10 @@ impl InkDocument {
                 let ident = qname
                     .identifiers(&mut qname.walk())
                     .filter(|ident| ident.end_byte() > byte_pos)
-                    .next()
-                    .expect("we started with something under the cursor");
+                    .flat_map(Result::ok)
+                    .next()?;
                 UsageUnderCursor {
+                    ident,
                     range: self.lsp_range(ident.range()),
                     term: &self.text[start..ident.end_byte()],
                 }
