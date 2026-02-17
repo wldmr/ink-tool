@@ -5,8 +5,8 @@ mod composition;
 use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
+        definitions::Defs,
         doc_symbols::document_symbols as get_document_symbols,
-        globals::Globals,
         names::{self, Meta},
         ws_symbols::from_doc as get_workspace_symbols,
     },
@@ -25,16 +25,19 @@ type WorkspaceNames = HashMap<String, Vec<(DocId, Meta)>>;
 
 composite_query!({
     pub impl Ops<OpsV, InkGetters> {
+        // === Inputs ===
         fn document(id: DocId) -> InkDocument;
         fn doc_ids() -> DocIds;
         fn opened_docs() -> HashSet<DocId>;
-        // fn definition_of(id: LocId) -> LspResult<LocId>;
-        fn document_names(id: DocId) -> Names;
+
+        // === Leaf Queries ===
         fn document_symbols(id: DocId) -> Vec<DocumentSymbol>;
         fn workspace_symbols(id: DocId) -> Vec<WorkspaceSymbol>;
+
+        // === Intermediate Queries ===
+        fn document_names(id: DocId) -> Names; // TODO: Remove this and workspace_names in favor of `definitions`
         fn workspace_names() -> WorkspaceNames;
-        fn locals(id: DocId) -> Locals;
-        fn globals(id: DocId) -> Globals;
+        fn definitions(id: DocId) -> Defs;
     }
 });
 
@@ -47,14 +50,9 @@ subquery!(Ops, document_names, Names, |self, db| {
     names::document_names(&db.document(self.id))
 });
 
-subquery!(Ops, locals, Locals, |self, db| {
+subquery!(Ops, definitions, Defs, |self, db| {
     let doc = db.document(self.id);
-    crate::lsp::ink_visitors::locals::locals(&doc)
-});
-
-subquery!(Ops, globals, Globals, |self, db| {
-    let doc = db.document(self.id);
-    crate::lsp::ink_visitors::globals::globals(&doc)
+    crate::lsp::ink_visitors::definitions::document_definitions(&doc)
 });
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {

@@ -75,6 +75,8 @@ mod tests {
         Nothing,
     }
 
+    // XXX: This is actually testing `goto-definition` not references!
+    // But OK for now. Goto references is the inverse and should come from the same sources. Remedy later.
     impl<'a> LinkCheck<'a> {
         fn add_annotations(
             &mut self,
@@ -394,7 +396,7 @@ mod tests {
             let loc = named_ranges::<lsp_types::Range>(TEXT);
 
             let defs = state
-                .goto_references(&uri("main.ink"), loc["label-ref1"].start)
+                .goto_references(uri("main.ink"), loc["label-ref1"].start)
                 .unwrap()
                 .into_iter()
                 .map(|it| it.range)
