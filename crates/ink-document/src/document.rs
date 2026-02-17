@@ -37,8 +37,6 @@ pub enum GetNodeError {
 #[display("Not a valid position: {}:{}", _0.line, _0.character)]
 pub struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
-pub type Usages = Vec<(String, lsp_types::Range)>;
-
 impl Default for InkDocument {
     fn default() -> Self {
         // TODO: This will silently lead to errors. We should panic instead.
@@ -155,14 +153,16 @@ impl From<(std::ops::Range<(u32, u32)>, &str)> for DocumentEdit {
 
 /// The identifier under the cursor, plus optionally any *preceding* identifiers.
 #[derive(Debug, PartialEq, Eq)]
-pub struct UsageUnderCursor<'a> {
-    /// Specific identifier that the cursor was under
+pub struct IdentUnderCursor<'a> {
+    /// Specific identifier that the cursor was at
     pub ident: Identifier<'a>,
     /// Range of `ident`
     pub range: lsp_types::Range,
     /// The “most specific” qualified name that includes the cursor.
     ///
     /// That means for `a.b.c`, if the cursor was on `b`, then `term` == `a.b`.
+    ///
+    /// Used to disabmbiguate between `this.name` and `that.name`
     pub term: &'a str,
 }
 
@@ -266,71 +266,102 @@ impl InkDocument {
         })
     }
 
-    pub fn usage_at(&self, pos: Position) -> Option<UsageUnderCursor<'_>> {
-        let byte_pos = self.to_byte(pos);
+    /// Find the identifier under the cursor at position `pos`
+    ///
+    /// Regarding the `term` that this usage references: A qualified name can refer to
+    /// multiple search terms, namely each level in its hierarchy. So the name
+    /// `foo.bar.baz` potentially contains the terms
+    ///
+    /// - `foo`
+    /// - `foo.bar`, and
+    /// - `foo.bar.baz`
+    ///
+    /// “Potentially”, because we only return the name that ends to the right of the
+    /// cursor. This is because we assume that the user is being specific when they
+    /// place the cursor over the last part of a qualified name.
+    ///
+    /// Example:
+    ///
+    ///     knot.stitch.label
+    ///            ^
+    ///
+    /// would look for “knot.stitch”, but not “knot” or “knot.stitch.label”.
+    pub fn usage_at(&self, pos: Position) -> Option<IdentUnderCursor<'_>> {
         let usage = self.thing_under_cursor::<syntax::Usages>(pos)?;
         let usage = usage.parent_of_type::<syntax::Usages>().unwrap_or(usage); // widen to catch qualified names
-
-        // The “term” that this usage references. A qualified name can refer to multiple
-        // search terms, namely each level in its hierarchy. So the name `foo.bar.baz`
-        // potentially contains the terms
-        //
-        // - `foo`
-        // - `foo.bar`, and
-        // - `foo.bar.baz`
-        //
-        // “Potentially”, because we only return the name that ends to the right of the
-        // cursor. This is because we assume that the user is being specific when they
-        // place the cursor over the last part of a qualified name.
-        //
-        // Example:
-        //
-        //     knot.stitch.label
-        //            ^
-        //
-        // would look for “knot.stitch”, but not “knot” or “knot.stitch.label”.
-        let usage = match usage {
-            syntax::Usages::Identifier(ident) => UsageUnderCursor {
-                ident,
-                range: self.lsp_range(ident.range()),
-                term: &self.text[ident.byte_range()],
-            },
-            syntax::Usages::QualifiedName(qname) => {
-                let start = qname.start_byte();
-                // the first ident that ends after the cursor:
-                let ident = qname
-                    .identifiers(&mut qname.walk())
-                    .filter(|ident| ident.end_byte() > byte_pos)
-                    .flat_map(Result::ok)
-                    .next()?;
-                UsageUnderCursor {
-                    ident,
-                    range: self.lsp_range(ident.range()),
-                    term: &self.text[start..ident.end_byte()],
-                }
-            }
-        };
-
-        Some(usage)
+        self.individual_idents(usage).find(|it| it.range.end > pos)
     }
 
-    pub fn usages(&self) -> Usages {
+    /// Find all usages in this document.
+    pub fn usages(&self) -> impl Iterator<Item = IdentUnderCursor<'_>> {
         self.root()
             .depth_first::<syntax::Usages>()
-            .map(|node| node.range())
-            .map(|range| {
-                (
-                    self.text[range.start_byte..range.end_byte].to_owned(),
-                    self.lsp_range(range),
-                )
-            })
-            .collect()
+            .flat_map(|it| self.individual_idents(it))
+    }
+
+    /// The identifier(s) under the cursor (for qualified names, gives each individual identifier)
+    #[inline]
+    fn individual_idents<'a>(
+        &'a self,
+        usage: syntax::Usages<'a>,
+    ) -> impl Iterator<Item = IdentUnderCursor<'a>> {
+        UsageIter::new(self, usage)
+    }
+}
+
+struct UsageIter<'a> {
+    doc: &'a InkDocument,
+    usage: syntax::Usages<'a>,
+    next_idx: usize,
+}
+
+impl<'a> Iterator for UsageIter<'a> {
+    type Item = IdentUnderCursor<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.usage {
+            syntax::Usages::Identifier(ident) if self.next_idx == 0 => {
+                self.next_idx += 1; // So that next time we return None.
+                let start_byte = ident.start_byte();
+                Some(IdentUnderCursor {
+                    ident,
+                    range: self.doc.lsp_range(ident.range()),
+                    term: &self.doc.text[start_byte..ident.end_byte()],
+                })
+            }
+            syntax::Usages::QualifiedName(qualified_name) => {
+                let start_byte = qualified_name.start_byte();
+                let next_child_indexes = self.next_idx..qualified_name.raw().child_count();
+                for idx in next_child_indexes {
+                    self.next_idx = idx + 1; // keep track of where we are
+                    if let Some(ident) = self.usage.child_of_type::<syntax::Identifier>(idx) {
+                        return Some(IdentUnderCursor {
+                            ident,
+                            range: self.doc.lsp_range(ident.range()),
+                            term: &self.doc.text[start_byte..ident.end_byte()],
+                        });
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+impl<'a> UsageIter<'a> {
+    fn new(doc: &'a InkDocument, usage: syntax::Usages<'a>) -> Self {
+        Self {
+            usage,
+            doc,
+            next_idx: 0,
+        }
     }
 }
 
 /// Private Helpers
 impl InkDocument {
-    /// Translate editor position into an underlying tree node of a given type.
+    /// Translate editor position into an underlying tree node of a given type.f t
     ///
     /// This is its own function because tree-sitter doesn’t consider a cursor at the
     /// “end” of of a node (like an Identifier) as inside that node, while the user

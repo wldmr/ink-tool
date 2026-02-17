@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types)]
 
 mod composition;
+mod subqueries;
 
 use crate::lsp::{
     idset::{Id, IdSet},
@@ -13,8 +14,8 @@ use crate::lsp::{
 };
 use composition::composite_query;
 use ink_document::InkDocument;
-use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
-use mini_milc::{subquery, Cached, Db, HasChanged};
+use lsp_types::{DocumentSymbol, Range, Uri, WorkspaceSymbol};
+use mini_milc::{subquery, Db, HasChanged};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) type DocId = Id<Uri>;
@@ -37,7 +38,14 @@ composite_query!({
         // === Intermediate Queries ===
         fn document_names(id: DocId) -> Names; // TODO: Remove this and workspace_names in favor of `definitions`
         fn workspace_names() -> WorkspaceNames;
-        fn definitions(id: DocId) -> Defs;
+
+        /// All the definitions in this document
+        fn definitions(docid: DocId) -> Defs;
+
+        /// Resolve the start(!) of an identifier to the place(s) where it is defined
+        ///
+        /// Empty if unresolved
+        fn resolve_definition(docid: DocId, pos: lsp_types::Position) -> Vec<(DocId, Range)>;
     }
 });
 
@@ -51,7 +59,7 @@ subquery!(Ops, document_names, Names, |self, db| {
 });
 
 subquery!(Ops, definitions, Defs, |self, db| {
-    let doc = db.document(self.id);
+    let doc = db.document(self.docid);
     crate::lsp::ink_visitors::definitions::document_definitions(&doc)
 });
 

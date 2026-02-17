@@ -34,6 +34,14 @@ pub trait TreeTraversal<'a>: Node<'a> {
         self.parent().and_then(|it| it.downcast().ok())
     }
 
+    fn child(&self, idx: usize) -> Option<UntypedNode<'a>> {
+        self.raw().child(idx).map(UntypedNode::new)
+    }
+
+    fn child_of_type<T: Node<'a>>(&self, idx: usize) -> Option<T> {
+        self.child(idx).and_then(|it| it.downcast().ok())
+    }
+
     fn contains(&self, target: &impl Node<'a>) -> bool {
         self.start_byte() <= target.start_byte() && target.end_byte() <= self.end_byte()
     }

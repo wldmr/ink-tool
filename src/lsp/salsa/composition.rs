@@ -98,7 +98,7 @@ macro_rules! composite_query {
         pub trait $trait: mini_milc::Db<$query> {
             $(
             $(#[doc = $subquery_doc])*
-            fn $subquery(&self, $($sub_name: $sub_ty),*) -> Cached<'_, $query, $ty> {
+            fn $subquery(&self, $($sub_name: $sub_ty),*) -> mini_milc::Cached<'_, $query, $ty> {
                 self.get($subquery {$($sub_name),*})
             }
             )+
