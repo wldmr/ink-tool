@@ -1,9 +1,11 @@
 *   -> KKKa
     // ^^^^ references knot:KKKa
 *   -> KKKa.SSSa
-    // |    ^ references stitch:KKKa.SSSa
-    //     ^ references stitch:KKKa.SSSa
-    //       (if the cursor is over the dot, we assume the user means the next ident (since we prefer maximum specificity))
+    // |   |^ references stitch:KKKa.SSSa
+    // |   ^ references knot:KKKa
+    // |     If the cursor is over the separator, we assume the user means the previous ident.
+    // |     In non-modal editors, the cursor will appear to be at the end of the ident
+    // |     (that is, left of the separator).
     // ^ references knot:KKKa
 *   -> doesnt_exist
     // ^^^^^^^^^^^^ references-nothing

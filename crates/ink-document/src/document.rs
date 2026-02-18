@@ -3,7 +3,7 @@ use ink_syntax::{self as syntax, Identifier, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
 use tree_traversal::TreeTraversal;
-use type_sitter::{Node, UntypedNode};
+use type_sitter::Node;
 
 /// Encapsulates Parsing/editing an Ink file.
 ///
@@ -240,32 +240,6 @@ impl InkDocument {
         start..end
     }
 
-    pub fn definition_at(&self, pos: Position) -> Option<DefinitionUnderCursor<'_>> {
-        let usage: syntax::Usages = self.thing_under_cursor(pos)?;
-        let definition: syntax::Definitions = usage.ascend_to(self.root()).next()?;
-
-        // Select the actual "name" part of the definition node as the intended target.
-        let target: UntypedNode<'_> = match definition {
-            syntax::Definitions::External(external) => external.name().upcast(),
-            syntax::Definitions::Global(global) => global.name().upcast(),
-            syntax::Definitions::Knot(knot) => knot.name().upcast(),
-            syntax::Definitions::Label(label) => label.name().upcast(),
-            syntax::Definitions::List(list) => list.name().upcast(),
-            syntax::Definitions::ListValueDef(lvd) => lvd.name().upcast(),
-            syntax::Definitions::Param(param) => match param.value().ok()? {
-                syntax::ParamValue::Divert(divert) => divert.target().upcast(),
-                syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
-            },
-            syntax::Definitions::Stitch(stitch) => stitch.name().upcast(),
-            syntax::Definitions::TempDef(temp_def) => temp_def.name().upcast(),
-        };
-
-        Some(DefinitionUnderCursor {
-            range: self.lsp_range(target.range()),
-            term: self.node_text(target),
-        })
-    }
-
     /// Find the identifier under the cursor at position `pos`
     ///
     /// Regarding the `term` that this usage references: A qualified name can refer to
@@ -282,17 +256,57 @@ impl InkDocument {
     ///
     /// Example:
     ///
-    ///     knot.stitch.label
-    ///            ^
+    /// ``` ink
+    /// -> knot.stitch.label
+    /// //        ^ cursor here
+    /// ```
     ///
     /// would look for “knot.stitch”, but not “knot” or “knot.stitch.label”.
+    ///
+    /// ``` rust
+    /// # use ink_document::*;
+    /// # use lsp_types::Position;
+    /// let doc = InkDocument::new(String::from("-> knot.stitch.label"), None);
+    /// assert_eq!(doc.usage_at(Position::new(0,  3)).map(|it| it.term), Some("knot"));
+    /// assert_eq!(doc.usage_at(Position::new(0,  9)).map(|it| it.term), Some("knot.stitch"));
+    /// assert_eq!(doc.usage_at(Position::new(0, 20)).map(|it| it.term), Some("knot.stitch.label"));
+    /// ```
+    ///
+    /// The search considers the the cursor to be “on the left” of the character
+    /// position, and therefore “touching” the identifier if placed on the character
+    /// immediately to the right. In most editors, if the edit cursor at the end of a
+    /// word, the user will consider that positon to be “on” the identifier, so we honor
+    /// that.
+    ///
+    /// ``` rust
+    /// # use ink_document::*;
+    /// # use lsp_types::Position;
+    /// let text = "{a.b} etc";
+    ///
+    /// let doc = InkDocument::new(String::from(text), None);
+    ///
+    /// // helper to show the text at column `n` and the term found there
+    /// let char_and_term = |n: u32| {
+    ///     (
+    ///         &text[n as usize..(n+1) as usize],
+    ///         doc.usage_at(Position::new(0, n)).map(|it| it.term)
+    ///     )
+    /// };
+    ///
+    /// assert_eq!(char_and_term(0), ("{", None));
+    /// assert_eq!(char_and_term(1), ("a", Some("a")));
+    /// assert_eq!(char_and_term(2), (".", Some("a")));
+    /// assert_eq!(char_and_term(3), ("b", Some("a.b")));
+    /// assert_eq!(char_and_term(4), ("}", Some("a.b")));
+    /// assert_eq!(char_and_term(5), (" ", None));
+    /// ```
     pub fn usage_at(&self, pos: Position) -> Option<IdentUnderCursor<'_>> {
         let usage = self.thing_under_cursor::<syntax::Usages>(pos)?;
         let usage = usage.parent_of_type::<syntax::Usages>().unwrap_or(usage); // widen to catch qualified names
-        self.individual_idents(usage).find(|it| it.range.end > pos)
+        self.individual_idents(usage).find(|it| it.range.end >= pos)
     }
 
-    /// Find all usages in this document.
+    /// Iterate over all usages in this document, including each *individual* part of every qualified name.
     pub fn usages(&self) -> impl Iterator<Item = IdentUnderCursor<'_>> {
         self.root()
             .depth_first::<syntax::Usages>()
@@ -366,6 +380,7 @@ impl InkDocument {
     /// This is its own function because tree-sitter doesn’t consider a cursor at the
     /// “end” of of a node (like an Identifier) as inside that node, while the user
     /// typically would. So we encapsulate that search here.
+    #[inline]
     fn thing_under_cursor<'a, N: type_sitter::Node<'a>>(&'a self, pos: Position) -> Option<N> {
         let byte_pos = self.to_byte(pos);
         let root = self.tree.root_node();
