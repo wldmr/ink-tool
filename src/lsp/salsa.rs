@@ -14,7 +14,7 @@ use crate::lsp::{
 };
 use composition::composite_query;
 use ink_document::InkDocument;
-use lsp_types::{DocumentSymbol, Range, Uri, WorkspaceSymbol};
+use lsp_types::{DocumentSymbol, Position, Range, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::{HashMap, HashSet};
 
@@ -41,10 +41,14 @@ composite_query!({
 
         /// All the definitions in this document
         fn definitions(docid: DocId) -> Defs;
+        /// For each definition in this file, list all the references to that definition
+        fn references(docid: DocId) -> References;
 
         /// Resolve the start(!) of an identifier to the place(s) where it is defined
         ///
         /// Empty if unresolved
+        // TODO: It feels weird for this to require the the start of the identifier. Too fragile.
+        // I'd prefer the NodeId, but that requires infrastructure to resolve those to actual nodes/ranges
         fn resolve_definition(docid: DocId, pos: lsp_types::Position) -> Vec<(DocId, Range)>;
     }
 });
@@ -61,6 +65,31 @@ subquery!(Ops, document_names, Names, |self, db| {
 subquery!(Ops, definitions, Defs, |self, db| {
     let doc = db.document(self.docid);
     crate::lsp::ink_visitors::definitions::document_definitions(&doc)
+});
+
+/// For each identifier start position, list all the locations that link to it
+type References = HashMap<Position, HashSet<(DocId, Range)>>;
+subquery!(Ops, references, References, |self, db| {
+    let mut result = References::new();
+
+    // TODO: Think about this, this feels very inefficient. We walk all documents everytime?
+
+    let docs = db.doc_ids();
+    for docid in docs.ids() {
+        let doc = db.document(docid);
+        for usage in doc.usages() {
+            for (defdoc, defrange) in db.resolve_definition(docid, usage.range.start).iter() {
+                if *defdoc == self.docid {
+                    result
+                        .entry(defrange.start)
+                        .or_default()
+                        .insert((docid, usage.range));
+                }
+            }
+        }
+    }
+
+    result
 });
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {

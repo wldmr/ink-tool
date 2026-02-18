@@ -418,7 +418,7 @@ mod tests {
             "
             === knot(p1, new) ===
             //           ^ rename-symbol new
-            {p1 + p2}
+            {p1 + new}
             = stitch(p1)
             {p1 + new}
             "

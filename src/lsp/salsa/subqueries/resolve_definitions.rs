@@ -22,8 +22,8 @@ impl Subquery<Ops, Vec<(DocId, Range)>> for resolve_definition {
 
         // Walk up the tree, stop once we find matching locals.
 
-        for (nth, parent) in usage.ident.ascend_to(doc.root()).enumerate() {
-            if let Some(local_defs) = defs.local(usage.term, parent) {
+        for (nth, scope) in usage.ident.ascend_to(doc.root()).enumerate() {
+            if let Some(local_defs) = defs.local(usage.term, scope) {
                 for (range, kind) in local_defs {
                     // Only the innermost scope includes temps
                     if !kind.is_temp() || nth == 0 {

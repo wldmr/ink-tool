@@ -1,1 +1,1 @@
-mod definitions_of;
+mod resolve_definitions;

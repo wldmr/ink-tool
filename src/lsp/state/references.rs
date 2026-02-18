@@ -1,46 +1,36 @@
-use crate::lsp::{salsa::InkGetters as _, state::GotoLocationError};
-use lsp_types::{Position, Uri};
+use crate::lsp::{salsa::InkGetters, state::GotoLocationError};
+use lsp_types::{Location, Position, Uri};
 
 impl super::State {
     pub fn goto_references(
         &self,
         from_uri: Uri,
         from_position: Position,
-    ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let docs = self.db.doc_ids();
-        let this_doc = docs
-            .get_id(&from_uri)
-            .ok_or_else(|| DocumentNotFound(from_uri.clone()))?;
-        let doc = self.db.document(this_doc);
+    ) -> Result<Vec<Location>, GotoLocationError> {
+        let (this_doc, this_docid) = self.get_doc_and_id(&from_uri)?;
 
-        let Some(usage) = doc.usage_at(from_position) else {
-            return Ok(Vec::new());
+        let mut result = Vec::new();
+
+        let Some(usage) = this_doc.usage_at(from_position) else {
+            return Ok(result);
         };
 
-        log::trace!(
-            r#"finding references for usage "{}" ({}:{}|{}-{}|{})"#,
-            usage.term,
-            from_uri.path().as_estr(),
-            usage.range.start.line,
-            usage.range.start.character,
-            usage.range.end.line,
-            usage.range.end.character,
-        );
+        let defs = self.db.resolve_definition(this_docid, usage.range.start);
 
-        let definitions = self
-            .db
-            .workspace_names()
-            .iter()
-            .filter_map(|(name, metas)| (usage.term == name).then_some(metas))
-            .flatten()
-            .filter(|(doc_id, meta)| {
-                meta.is_global()
-                    || (*doc_id == this_doc && meta.is_locally_visible_at(from_position))
-            })
-            .map(|(doc_id, meta)| lsp_types::Location::new(docs[*doc_id].clone(), meta.site.into()))
-            .collect();
+        let docs = self.db.doc_ids();
 
-        Ok(definitions)
+        for &(def_docid, def_range) in defs.iter() {
+            let references = self.db.references(def_docid);
+            if let Some(refs) = references.get(&def_range.start) {
+                for &(ref_docid, ref_range) in refs {
+                    let ref_uri = docs[ref_docid].clone();
+                    let reference = Location::new(ref_uri, ref_range);
+                    result.push(reference);
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 
