@@ -1,10 +1,10 @@
-use crate::fmt::util::constrained_value::Constrained;
-
 mod formatters;
 mod whitespace;
 
 pub(crate) use formatters::layout::Layout;
 pub(crate) use formatters::tracing::Tracing;
+
+use crate::fmt::constrained_value::Constrained;
 
 /// The operations to format a document with.
 pub trait Formatting {

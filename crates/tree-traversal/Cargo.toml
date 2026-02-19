@@ -13,3 +13,5 @@ test-case.workspace = true
 assert2.workspace = true
 indoc.workspace = true
 pretty_assertions.workspace = true
+tree-sitter-ink.workspace = true
+ink-syntax.workspace = true

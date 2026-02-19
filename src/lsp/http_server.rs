@@ -172,8 +172,7 @@ async fn file(
             )
         },
     )?;
-    let text = state.text(uri)?.clone();
-    Ok(text)
+    Ok(state.text(&uri)?)
 }
 
 impl IntoResponse for DocumentNotFound {

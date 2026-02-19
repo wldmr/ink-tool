@@ -1,6 +1,5 @@
+use crate::fmt::constrained_value::Constrained;
 use std::ops::Add;
-
-use crate::fmt::util::constrained_value::Constrained;
 
 /// Keeps track of the constraints on spaces and newlines.
 ///
@@ -56,11 +55,9 @@ impl std::fmt::Debug for Whitespace {
 
 #[cfg(test)]
 mod tests {
-    use quickcheck::{quickcheck, Arbitrary, TestResult};
-
-    use crate::fmt::util::testing::in_case;
-
     use super::*;
+    use quickcheck::{quickcheck, Arbitrary, TestResult};
+    use util::testing::in_case;
 
     impl Arbitrary for Undecided {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {

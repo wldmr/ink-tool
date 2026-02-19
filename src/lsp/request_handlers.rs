@@ -60,7 +60,7 @@ impl RequestHandler for request::WorkspaceSymbolRequest {
 impl RequestHandler for request::Completion {
     fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
         let completions = state.lock()?.completions(
-            params.text_document_position.text_document.uri,
+            &params.text_document_position.text_document.uri,
             params.text_document_position.position,
         )?;
         Ok(completions.map(CompletionResponse::Array))
@@ -94,5 +94,16 @@ impl RequestHandler for request::References {
             _ => Some(refs),
         };
         Ok(response)
+    }
+}
+
+impl RequestHandler for request::Rename {
+    fn execute(params: Self::Params, state: &SharedState) -> Response<Self::Result> {
+        let edits = state.lock()?.rename_symbol(
+            params.text_document_position.text_document.uri,
+            params.text_document_position.position,
+            params.new_name,
+        )?;
+        Ok(edits)
     }
 }

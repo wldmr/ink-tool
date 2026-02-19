@@ -65,6 +65,9 @@ fn setup_logging(args: &Cli) -> AppResult<()> {
     let mut dispatch = fern::Dispatch::new()
         .level(log::LevelFilter::Error)
         .level_for("ink_tool", level)
+        .level_for("ink_document", level)
+        .level_for("ink_syntax", level)
+        .level_for("tree_traversal", level)
         .format(move |out, message, record| {
             out.finish(format_args!(
                 "{} {} {} {}",

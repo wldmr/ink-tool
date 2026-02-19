@@ -1,8 +1,7 @@
 use crate::fmt::{
+    constrained_value::Constrained,
     formatting::{whitespace, Formatting},
-    util::constrained_value::Constrained,
 };
-
 use std::fmt::Debug;
 
 /// Takes care of actually layouting a document (spacing, indentation, etc)

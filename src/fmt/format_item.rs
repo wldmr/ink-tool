@@ -1,6 +1,5 @@
+use crate::fmt::constrained_value::Constrained;
 use std::fmt::{Debug, Write};
-
-use crate::fmt::util::constrained_value::Constrained;
 
 #[derive(PartialEq)]
 pub struct Space {

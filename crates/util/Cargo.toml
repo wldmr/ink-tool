@@ -1,0 +1,18 @@
+[package]
+name = "util"
+description = "Utilities that don't warrant pulling in a library"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+derive-quickcheck-arbitrary.workspace = true
+fern.workspace = true
+log.workspace = true
+lsp-types.workspace = true
+quickcheck.workspace = true
+text-annotations.workspace = true
+tree-sitter.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+

@@ -1,14 +1,17 @@
 use crate::lsp::{
     idset::Id,
-    ink_visitors::names::Meta,
-    salsa::{self, opened_docs, DocId, InkGetters, InkSetters},
+    salsa::{self, DocId, InkGetters, InkSetters},
 };
 use derive_more::derive::{Display, Error};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
 use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
-use mini_milc::{Cached, Db};
+use mini_milc::Cached;
 use tap::Tap as _;
+
+mod goto_definition;
+mod references;
+mod rename;
 
 // This is quite an abomination, but we have to deal with it.
 type DbType = mini_milc::salsa::Salsa<
@@ -34,7 +37,7 @@ pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 pub(crate) struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
 #[derive(Debug, Clone, Display, Error, derive_more::From)]
-#[display("Could not go to position")]
+#[display("Could not go to position: {}", self)]
 pub(crate) enum GotoLocationError {
     DocumentNotFound(DocumentNotFound),
     PositionOutOfBounds(InvalidPosition),
@@ -68,11 +71,11 @@ impl State {
             .tap(|it| log::debug!("Common file name prefix: `{it}``"))
     }
 
-    pub fn text(&self, uri: Uri) -> Result<String, DocumentNotFound> {
-        if let Some(id) = self.db.doc_ids().get_id(&uri) {
+    pub fn text(&self, uri: &Uri) -> Result<String, DocumentNotFound> {
+        if let Some(id) = self.db.doc_ids().get_id(uri) {
             Ok(self.db.document(id).full_text())
         } else {
-            Err(DocumentNotFound(uri))
+            Err(DocumentNotFound(uri.clone()))
         }
     }
 
@@ -80,17 +83,17 @@ impl State {
         let Some(id) = self.db.doc_ids().get_id(&uri) else {
             return Err(DocumentNotFound(uri.clone()));
         };
-        Ok(self.db.get(opened_docs).contains(&id))
+        Ok(self.db.opened_docs().contains(&id))
     }
 
     pub fn open(&mut self, uri: Uri) {
         let id = self.get_or_new_docid(uri);
-        self.db.modify(opened_docs, |docs| docs.insert(id));
+        self.db.modify_opened(|docs| docs.insert(id));
     }
 
     pub fn close(&mut self, uri: Uri) {
         let id = self.get_or_new_docid(uri);
-        self.db.modify(opened_docs, |docs| docs.remove(&id));
+        self.db.modify_opened(|docs| docs.remove(&id));
     }
 
     pub fn edit<'a, E: Into<DocumentEdit>>(&mut self, uri: Uri, edit: E) {
@@ -145,19 +148,14 @@ impl State {
 
     pub fn completions(
         &self,
-        uri: Uri,
+        uri: &Uri,
         position: Position,
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
         let (doc, this_doc) = self.get_doc_and_id(uri)?;
 
-        let Some(search_terms) = doc.usage_at(position) else {
+        let Some(usage) = doc.usage_at(position) else {
             return Ok(Default::default());
         };
-
-        let Some(longest) = search_terms.terms.into_iter().max_by_key(|it| it.len()) else {
-            return Ok(Default::default());
-        };
-        log::debug!("Trying completion for '{longest}'.");
 
         let ws_names = self.db.workspace_names();
         use ink_document::ids::DefinitionInfo::*;
@@ -165,7 +163,7 @@ impl State {
         Ok(Some(
             ws_names
                 .iter()
-                .filter(|(key, _)| key.contains(longest))
+                .filter(|(key, _)| key.contains(usage.term))
                 .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
                 .filter(|(_, (docid, meta))| {
                     meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(position))
@@ -174,8 +172,8 @@ impl State {
                     label: key.clone(),
                     label_details: None,
                     kind: Some(match meta.id.info() {
-                        ToplevelScope { .. } => CompletionItemKind::MODULE,
-                        SubScope { .. } => CompletionItemKind::CLASS,
+                        Section { .. } => CompletionItemKind::MODULE,
+                        Subsection { .. } => CompletionItemKind::CLASS,
                         Function => CompletionItemKind::FUNCTION,
                         External => CompletionItemKind::INTERFACE,
                         Var => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
@@ -188,14 +186,14 @@ impl State {
                     }),
                     // TODO: Fetch actual definition
                     detail: Some(match meta.id.info() {
-                        ToplevelScope { stitch, params } => {
+                        Section { stitch, params } => {
                             format!(
                                 "{} {key}{}",
                                 if stitch { "=" } else { "==" },
                                 if params { "(…)" } else { "" }
                             )
                         }
-                        SubScope { params, .. } => {
+                        Subsection { params, .. } => {
                             format!("= {key}{}", if params { "(…)" } else { "" })
                         }
                         Function => format!("== function {key}(…)"),
@@ -218,7 +216,7 @@ impl State {
                     insert_text_format: None,
                     insert_text_mode: None,
                     text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                        range: search_terms.range,
+                        range: usage.range,
                         new_text: key.to_owned(),
                     })),
                     additional_text_edits: None,
@@ -229,84 +227,6 @@ impl State {
                 })
                 .collect(),
         ))
-    }
-
-    pub fn goto_definition(
-        &self,
-        uri: Uri,
-        pos: Position,
-    ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let (doc, this_doc) = self.get_doc_and_id(uri)?;
-        let docs = self.db.doc_ids();
-
-        let Some(search_terms) = doc.usage_at(pos) else {
-            return Ok(Vec::new());
-        };
-
-        let ws_names = self.db.workspace_names();
-        let mut result = Vec::new();
-
-        for term in search_terms.terms {
-            let Some(metas) = ws_names.get(term) else {
-                continue;
-            };
-
-            let (globals, locals): (Vec<&(DocId, Meta)>, Vec<&(DocId, Meta)>) = metas
-                .iter()
-                .filter(|(docid, meta)| {
-                    meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(pos))
-                })
-                .partition(|(_, meta)| meta.is_global());
-
-            // Find "most local" thing.
-            let local = locals.into_iter().min_by(|a, b| a.1.cmp_extent(&b.1));
-            if let Some((file, def)) = local {
-                result.push(lsp_types::Location::new(docs[*file].clone(), def.site));
-            } else {
-                // We "allow" ambiguity for globals, since we can't know which definition the user meant
-                // (there'll be an error message and they'll have to fix it).
-                result.extend(
-                    globals
-                        .into_iter()
-                        .copied()
-                        .map(|(file, def)| lsp_types::Location::new(docs[file].clone(), def.site)),
-                );
-            }
-        }
-
-        return Ok(result);
-    }
-
-    pub fn goto_references(
-        &self,
-        from_uri: Uri,
-        from_position: Position,
-    ) -> Result<Vec<lsp_types::Location>, GotoLocationError> {
-        let (doc, this_doc) = self.get_doc_and_id(from_uri)?;
-        let docs = self.db.doc_ids();
-        let mut result = Default::default();
-        let Some(def) = doc.definition_at(from_position) else {
-            return Ok(result);
-        };
-        let doc_names = self.db.document_names(this_doc);
-        let my_names = doc_names
-            .iter()
-            .filter(|(_name, meta)| meta.site == def.range);
-
-        let ws_usages = self.db.workspace_usages();
-        for (name, meta) in my_names {
-            if let Some(usages) = ws_usages.get(name) {
-                for (file, range) in usages.iter().copied() {
-                    if meta.is_global()
-                        || (this_doc == file && meta.is_locally_visible_at(range.start))
-                    {
-                        let uri = docs[file].clone();
-                        result.push(lsp_types::Location { uri, range });
-                    }
-                }
-            }
-        }
-        Ok(result)
     }
 
     #[cfg(test)]
@@ -331,10 +251,10 @@ impl State {
 
     fn get_doc_and_id(
         &self,
-        uri: Uri,
+        uri: &Uri,
     ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, Id<Uri>), DocumentNotFound> {
-        let Some(id) = self.db.doc_ids().get_id(&uri) else {
-            return Err(DocumentNotFound(uri));
+        let Some(id) = self.db.doc_ids().get_id(uri) else {
+            return Err(DocumentNotFound(uri.clone()));
         };
         let doc = self.db.document(id);
         Ok((doc, id))
@@ -345,11 +265,47 @@ impl State {
 mod tests {
     use super::*;
 
-    fn new_state() -> State {
+    pub(super) fn new_state() -> State {
         State::new(None, true)
     }
 
-    fn uri(name: &str) -> Uri {
+    impl State {
+        pub(super) fn with_comment_separated_files(mut self, files: impl AsRef<str>) -> Self {
+            for (uri, text) in comment_separated_files(files.as_ref()).unwrap() {
+                self.edit(uri, text);
+            }
+            self
+        }
+    }
+
+    pub(super) fn comment_separated_files(texts: &str) -> Result<Vec<(Uri, String)>, String> {
+        static PREFIX: &'static str = "// file:";
+        static SUFFIX: &'static str = ".ink";
+
+        let mut current_uri = uri("main.ink");
+        let mut text = String::new();
+        let mut vec = Vec::new();
+        for line in texts.trim().lines() {
+            let line = line.trim();
+            if line.starts_with(PREFIX) && line.ends_with(SUFFIX) {
+                let Some((_, filename)) = line.split_once(PREFIX) else {
+                    return Err(format!("Could not parse file name comment line : `{line}`"));
+                };
+                if !text.is_empty() {
+                    let file_text = std::mem::take(&mut text);
+                    vec.push((current_uri.clone(), file_text));
+                }
+                current_uri = uri(filename.trim());
+            } else {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+        vec.push((current_uri, text)); // pick up the last stragglers
+        Ok(vec)
+    }
+
+    pub(super) fn uri(name: &str) -> Uri {
         <Uri as std::str::FromStr>::from_str(&format!("file://tmp/{name}")).unwrap()
     }
 
@@ -399,7 +355,7 @@ mod tests {
             let (contents, caret) = text_with_caret("{o@}");
             let uri = uri("test.ink");
             state.edit(uri.clone(), contents);
-            let completions = state.completions(uri, caret).unwrap().unwrap();
+            let completions = state.completions(&uri, caret).unwrap().unwrap();
             assert_eq!(
                 completions
                     .into_iter()
@@ -408,289 +364,6 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["one", "some_var", "two"]
             );
-        }
-    }
-
-    mod links {
-        use super::{new_state, State};
-        use crate::test_utils::{
-            self,
-            text_annotations::{Annotation, AnnotationScanner},
-            Compact,
-        };
-        use assert2::assert;
-        use itertools::Itertools;
-        use lsp_types::Uri;
-        use std::{
-            collections::{BTreeSet, HashMap},
-            str::FromStr,
-        };
-        use tap::Pipe;
-        use test_case::test_case;
-
-        #[derive(Debug, Default)]
-        struct LinkCheck<'a> {
-            definitions: HashMap<&'a str, (&'a Uri, Annotation<'a>)>,
-            references: Vec<(&'a Uri, Annotation<'a>, ReferenceKind, Vec<&'a str>)>,
-        }
-
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum ReferenceKind {
-            Any,
-            Not,
-            Nothing,
-        }
-
-        impl<'a> LinkCheck<'a> {
-            fn add_annotations(
-                &mut self,
-                uri: &'a Uri,
-                annotations: impl IntoIterator<Item = Annotation<'a>>,
-            ) {
-                for loc in annotations {
-                    let claim = loc.claim().split_whitespace().collect_vec();
-                    if claim.is_empty() {
-                        continue;
-                    };
-                    match claim[0] {
-                        "defines" => {
-                            assert!(claim.len() == 2, "defines takes exactly one argument");
-                            let arg = &claim[1];
-                            if let Some((existing_uri, existing_ann)) = self.definitions.get(arg) {
-                                panic!(
-                                    "Duplicate definition for `{}`: {}:{:?} and {}:{:?}",
-                                    existing_ann.text(),
-                                    existing_uri.path().as_str(),
-                                    Compact(existing_ann.text_location),
-                                    uri.path().as_str(),
-                                    Compact(loc.text_location)
-                                );
-                            } else {
-                                self.definitions.insert(claim[1], (uri, loc));
-                            };
-                        }
-                        "references-nothing" => {
-                            assert!(
-                                claim.len() == 1,
-                                "references-nothing doesn't take arguments"
-                            );
-                            self.references
-                                .push((uri, loc, ReferenceKind::Nothing, Vec::new()));
-                        }
-                        "references" => {
-                            assert!(claim.len() > 1, "references takes at least one argument");
-                            let names = claim[1..].to_vec();
-                            self.references.push((uri, loc, ReferenceKind::Any, names));
-                        }
-                        "references-not" => {
-                            assert!(
-                                claim.len() > 1,
-                                "references-not takes at least one argument"
-                            );
-                            let names = claim[1..].to_vec();
-                            self.references.push((uri, loc, ReferenceKind::Not, names));
-                        }
-                        _ => continue, // Ignore (might be a claim for another annotation scanner)
-                    }
-                }
-            }
-
-            fn check(&'a self, state: &'a State) {
-                // Insurance against some obviously bad test definitions:
-                {
-                    let defined_names = self.definitions.keys().copied().collect::<BTreeSet<_>>();
-                    let referenced_names = self
-                        .references
-                        .iter()
-                        .flat_map(|(_, _, _, names)| names.iter())
-                        .copied()
-                        .collect::<BTreeSet<_>>();
-                    assert!(
-                        defined_names == referenced_names,
-                        "We don't want dangling references or definitions in tests."
-                    );
-                    assert!(
-                        defined_names.len() != 0,
-                        "There should be at least one reference in a test"
-                    );
-                }
-
-                let inks: HashMap<&'a Uri, &'a str> = {
-                    let defs = self
-                        .definitions
-                        .iter()
-                        .map(|(_, (uri, annotation))| (*uri, annotation.full_text));
-                    let refs = self
-                        .references
-                        .iter()
-                        .map(|(uri, annotation, _, _)| (*uri, annotation.full_text));
-                    defs.chain(refs).collect()
-                };
-
-                let mut messages = Vec::new();
-                use annotate_snippets::{Level, Snippet};
-
-                for (usage_uri, usage_ann, reference_kind, names) in &self.references {
-                    let usage_lsp_position: lsp_types::Range = usage_ann.text_location.into();
-                    let found_definitions = state
-                        .goto_definition((*usage_uri).clone(), usage_lsp_position.start)
-                        .expect("we should be within range");
-                    let per_file_defs = |level: Level| {
-                        let per_file = found_definitions
-                            .iter()
-                            .into_group_map_by(|it| it.uri.clone());
-                        per_file
-                            .into_iter()
-                            .map(|(uri, defs)| {
-                                // have to use def_uri, because we can't return a reference to def.uri from this function.
-                                let (def_uri, def_src) = inks.get_key_value(&uri).unwrap();
-                                Snippet::source(def_src)
-                                    .origin(def_uri.path().as_str())
-                                    .fold(true)
-                                    .annotations(defs.into_iter().map(|def| {
-                                        let range = state.byte_range_of(&uri, def.range);
-                                        level.span(range)
-                                    }))
-                            })
-                            .collect_vec()
-                    };
-                    if matches!(reference_kind, ReferenceKind::Nothing) {
-                        if !found_definitions.is_empty() {
-                            messages.push(
-                                Level::Error
-                                    .title("Disallowed definitions")
-                                    .snippet(Self::annotation_to_snippet(
-                                        &usage_uri,
-                                        &usage_ann,
-                                        "Expected this usage to be unresolved, …",
-                                    ))
-                                    .footer(
-                                        Level::Info
-                                            .title("… but it resolves to:")
-                                            .snippets(per_file_defs(Level::Error)),
-                                    ),
-                            )
-                        }
-                    } else {
-                        for name in names {
-                            let (def_uri, def_ann) = self.definitions.get(name).expect(
-                                "we checked that every reference has a definition, see above",
-                            );
-                            let range = def_ann.text_location.into();
-                            let does_reference = found_definitions
-                                .iter()
-                                .any(|def| def.uri == **def_uri && def.range == range);
-
-                            if matches!(reference_kind, ReferenceKind::Any) && !does_reference {
-                                messages.push(
-                                    Level::Error
-                                        .title("Required reference not found")
-                                        .snippets([
-                                            Self::annotation_to_snippet(
-                                                &usage_uri,
-                                                &usage_ann,
-                                                "Expected this usage …",
-                                            ),
-                                            Self::annotation_to_snippet(
-                                                &def_uri,
-                                                &def_ann,
-                                                "… to reference this definition.",
-                                            ),
-                                        ])
-                                        .footer(per_file_defs(Level::Warning).pipe(|defs| {
-                                            if defs.is_empty() {
-                                                Level::Error.title("But it links nowhere.")
-                                            } else {
-                                                Level::Error
-                                                    .title("But it only links to these locations:")
-                                                    .snippets(defs)
-                                            }
-                                        })),
-                                );
-                            } else if matches!(reference_kind, ReferenceKind::Not) && does_reference
-                            {
-                                messages.push(
-                                    Level::Error.title("Forbidden reference found").snippets([
-                                        Self::annotation_to_snippet(
-                                            &usage_uri,
-                                            &usage_ann,
-                                            "Expected this usage …",
-                                        ),
-                                        Self::annotation_to_snippet(
-                                            &def_uri,
-                                            &def_ann,
-                                            "… to not reference this definition, but it does.",
-                                        ),
-                                    ]),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if !messages.is_empty() {
-                    let renderer = annotate_snippets::Renderer::styled();
-                    for message in messages {
-                        eprintln!("{}", renderer.render(message));
-                    }
-                    panic!("check failed");
-                }
-            }
-
-            fn annotation_to_snippet(
-                file: &'a Uri,
-                ann: &crate::test_utils::text_annotations::Annotation<'a>,
-                label: &'a str,
-            ) -> annotate_snippets::Snippet<'a> {
-                annotate_snippets::Snippet::source(ann.full_text)
-                    .origin(file.path().as_str())
-                    .fold(true)
-                    .annotations([
-                        annotate_snippets::Level::Error
-                            .span(ann.text_location.byte_range())
-                            .label(label),
-                        annotate_snippets::Level::Info
-                            .span(ann.claim_location.byte_range())
-                            .label("due to this claim"),
-                    ])
-            }
-        }
-
-        #[test_case("examples/links/forward_declarations.ink")]
-        #[test_case("examples/links/temp_vars.ink")]
-        #[test_case("examples/links/lists.ink")]
-        #[test_case("examples/links/labels.ink")]
-        #[test_case("examples/links/shadowing.ink")]
-        #[test_case("examples/links/self-reference.ink")]
-        #[test_case("examples/links/ambiguous/")]
-        #[test_case("examples/links/knots_and_stitches/")]
-        fn test_links(fs_location: &str) {
-            test_utils::setup_logging(log::LevelFilter::Trace);
-
-            let ink_files = walkdir::WalkDir::new(fs_location)
-                .into_iter()
-                .filter_ok(|it| it.path().extension().is_some_and(|it| it == "ink"))
-                .map_ok(|it| {
-                    let path = it.path().as_os_str().to_string_lossy();
-                    let uri = Uri::from_str(&path).unwrap();
-                    let contents = std::fs::read_to_string(&*path).unwrap();
-                    (uri, contents)
-                })
-                .collect::<Result<HashMap<_, _>, _>>()
-                .unwrap();
-
-            let mut state = new_state();
-            let annotation_scanner = AnnotationScanner::new();
-            let mut checks = LinkCheck::default();
-
-            for (uri, contents) in &ink_files {
-                // parse actual links via tree-sitter (i.e. normally)
-                state.edit(uri.clone(), contents);
-                // parse expected links via annotations
-                checks.add_annotations(&uri, annotation_scanner.scan(contents))
-            }
-
-            checks.check(&state);
         }
     }
 }

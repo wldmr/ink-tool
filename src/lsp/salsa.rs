@@ -1,16 +1,21 @@
 #![allow(non_camel_case_types)]
 
+mod composition;
+mod subqueries;
+
 use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
+        definitions::Defs,
         doc_symbols::document_symbols as get_document_symbols,
-        names::document_names as get_document_names, names::Meta,
+        names::{self, Meta},
         ws_symbols::from_doc as get_workspace_symbols,
     },
 };
+use composition::composite_query;
 use ink_document::InkDocument;
-use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
-use mini_milc::{composite_query, subquery, Cached, Db, HasChanged};
+use lsp_types::{DocumentSymbol, Position, Range, Uri, WorkspaceSymbol};
+use mini_milc::{subquery, Db, HasChanged};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) type DocId = Id<Uri>;
@@ -19,40 +24,34 @@ pub(crate) type DocIds = IdSet<Uri>;
 type Names = Vec<(String, Meta)>;
 type WorkspaceNames = HashMap<String, Vec<(DocId, Meta)>>;
 
-type Usages = Vec<(String, lsp_types::Range)>;
-type WorkspaceUsages = HashMap<String, Vec<(DocId, lsp_types::Range)>>;
+composite_query!({
+    pub impl Ops<OpsV, InkGetters> {
+        // === Inputs ===
+        fn document(id: DocId) -> InkDocument;
+        fn doc_ids() -> DocIds;
+        fn opened_docs() -> HashSet<DocId>;
 
-composite_query! {
-    #[derive(Hash, Copy)]
-    pub enum Ops -> OpsV;
+        // === Leaf Queries ===
+        fn document_symbols(id: DocId) -> Vec<DocumentSymbol>;
+        fn workspace_symbols(id: DocId) -> Vec<WorkspaceSymbol>;
 
-    #[derive(Hash, Copy)]
-    struct document -> InkDocument {(DocId);}
+        // === Intermediate Queries ===
+        fn document_names(id: DocId) -> Names; // TODO: Remove this and workspace_names in favor of `definitions`
+        fn workspace_names() -> WorkspaceNames;
 
-    #[derive(Hash, Copy)]
-    struct doc_ids -> DocIds {;}
+        /// All the definitions in this document
+        fn definitions(docid: DocId) -> Defs;
+        /// For each definition in this file, list all the references to that definition
+        fn references(docid: DocId) -> References;
 
-    #[derive(Hash, Copy)]
-    struct opened_docs -> HashSet<DocId> {;}
-
-    #[derive(Hash, Copy)]
-    struct document_names -> Names {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct document_symbols -> Vec<DocumentSymbol> {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct workspace_symbols -> Vec<WorkspaceSymbol> {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct workspace_names -> WorkspaceNames {;}
-
-    #[derive(Hash, Copy)]
-    struct document_usages -> Usages {(DocId);}
-
-    #[derive(Hash, Copy)]
-    struct workspace_usages -> WorkspaceUsages {;}
-}
+        /// Resolve the start(!) of an identifier to the place(s) where it is defined
+        ///
+        /// Empty if unresolved
+        // TODO: It feels weird for this to require the the start of the identifier. Too fragile.
+        // I'd prefer the NodeId, but that requires infrastructure to resolve those to actual nodes/ranges
+        fn resolve_definition(docid: DocId, pos: lsp_types::Position) -> Vec<(DocId, Range)>;
+    }
+});
 
 // Inputs
 subquery!(Ops, document, InkDocument);
@@ -60,7 +59,37 @@ subquery!(Ops, doc_ids, DocIds);
 subquery!(Ops, opened_docs, HashSet<DocId>);
 
 subquery!(Ops, document_names, Names, |self, db| {
-    get_document_names(&db.document(self.0))
+    names::document_names(&db.document(self.id))
+});
+
+subquery!(Ops, definitions, Defs, |self, db| {
+    let doc = db.document(self.docid);
+    crate::lsp::ink_visitors::definitions::document_definitions(&doc)
+});
+
+/// For each identifier start position, list all the locations that link to it
+type References = HashMap<Position, HashSet<(DocId, Range)>>;
+subquery!(Ops, references, References, |self, db| {
+    let mut result = References::new();
+
+    // TODO: Think about this, this feels very inefficient. We walk all documents everytime?
+
+    let docs = db.doc_ids();
+    for docid in docs.ids() {
+        let doc = db.document(docid);
+        for usage in doc.usages() {
+            for (defdoc, defrange) in db.resolve_definition(docid, usage.range.start).iter() {
+                if *defdoc == self.docid {
+                    result
+                        .entry(defrange.start)
+                        .or_default()
+                        .insert((docid, usage.range));
+                }
+            }
+        }
+    }
+
+    result
 });
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
@@ -75,77 +104,24 @@ subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
     names
 });
 
-subquery!(Ops, document_usages, Usages, |self, db| db
-    .document(self.0)
-    .usages());
-
-subquery!(Ops, workspace_usages, WorkspaceUsages, |self, db| {
-    let mut usages = WorkspaceUsages::new();
-    for id in db.doc_ids().ids() {
-        for (name, range) in db.document_usages(id).iter() {
-            // Ensure that the entry exists, only cloning the name if necessary.
-            // (The entry API requires an owned key, but given that the same name will be
-            // referenced quite often, we don’t want to eagerly clone all the occurrences)
-            if !usages.contains_key(name) {
-                usages.insert(name.clone(), Default::default());
-            }
-            usages.get_mut(name).unwrap().push((id, *range));
-        }
-    }
-    usages
-});
-
 subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
     let docs = db.doc_ids();
-    let id = self.0;
-    let doc = db.document(id);
-    let uri = docs.get(id).unwrap();
+    let doc = db.document(self.id);
+    let uri = docs.get(self.id).unwrap();
     get_workspace_symbols(uri, &doc)
 });
 
 subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {
-    get_document_symbols(&db.document(self.0))
+    get_document_symbols(&db.document(self.id))
 });
 
-// Extension traits
-pub trait InkGetters: Db<Ops> {
-    fn doc_ids(&self) -> Cached<'_, Ops, DocIds> {
-        self.get(doc_ids)
-    }
-
-    fn document(&self, id: DocId) -> Cached<'_, Ops, InkDocument> {
-        self.get(document(id))
-    }
-
-    fn document_symbols(&self, id: DocId) -> Cached<'_, Ops, Vec<DocumentSymbol>> {
-        self.get(document_symbols(id))
-    }
-
-    fn workspace_symbols(&self, id: DocId) -> Cached<'_, Ops, Vec<WorkspaceSymbol>> {
-        self.get(workspace_symbols(id))
-    }
-
-    fn document_names(&self, id: DocId) -> Cached<'_, Ops, Names> {
-        self.get(document_names(id))
-    }
-
-    fn workspace_names(&self) -> Cached<'_, Ops, WorkspaceNames> {
-        self.get(workspace_names)
-    }
-
-    fn document_usages(&self, id: DocId) -> Cached<'_, Ops, Usages> {
-        self.get(document_usages(id))
-    }
-
-    fn workspace_usages(&self) -> Cached<'_, Ops, WorkspaceUsages> {
-        self.get(workspace_usages)
-    }
-}
-impl<D: Db<Ops>> InkGetters for D {}
-
 pub trait InkSetters: Db<Ops> {
+    fn modify_opened<C: HasChanged>(&mut self, f: impl FnOnce(&mut HashSet<DocId>) -> C) -> bool {
+        self.modify(opened_docs {}, f)
+    }
+
     fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut DocIds) -> C) -> bool {
-        self.modify(doc_ids, f)
+        self.modify(doc_ids {}, f)
     }
 
     fn modify_document<C: HasChanged>(
@@ -154,7 +130,7 @@ pub trait InkSetters: Db<Ops> {
         default: impl FnOnce() -> InkDocument,
         update: impl FnOnce(&mut InkDocument) -> C,
     ) -> bool {
-        self.modify_with_default(document(id), default, update)
+        self.modify_with_default(document { id }, default, update)
     }
 }
 impl<D: InkGetters> InkSetters for D {}

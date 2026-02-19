@@ -1,4 +1,4 @@
-use crate::fmt::{formatting::Formatting, util::constrained_value::Constrained};
+use crate::fmt::{constrained_value::Constrained, formatting::Formatting};
 
 /// Keep a log of formatting instructions.
 ///

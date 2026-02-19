@@ -1,15 +1,11 @@
+use super::{format_item::FormatItem, node_rule::NodeRule, CaptureIndex, NodeId, PatternIndex};
 use crate::fmt::{
+    constrained_value::Constrained,
     formatting::Formatting,
     node_rule::{DedentType, IndentType, NodeRules},
-    util::constrained_value::Constrained,
 };
-
-use tree_sitter::{Node, QueryPredicateArg, StreamingIterator, TreeCursor};
-
 use std::collections::HashMap;
-
-use super::{format_item::FormatItem, node_rule::NodeRule, CaptureIndex, NodeId, PatternIndex};
-
+use tree_sitter::{Node, QueryPredicateArg, StreamingIterator, TreeCursor};
 use tree_sitter::{Query, QueryCursor};
 
 #[derive(Debug)]

@@ -199,7 +199,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                 } else {
                     self.global(
                         name,
-                        DefinitionInfo::ToplevelScope {
+                        DefinitionInfo::Section {
                             stitch: false,
                             params: block
                                 .header()
@@ -225,24 +225,30 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
                     extent,
                     temp_extent: extent, // Stitches can't have subsections
                 });
+                let params = block
+                    .header()
+                    .map(|it| it.params().is_some())
+                    .unwrap_or_default();
 
-                let kind = DefinitionInfo::SubScope {
-                    parent: self.knot.as_ref().map(|it| it.nodeid),
-                    params: block
-                        .header()
-                        .map(|it| it.params().is_some())
-                        .unwrap_or_default(),
-                };
                 if let Some(knot) = &self.knot {
                     let k = &knot.name;
                     let s = self.text(name);
-                    let extent = Some(knot.extent);
+                    let kind = DefinitionInfo::Subsection {
+                        parent: knot.nodeid,
+                        params,
+                    };
                     names.extend([
-                        self.name(format!("{s}"), name, extent, kind),
+                        self.name(format!("{s}"), name, Some(knot.extent), kind),
                         self.name(format!("{k}.{s}"), name, None, kind),
                     ]);
                 } else {
-                    names.push(self.global(name, kind));
+                    names.push(self.global(
+                        name,
+                        DefinitionInfo::Section {
+                            stitch: true,
+                            params,
+                        },
+                    ));
                 }
                 Descend
             }
