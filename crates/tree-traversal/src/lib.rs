@@ -136,8 +136,8 @@ mod tests {
             .collect();
         check!(path_down == EXPECTED_PATH_DOWN);
 
-        let path_up: Vec<&str> = root
-            .descend_to::<type_sitter::UntypedNode>(target)
+        let path_up: Vec<&str> = target
+            .ascend_to::<type_sitter::UntypedNode>(root)
             .map(|it| it.kind())
             .collect();
         let expected_path_up = EXPECTED_PATH_DOWN.into_iter().rev().collect::<Vec<_>>();

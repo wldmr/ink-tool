@@ -3,18 +3,6 @@
 ///
 /// This looks more natural than the query provided by the library, and has the
 /// added advantage that rustfmt works on it.
-///
-/// ``` .rust
-/// compose_query!({
-///     pub impl Ops<OpsV, Getters> {
-///         fn thing(id: Id, count: Count) -> Thing;
-///     }
-/// })
-/// ```
-///
-/// will create an `Ops` query enum with a `thing` variant, a corresponding `OpsV`
-/// enum, all the conversion implementations, and, notably, an extension trait on
-/// `Db` to get the cached result of `db.thing(id, count) -> Cached<'_, Ops, Thing`.
 macro_rules! composite_query {
     ({
         // Query input and output types
