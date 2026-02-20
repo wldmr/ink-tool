@@ -6,7 +6,7 @@ use ink_document::{
 };
 use ink_syntax::{AllNamed, ScopeBlock};
 use lsp_types::{Position, Range};
-use tree_traversal::{VisitInstruction, Visitor};
+use tree_traversal::{TreeTraversal, VisitInstruction, Visitor};
 use type_sitter::Node;
 
 pub type Name = String;
@@ -133,20 +133,15 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
             ListValueDef(def) => {
                 let item = self.text(def.name());
                 let site = def.name();
-                let list = self.list.as_ref().expect("must have been set");
+                let (list_name, node_id) = self
+                    .list
+                    .as_ref()
+                    .map(|it| (it.name.as_str(), it.nodeid))
+                    .unwrap_or_else(|| ("ERR", NodeId::new(def))); // desperate fallback
+                let kind = DefinitionInfo::ListItem { list: node_id };
                 names.extend([
-                    self.name(
-                        format!("{item}"),
-                        site,
-                        None,
-                        DefinitionInfo::ListItem { list: list.nodeid },
-                    ), // Yes, you read that right.
-                    self.name(
-                        format!("{}.{item}", list.name),
-                        site,
-                        None,
-                        DefinitionInfo::List,
-                    ),
+                    self.name(format!("{item}"), site, None, kind), // Yes, you read that right, item names are global.
+                    self.name(format!("{list_name}.{item}"), site, None, kind),
                 ]);
                 Ignore
             }
@@ -319,7 +314,19 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Names<'a> {
 
             TempDef(temp) => {
                 let extent = match (&self.knot, &self.stitch) {
-                    (None, None) => self.ink_temp_extent.expect("must have been set"),
+                    (None, None) => self.ink_temp_extent.unwrap_or_else(|| {
+                        let root = self.doc.root().upcast();
+                        let fallback_parent = temp
+                            .ascend_to::<ink_syntax::ScopeBlock>(root)
+                            .next()
+                            .map(|it| it.upcast())
+                            .unwrap_or(root);
+                        log::error!(
+                            "Failed to find a parent scope that this temp belongs to. \
+                            Using {fallback_parent:?} as fallback."
+                        );
+                        self.lsp_range(fallback_parent)
+                    }),
                     (_, Some(stitch)) => stitch.temp_extent,
                     (Some(knot), _) => knot.temp_extent,
                 };

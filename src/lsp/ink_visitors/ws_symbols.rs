@@ -3,6 +3,7 @@ use std::ops::Deref;
 use ink_document::InkDocument;
 use ink_syntax::{AllNamed, GlobalKeyword};
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
+use tap::TapOptional;
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKindCause, Node};
 
@@ -149,10 +150,15 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             // Symbols (== levels) to be created
             AllNamed::Ink(ink) => {
-                let name = std::path::Path::new(self.uri().path().as_str())
-                    .file_name()
-                    .expect("there should be a filename")
-                    .to_string_lossy()
+                let path = self.uri().path();
+                let name = path
+                    .segments()
+                    .last()
+                    .map(|it| it.as_str())
+                    .unwrap_or_else(|| {
+                        log::error!("The path {path} does not contain a filename!");
+                        "ERR"
+                    })
                     .to_string();
                 add_to(sym, SymbolKind::FILE, name, None, self.location(ink));
                 Descend

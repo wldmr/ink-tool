@@ -1,13 +1,14 @@
 use ink_document::{ids::NodeId, InkDocument};
 use ink_syntax::AllNamed;
-use lsp_types::Range;
+use lsp_types::{Range, Uri};
 use std::collections::HashMap;
+use tap::TapOptional;
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::Node;
-use util::nonempty::Vec1;
+use util::{nonempty::Vec1, testing::Compact};
 
-pub fn document_definitions(doc: &InkDocument) -> Defs {
-    DefinitionVisitor::new(doc).traverse(doc.root())
+pub fn document_definitions(uri: &Uri, doc: &InkDocument) -> Defs {
+    DefinitionVisitor::new(uri, doc).traverse(doc.root())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -91,6 +92,7 @@ impl DefKind {
 }
 
 struct DefinitionVisitor<'a> {
+    uri: &'a Uri,
     doc: &'a InkDocument,
     knot: Option<Context<'a>>,
     stitch: Option<Context<'a>>,
@@ -99,8 +101,9 @@ struct DefinitionVisitor<'a> {
 
 /// Crawls a document, collects all names and where they are defined
 impl<'a> DefinitionVisitor<'a> {
-    pub fn new(doc: &'a InkDocument) -> Self {
+    pub fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
         Self {
+            uri,
             doc,
             knot: None,
             stitch: None,
@@ -110,6 +113,18 @@ impl<'a> DefinitionVisitor<'a> {
 
     fn section(&self) -> Option<Context<'_>> {
         self.stitch.or(self.knot)
+    }
+
+    fn err(&self, msg: &str, node: impl Node<'a>) {
+        log::error!(
+            "{msg}: {}:{}:{}–{}:{} ({})",
+            self.uri.path().as_str(),
+            node.range().start_point.row + 1,
+            node.range().start_point.column + 1,
+            node.range().end_point.row + 1,
+            node.range().end_point.column + 1,
+            node.kind()
+        )
     }
 }
 
@@ -159,13 +174,13 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
             Ink(_) => Descend,
 
             KnotBlock(block) => {
-                self.knot = Some(Context::new(block, "PLACEHOLDER")); // will update actual name when we get to the knot
+                self.knot = Some(Context::new(block, "ERR")); // will update actual name when we get to the knot
                 self.stitch = None;
                 Descend
             }
 
             StitchBlock(block) => {
-                self.stitch = Some(Context::new(block, "PLACEHOLDER")); // ditto
+                self.stitch = Some(Context::new(block, "ERR")); // ditto
                 Descend
             }
 
@@ -173,7 +188,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
                 if let Ok(ident) = knot.name() {
                     let name = self.text(ident);
                     let site = self.site(ident);
-                    self.knot.as_mut().expect("must be inside a knot block").1 = name;
+                    self.knot
+                        .as_mut()
+                        .map(|it| it.1 = name)
+                        .tap_none(|| self.err("Found section but no parent scope", knot));
                     let kind = if knot.function().is_some() {
                         DefKind::Function
                     } else {
@@ -195,8 +213,8 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
                     let site = self.site(ident);
                     self.stitch
                         .as_mut()
-                        .expect("must be inside a stitch block")
-                        .1 = name;
+                        .map(|it| it.1 = name)
+                        .tap_none(|| self.err("Found section but no parent scope", stitch));
                     if let Some(knot) = self.knot {
                         defs.add_local(KIND, site, knot, name);
                         defs.add_global(KIND, site, format!("{knot}.{name}"));
@@ -243,7 +261,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
 
             Param(param) => {
                 use ink_syntax::ParamValue::*;
-                let param = param
+                let ident = param
                     .value()
                     .ok()
                     .map(|param| match param {
@@ -251,10 +269,11 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
                         Identifier(identifier) => Some(identifier),
                     })
                     .flatten();
-                if let Some(ident) = param {
-                    let block = self
-                        .section()
-                        .expect("Params can only occurr inside sections");
+                if let Some(ident) = ident {
+                    let block = self.section().map(|it| it.0).unwrap_or_else(|| {
+                        self.err("Found parameter but no section/function", param);
+                        NodeId::new(self.doc.root())
+                    });
                     defs.add_local(DefKind::Param, self.site(ident), block, self.text(ident));
                 }
                 Ignore
@@ -262,10 +281,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
 
             TempDef(temp) => {
                 if let Ok(ident) = temp.name() {
-                    let block = self
-                        .section()
-                        .map(Into::into)
-                        .unwrap_or_else(|| NodeId::new(self.doc.root()));
+                    let block = self.section().map(Into::into).unwrap_or_else(|| {
+                        self.err("Found temp but no section", temp);
+                        NodeId::new(self.doc.root())
+                    });
                     defs.add_local(DefKind::Temp, self.site(ident), block, self.text(ident));
                 }
                 Ignore
@@ -284,7 +303,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for DefinitionVisitor<'a> {
             ListValueDefs(_) => Descend,
             ListValueDef(def) => {
                 if let Ok(ident) = def.name() {
-                    let list = self.list.expect("We must have entered a list");
+                    let list = self.list.map(|it| it.1).unwrap_or_else(|| {
+                        self.err("Found list item without parent list", def);
+                        "ERR"
+                    });
                     let site = self.site(ident);
                     let item = self.text(ident);
                     defs.add_global(DefKind::ListItem, site, format!("{item}"));

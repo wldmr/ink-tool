@@ -3,7 +3,7 @@ use ink_syntax::{self as syntax, Identifier, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
 use tree_traversal::TreeTraversal;
-use type_sitter::Node;
+use type_sitter::{Node, NodeResult};
 
 /// Encapsulates Parsing/editing an Ink file.
 ///
@@ -230,8 +230,8 @@ impl InkDocument {
         self.text.to_owned()
     }
 
-    pub fn root(&self) -> syntax::Ink<'_> {
-        self.tree.root_node().expect("Root node must be Ink")
+    pub fn root(&'_ self) -> NodeResult<'_, syntax::Ink<'_>> {
+        self.tree.root_node()
     }
 
     pub fn byte_range(&self, range: lsp_types::Range) -> std::ops::Range<usize> {

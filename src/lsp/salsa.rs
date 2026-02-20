@@ -63,8 +63,10 @@ subquery!(Ops, document_names, Names, |self, db| {
 });
 
 subquery!(Ops, definitions, Defs, |self, db| {
+    let ids = db.doc_ids();
+    let uri = ids.get(self.docid).unwrap();
     let doc = db.document(self.docid);
-    crate::lsp::ink_visitors::definitions::document_definitions(&doc)
+    crate::lsp::ink_visitors::definitions::document_definitions(&uri, &doc)
 });
 
 /// For each identifier start position, list all the locations that link to it
