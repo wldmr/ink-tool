@@ -2,6 +2,7 @@ use derive_more::derive::{Display, Error};
 use itertools::Itertools;
 use lsp_types::{TextEdit, Uri, WorkspaceEdit};
 use std::collections::HashMap;
+use util::testing::Compact;
 
 impl From<RenameError> for lsp_server::ResponseError {
     fn from(value: RenameError) -> Self {
@@ -31,11 +32,18 @@ impl super::State {
         new_name: impl Into<String>,
     ) -> Result<Option<WorkspaceEdit>, RenameError> {
         let new_name = new_name.into();
-        let edits: HashMap<Uri, Vec<lsp_types::TextEdit>> = self
+        let mut edits: HashMap<Uri, Vec<lsp_types::TextEdit>> = self
             .goto_references(uri, pos)?
             .into_iter()
+            .unique() // They shouldn't be non-unique to begin with, but let's ensure it here.
             .map(move |it| (it.uri, TextEdit::new(it.range, new_name.clone())))
             .into_group_map();
+
+        // Apply edits back to front, because earlier edits would mess up the following coordinates.
+        for values in edits.values_mut() {
+            values.sort_unstable_by(|a, b| b.range.start.cmp(&a.range.start));
+        }
+
         let edits = WorkspaceEdit::new(edits);
         Ok(Some(edits))
     }
@@ -86,14 +94,14 @@ mod tests {
     }
 
     macro_rules! test_rename {
-        ($assertion:literal, $ident:ident, $input:expr, $expect:expr) => {
+        ($assertion:literal, $ident:ident, $input:expr, $expect:expr $(,)?) => {
             #[test]
             fn $ident() {
                 test_rename($assertion, $input, $expect)
             }
         };
 
-        ($ident:ident, $input:expr, $expect:expr) => {
+        ($ident:ident, $input:expr, $expect:expr $(,)?) => {
             test_rename!("", $ident, $input, $expect);
         };
     }
@@ -442,4 +450,56 @@ mod tests {
             "
         ];
     }
+
+    test_rename![
+        "Renames don't clobber each other",
+        no_clobber,
+        "
+        // file: main.ink
+        VAR name = 1
+        //  ^ rename-symbol something_longer
+        
+        // file: a.ink
+        {name} {name}
+        {name} {name}
+        ",
+        "
+        // file: main.ink
+        VAR something_longer = 1
+        //  ^ rename-symbol something_longer
+        
+        // file: a.ink
+        {something_longer} {something_longer}
+        {something_longer} {something_longer}
+        "
+    ];
+
+    test_rename![
+        "Renames of ambiguous names affect all usages",
+        ambiguous_names_are_treated_as_equal,
+        "
+        // file: var.ink
+        VAR ambig = 1
+
+        // file: list.ink
+        LIST ambig = ambig, other
+
+        // file: a.ink
+        {ambig.ambig} {ambig}
+        //       ^ rename-symbol huh
+        {ambig.ambig} {ambig}
+        ",
+        "
+        // file: var.ink
+        VAR huh = 1
+
+        // file: list.ink
+        LIST huh = huh, other
+
+        // file: a.ink
+        {huh.huh} {huh}
+        //       ^ rename-symbol huh
+        {huh.huh} {huh}
+        ",
+    ];
 }
