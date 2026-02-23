@@ -17,6 +17,7 @@ use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Position, Range, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::{HashMap, HashSet};
+use subqueries::node_info::NodeInfos;
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -43,6 +44,8 @@ composite_query!({
         fn definitions(docid: DocId) -> Defs;
         /// For each definition in this file, list all the references to that definition
         fn references(docid: DocId) -> References;
+
+        fn node_infos(docid: DocId) -> NodeInfos;
 
         /// Resolve the start(!) of an identifier to the place(s) where it is defined
         ///
@@ -93,6 +96,23 @@ subquery!(Ops, references, References, |self, db| {
 
     result
 });
+
+// pub type NodeRanges = HashMap<NodeId, Range>;
+// subquery!(Ops, node_ranges, NodeRanges, |self, db| {
+//     use ink_syntax::{Identifier, Ink, KnotBlock, QualifiedName, StitchBlock};
+//     let doc = db.document(self.docid);
+//     let root = doc.root();
+//     root.depth_first::<UntypedNode>()
+//         .filter_map(|node| match node.kind() {
+//             Ink::KIND
+//             | KnotBlock::KIND
+//             | StitchBlock::KIND
+//             | Identifier::KIND
+//             | QualifiedName::KIND => Some((NodeId::from(node), doc.lsp_range(node.range()))),
+//             _ => None,
+//         })
+//         .collect::<HashMap<_, _>>()
+// });
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
     let mut names = WorkspaceNames::new();
