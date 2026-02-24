@@ -24,6 +24,9 @@ pub struct NodeInfos {
     /// Which scope node the node resides in
     parent_scope: HashMap<Range, Range>,
 
+    /// The global names defined in this file.
+    globals: HashMap<String, Vec1<Range>>,
+
     usage_to_def: HashMap<Range, Vec1<Range>>,
     def_to_usage: HashMap<Range, Vec1<Range>>,
 
@@ -42,6 +45,13 @@ pub struct NodeInfos {
 }
 
 impl NodeInfos {
+    fn add_global<T: ToString>(&mut self, text: T, range: Range) {
+        self.globals
+            .entry(text.to_string())
+            .and_modify(|vec1| vec1.push(range))
+            .or_insert_with(|| vec1![range]);
+    }
+
     fn add_unresolved<T: AsRef<str> + ToString>(&mut self, usage: Range, text: T) {
         // Assume the unresolved usages happen several times (referring to existing globals),
         // so we only create the owned string as late as possible (but with 2 accesses :-/)
@@ -73,8 +83,10 @@ impl NodeInfos {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
+    /// Blocks
     KnotOrFunctionBlock,
     StitchBlock,
+    /// Names
     List,
     ListItem,
     Var,
@@ -92,7 +104,7 @@ pub enum NodeKind {
 #[derive(Debug)]
 struct Scope<'a> {
     range: Range,
-    name: Option<&'a str>,
+    name: &'a str,
     locals: Definitions<'a>,
     /// temps don't transfer to subscopes, so we keep track of them separately
     temps: Definitions<'a>,
@@ -103,13 +115,38 @@ impl<'a> Scope<'a> {
     fn new(block: impl Into<Range>) -> Self {
         Self {
             range: block.into(),
-            name: None,
+            name: "",
             locals: Default::default(),
             temps: Default::default(),
             usages: Default::default(),
         }
     }
+
+    fn add_local(&mut self, text: impl Into<Cow<'a, str>>, range: Range) {
+        self.locals
+            .entry(text.into())
+            .and_modify(|defs| defs.push(range))
+            .or_insert_with(|| Vec1::new(range));
+    }
+
+    fn add_temp(&mut self, text: impl Into<Cow<'a, str>>, range: Range) {
+        self.temps
+            .entry(text.into())
+            .and_modify(|defs| defs.push(range))
+            .or_insert_with(|| Vec1::new(range));
+    }
 }
+
+/// We do this so we can just use the scope itself for label formatting.
+///
+/// That is, being able to say `format!("{scope}.{local_name}")` vs
+/// `format!("{}.{local_name}", scope.name)` or using a let binding.
+impl<'a> std::fmt::Display for Scope<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
 type Definitions<'a> = HashMap<Cow<'a, str>, Vec1<Range>>;
 type Usages<'a> = HashMap<Range, &'a str>;
 
@@ -167,8 +204,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
     ) -> tree_traversal::VisitInstruction<Self::State> {
         use ink_syntax::AllNamed::*;
         use tree_traversal::VisitInstruction::{Descend, Ignore};
-        // dbg!(&state);
-        // dbg!(&self);
+
         match node {
             /*** Scopes ***/
             KnotBlock(knot_block) => {
@@ -176,7 +212,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.node_kind.insert(range, NodeKind::KnotOrFunctionBlock);
                 state.parent_scope.insert(range, self.current_scope().range);
                 self.knot = Some(Scope::new(range));
-                eprintln!("Entering Knot scope");
                 Descend
             }
             StitchBlock(stitch_block) => {
@@ -200,7 +235,8 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(knot.name());
-                self.current_scope_mut().name = Some(name);
+                self.current_scope_mut().name = name;
+                state.add_global(name, range);
                 Descend
             }
 
@@ -210,15 +246,14 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(stitch.name());
-                self.current_scope_mut().name = Some(name);
+                self.current_scope_mut().name = name;
 
-                if let Some(knot_scope) = self.knot.as_mut() {
+                if let Some(knot) = self.knot.as_mut() {
                     // If we are inside a knot block, add our name to its locals …
-                    knot_scope
-                        .locals
-                        .entry(name.into())
-                        .and_modify(|defs| defs.push(range))
-                        .or_insert_with(|| Vec1::new(range));
+                    knot.add_local(name, range);
+                    state.add_global(format!("{knot}.{name}"), range);
+                } else {
+                    state.add_global(name, range);
                 }
                 Descend
             }
@@ -228,31 +263,24 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.node_kind.insert(range, NodeKind::Label);
                 state.parent_scope.insert(range, self.current_scope().range);
 
-                let label_name = self.doc.node_text(label.name());
+                let name = self.doc.node_text(label.name());
 
-                if let Some(knot_scope) = self.knot.as_mut() {
-                    knot_scope
-                        .locals
-                        .entry(label_name.into())
-                        .and_modify(|defs| defs.push(range))
-                        .or_insert_with(|| Vec1::new(range));
-                    if let Some(stitch_name) = self.stitch.as_ref().and_then(|it| it.name) {
-                        // if we're inside a stitch, the stitch name can also be given
-                        knot_scope
-                            .locals
-                            .entry(format!("{stitch_name}.{label_name}").into())
-                            .and_modify(|defs| defs.push(range))
-                            .or_insert_with(|| Vec1::new(range));
+                match (self.knot.as_mut(), self.stitch.as_mut()) {
+                    (None, None) => {
+                        state.add_global(name, range);
                     }
-                } else if let Some(stitch_scope) = self.stitch.as_mut() {
-                    // We're in a global stitch
-                    stitch_scope
-                        .locals
-                        .entry(label_name.into())
-                        .and_modify(|defs| defs.push(range))
-                        .or_insert_with(|| Vec1::new(range));
+                    (None, Some(scope)) | (Some(scope), None) => {
+                        scope.add_local(name, range);
+                        state.add_global(format!("{scope}.{name}"), range);
+                    }
+                    (Some(knot), Some(stitch)) => {
+                        // Basically, the stitch name is optional both inside the knot and globally.
+                        knot.add_local(name, range);
+                        knot.add_local(format!("{stitch}.{name}"), range);
+                        state.add_global(format!("{knot}.{name}"), range);
+                        state.add_global(format!("{knot}.{stitch}.{name}"), range);
+                    }
                 }
-                /* Else: global label, not out concern. */
                 Ignore
             }
 
@@ -265,11 +293,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.node_kind.insert(range, NodeKind::Param);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let param_name = self.doc.node_text(name_node);
-                self.current_scope_mut()
-                    .locals
-                    .entry(param_name.into())
-                    .and_modify(|vec1| vec1.push(range))
-                    .or_insert_with(|| Vec1::new(range));
+                self.current_scope_mut().add_local(param_name, range);
                 Descend
             }
 
@@ -278,11 +302,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.node_kind.insert(range, NodeKind::Temp);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let temp_name = self.doc.node_text(temp.name());
-                self.current_scope_mut()
-                    .temps
-                    .entry(temp_name.into())
-                    .and_modify(|vec1| vec1.push(range))
-                    .or_insert_with(|| Vec1::new(range));
+                self.current_scope_mut().add_temp(temp_name, range);
                 Descend
             }
 
@@ -291,9 +311,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             // Not sure why, but we work around this here:
             QualifiedName(qname) | Expr(ink_syntax::Expr::QualifiedName(qname)) => {
                 self.qname = Some(qname);
-                let range = self.range(qname);
-                state.node_kind.insert(range, NodeKind::Usage);
-                state.parent_scope.insert(range, self.current_scope().range);
                 Descend
             }
 
@@ -302,10 +319,54 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.node_kind.insert(range, NodeKind::Usage);
                 let byte_range = self
                     .qname
-                    .map(|qname| dbg!(qname.start_byte()..identifier.end_byte()))
+                    .map(|qname| qname.start_byte()..identifier.end_byte())
                     .unwrap_or_else(|| identifier.byte_range());
                 let text = self.doc.text(byte_range);
                 self.current_scope_mut().usages.insert(range, text);
+                Ignore
+            }
+
+            /*** Globals ***/
+            External(ext) => {
+                let range = self.range(ext.name());
+                state.node_kind.insert(range, NodeKind::External);
+                state.add_global(self.doc.node_text(ext.name()), range);
+                Ignore // Doesn't have any internal structure.
+            }
+
+            Global(global) => {
+                let range = self.range(global.name());
+                state.node_kind.insert(
+                    range,
+                    if global.keyword().is_ok_and(|it| it.as_const().is_some()) {
+                        NodeKind::Const
+                    } else {
+                        NodeKind::Var
+                    },
+                );
+                state.add_global(self.doc.node_text(global.name()), range);
+                Ignore // VAR / CONST can't contain any usages
+            }
+
+            List(list) => {
+                let list_name = self.doc.node_text(list.name());
+                let range = self.range(list.name());
+                state.node_kind.insert(range, NodeKind::List);
+                self.list = Some((range, list_name));
+                state.add_global(list_name, range);
+                Descend
+            }
+            ListValueDefs(_) => Descend,
+
+            ListValueDef(def) => {
+                let item_name = self.doc.node_text(def.name());
+                let range = self.range(def.name());
+                state.node_kind.insert(range, NodeKind::ListItem);
+                state.add_global(item_name, range);
+                if let Some((_range, list_name)) = self.list {
+                    state.add_global(format!("{list_name}.{item_name}"), range);
+                }
+                // if no list was set, we got here via an ERROR node … oh well …
                 Ignore
             }
 
@@ -334,19 +395,14 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Eol(_) => Ignore,
             Eval(_) => Descend,
             Expr(_) => Descend,
-            External(_) => Ignore, // Doesn't have any internal structure.
             Gather(_) => Descend,
             GatherBlock(_) => Descend,
             GatherMark(_) => Ignore,
             GatherMarks(_) => Ignore,
-            Global(_) => Ignore, // VAR / CONST can't contain any usages
             Glue(_) => Ignore,
             Include(_) => Ignore,
             Ink(_) => Descend,
             LineComment(_) => Ignore,
-            List(_) => Ignore,
-            ListValueDef(_) => Ignore,
-            ListValueDefs(_) => Ignore,
             ListValues(_) => Descend,
             MultilineAlternatives(_) => Descend,
             Number(_) => Ignore,
@@ -590,6 +646,54 @@ mod tests {
         check!(
             infos.usage_to_def.get(&loc["usage:stitch-4"]) == Some(&vec1![loc["outer"]]),
             "plain outer works"
+        );
+    }
+
+    #[test]
+    fn globals() {
+        let text = indoc! {"
+            -> Knot.outer
+            -> should_be_true(false)
+            LIST list = item1, (item2) = 5
+            - (global)
+            === Knot ===
+            - (outer) Yea!
+            VAR var = true
+            = Stitch
+            - (inner) Yea!
+
+            == function should_be_true(param)
+                CONST const = 1
+                ~ return true
+        "};
+        let doc = InkDocument::new(text.to_string(), None);
+
+        let uri = Uri::from_str("file:///main.ink").unwrap();
+        let mut vstr = Vstr::new(&uri, &doc);
+        let infos = vstr.traverse(doc.root());
+
+        // Just a quick glance at whether they are there. Let's trust that the locations, node types etc. are correct.
+        let global_names: std::collections::BTreeSet<_> =
+            infos.globals.keys().map(|it| it.as_str()).collect();
+        check!(
+            global_names
+                == [
+                    "list",
+                    "list.item1",
+                    "list.item2",
+                    "item1",
+                    "item2",
+                    "global",
+                    "Knot",
+                    "Knot.outer",
+                    "var",
+                    "Knot.Stitch",
+                    "Knot.inner",
+                    "Knot.Stitch.inner",
+                    "should_be_true",
+                    "const"
+                ]
+                .into()
         );
     }
 }
