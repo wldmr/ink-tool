@@ -1,8 +1,9 @@
 use crate::lsp::salsa::{node_infos, InkGetters as _, Ops};
+use enumflags2::{bitflags, BitFlags};
 use ink_document::InkDocument;
 use lsp_types::{Range, Uri};
 use mini_milc::{Db, Old, Subquery, Updated};
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, hint::unreachable_unchecked};
 use tree_traversal::Visitor;
 use type_sitter::Node;
 use util::{nonempty::Vec1, vec1};
@@ -41,7 +42,7 @@ pub struct NodeInfos {
     /// ```
     unresolved: HashMap<String, Vec<Range>>,
 
-    node_kind: HashMap<Range, NodeKind>,
+    node_kind: HashMap<Range, BitFlags<NodeKind>>,
 }
 
 impl NodeInfos {
@@ -79,14 +80,23 @@ impl NodeInfos {
             false
         }
     }
+
+    fn add_node_kind(&mut self, range: Range, kind: impl Into<BitFlags<NodeKind>>) {
+        self.node_kind.entry(range).or_default().insert(kind);
+    }
 }
 
+#[bitflags]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     /// Blocks
-    KnotOrFunctionBlock,
-    StitchBlock,
-    /// Names
+    Block,
+    Toplevel,
+    #[doc(alias = "Local")]
+    Nested,
+    Definition,
+    /// Ink Syntax Items
     List,
     ListItem,
     Var,
@@ -98,7 +108,10 @@ pub enum NodeKind {
     External,
     Stitch,
     Param,
+    /// Usages
     Usage,
+    Redirect,
+    Call,
 }
 
 #[derive(Debug)]
@@ -159,6 +172,10 @@ struct Vstr<'a> {
     stitch: Option<Scope<'a>>,
     qname: Option<ink_syntax::QualifiedName<'a>>,
     list: Option<(Range, &'a str)>,
+    call: bool,
+    redirect: bool,
+    /// is the current usage a listvalues query (`list_name ? (item.name)`)
+    listvalues: bool,
 }
 
 impl<'a> Vstr<'a> {
@@ -186,6 +203,9 @@ impl<'a> Vstr<'a> {
             stitch: None,
             qname: None,
             list: Default::default(),
+            call: false,
+            redirect: false,
+            listvalues: false,
         }
     }
 
@@ -209,14 +229,19 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Scopes ***/
             KnotBlock(knot_block) => {
                 let range = self.range(knot_block);
-                state.node_kind.insert(range, NodeKind::KnotOrFunctionBlock);
+                state.add_node_kind(range, NodeKind::Knot | NodeKind::Block | NodeKind::Toplevel);
                 state.parent_scope.insert(range, self.current_scope().range);
                 self.knot = Some(Scope::new(range));
                 Descend
             }
             StitchBlock(stitch_block) => {
                 let range = self.range(stitch_block);
-                state.node_kind.insert(range, NodeKind::StitchBlock);
+                let visibility = if self.knot.is_some() {
+                    NodeKind::Nested
+                } else {
+                    NodeKind::Toplevel
+                };
+                state.add_node_kind(range, NodeKind::Stitch | NodeKind::Block | visibility);
                 state.parent_scope.insert(range, self.current_scope().range);
                 self.stitch = Some(Scope::new(range));
                 Descend
@@ -225,13 +250,12 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Names ***/
             Knot(knot) => {
                 let range = self.range(knot.name());
-                let is_func = knot.function().is_some_and(|it| it.is_ok());
-                let kind = if is_func {
+                let kind = if knot.function().is_some() {
                     NodeKind::Function
                 } else {
                     NodeKind::Knot
                 };
-                state.node_kind.insert(range, kind);
+                state.add_node_kind(range, NodeKind::Definition | kind);
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(knot.name());
@@ -242,7 +266,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             Stitch(stitch) => {
                 let range = self.range(stitch.name());
-                state.node_kind.insert(range, NodeKind::Stitch);
+                state.add_node_kind(range, NodeKind::Definition | NodeKind::Stitch);
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(stitch.name());
@@ -260,7 +284,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             Label(label) => {
                 let range = self.range(label.name());
-                state.node_kind.insert(range, NodeKind::Label);
+                state.add_node_kind(range, NodeKind::Definition | NodeKind::Label);
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(label.name());
@@ -281,7 +305,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                         state.add_global(format!("{knot}.{stitch}.{name}"), range);
                     }
                 }
-                Ignore
+                Descend
             }
 
             Param(param) => {
@@ -290,7 +314,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     ink_syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
                 });
                 let range = self.range(name_node);
-                state.node_kind.insert(range, NodeKind::Param);
+                state.add_node_kind(range, NodeKind::Definition | NodeKind::Param);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let param_name = self.doc.node_text(name_node);
                 self.current_scope_mut().add_local(param_name, range);
@@ -299,7 +323,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             TempDef(temp) => {
                 let range = self.range(temp.name());
-                state.node_kind.insert(range, NodeKind::Temp);
+                state.add_node_kind(range, NodeKind::Definition | NodeKind::Temp);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let temp_name = self.doc.node_text(temp.name());
                 self.current_scope_mut().add_temp(temp_name, range);
@@ -307,6 +331,15 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             }
 
             /*** Usages ***/
+            Divert(_) | Tunnel(_) | Thread(_) => {
+                self.redirect = true;
+                Descend
+            }
+            Call(_) => {
+                self.call = true;
+                Descend
+            }
+
             // XXX: There is a bug(?) somewhere that causes qualified names and identifiers to be wrapped in an expr.
             // Not sure why, but we work around this here:
             QualifiedName(qname) | Expr(ink_syntax::Expr::QualifiedName(qname)) => {
@@ -316,7 +349,11 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             Identifier(identifier) | Expr(ink_syntax::Expr::Identifier(identifier)) => {
                 let range = self.range(identifier);
-                state.node_kind.insert(range, NodeKind::Usage);
+                let mut kind = BitFlags::from(NodeKind::Usage);
+                kind.set(NodeKind::Call, self.call);
+                kind.set(NodeKind::Redirect, self.redirect);
+                kind.set(NodeKind::ListItem, self.listvalues);
+                state.add_node_kind(range, kind);
                 let byte_range = self
                     .qname
                     .map(|qname| qname.start_byte()..identifier.end_byte())
@@ -329,29 +366,28 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Globals ***/
             External(ext) => {
                 let range = self.range(ext.name());
-                state.node_kind.insert(range, NodeKind::External);
+                let kind = NodeKind::Definition | NodeKind::Function | NodeKind::External;
+                state.add_node_kind(range, kind);
                 state.add_global(self.doc.node_text(ext.name()), range);
-                Ignore // Doesn't have any internal structure.
+                Descend
             }
 
             Global(global) => {
                 let range = self.range(global.name());
-                state.node_kind.insert(
-                    range,
-                    if global.keyword().is_ok_and(|it| it.as_const().is_some()) {
-                        NodeKind::Const
-                    } else {
-                        NodeKind::Var
-                    },
-                );
+                let keyword = if global.keyword().is_ok_and(|it| it.as_const().is_some()) {
+                    NodeKind::Const
+                } else {
+                    NodeKind::Var
+                };
+                state.add_node_kind(range, NodeKind::Definition | keyword);
                 state.add_global(self.doc.node_text(global.name()), range);
-                Ignore // VAR / CONST can't contain any usages
+                Descend
             }
 
             List(list) => {
                 let list_name = self.doc.node_text(list.name());
                 let range = self.range(list.name());
-                state.node_kind.insert(range, NodeKind::List);
+                state.add_node_kind(range, NodeKind::Definition | NodeKind::List);
                 self.list = Some((range, list_name));
                 state.add_global(list_name, range);
                 Descend
@@ -361,13 +397,18 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             ListValueDef(def) => {
                 let item_name = self.doc.node_text(def.name());
                 let range = self.range(def.name());
-                state.node_kind.insert(range, NodeKind::ListItem);
+                state.add_node_kind(range, NodeKind::Definition | NodeKind::ListItem);
                 state.add_global(item_name, range);
                 if let Some((_range, list_name)) = self.list {
                     state.add_global(format!("{list_name}.{item_name}"), range);
                 }
                 // if no list was set, we got here via an ERROR node … oh well …
-                Ignore
+                Descend
+            }
+
+            ListValues(_) => {
+                self.listvalues = true;
+                Descend
             }
 
             /*** Unused ***/
@@ -378,7 +419,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Binary(_) => Descend,
             BlockComment(_) => Ignore,
             Boolean(_) => Ignore,
-            Call(_) => Descend,
             Choice(_) => Descend,
             ChoiceBlock(_) => Descend,
             ChoiceMark(_) => Ignore,
@@ -390,7 +430,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Condition(_) => Descend,
             ConditionalText(_) => Descend,
             Content(_) => Descend,
-            Divert(_) => Descend,
             Else(_) => Ignore,
             Eol(_) => Ignore,
             Eval(_) => Descend,
@@ -403,7 +442,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Include(_) => Ignore,
             Ink(_) => Descend,
             LineComment(_) => Ignore,
-            ListValues(_) => Descend,
             MultilineAlternatives(_) => Descend,
             Number(_) => Ignore,
             Paragraph(_) => Descend,
@@ -415,9 +453,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             String(_) => Ignore,
             Tag(_) => Descend,
             Text(_) => Ignore,
-            Thread(_) => Descend,
             TodoComment(_) => Ignore,
-            Tunnel(_) => Descend,
             Unary(_) => Descend,
         }
     }
@@ -480,14 +516,20 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     }
                 }
             }
+
             List(_) => self.list = None,
             QualifiedName(_) | Expr(ink_syntax::Expr::QualifiedName(_)) => self.qname = None,
+            Divert(_) | Tunnel(_) | Thread(_) => self.redirect = false,
+            Call(_) => self.call = false,
+            ListValues(_) => self.listvalues = false,
+
             _ => {}
         }
     }
 
     fn combine(_: &mut Self::State, _: Self::State) {
-        unreachable!("We don't have substates")
+        // SAFETY: We never DescendWith, therefore we never combine.
+        unsafe { unreachable_unchecked() }
     }
 }
 
