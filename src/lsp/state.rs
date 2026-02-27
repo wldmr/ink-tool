@@ -10,7 +10,7 @@ use mini_milc::Cached;
 use tap::Tap as _;
 
 mod goto_definition;
-mod references;
+mod goto_references;
 mod rename;
 
 // This is quite an abomination, but we have to deal with it.

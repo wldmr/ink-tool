@@ -9,6 +9,9 @@ pub trait Visitor<'a, N: Node<'a>>: Sized {
     /// Called upon entering a node
     fn visit(&mut self, node: N, state: &mut Self::State) -> VisitInstruction<Self::State>;
 
+    /// Called upon leaving a node.
+    fn leave(&mut self, node: N, state: &mut Self::State) {}
+
     /// What to do when a node can’t be parsed.
     ///
     /// The default implementation will simply descend (because child values might still
@@ -17,6 +20,8 @@ pub trait Visitor<'a, N: Node<'a>>: Sized {
     fn visit_error(&mut self, err: IncorrectKind) -> VisitInstruction<Self::State> {
         VisitInstruction::Descend
     }
+
+    fn leave_error(&mut self, err: IncorrectKind) {}
 
     /// Merge the `inner` into the `outer` state.
     fn combine(outer: &mut Self::State, inner: Self::State);
@@ -31,8 +36,9 @@ pub trait Visitor<'a, N: Node<'a>>: Sized {
     ) -> Self::State {
         use VisitInstruction::*;
         let node = cursor.node();
+        let typed_node = node.downcast();
 
-        let instruction = match node.downcast() {
+        let instruction = match typed_node {
             Ok(ok) => self.visit(ok, &mut state),
             Err(err) => self.visit_error(err),
         };
@@ -51,6 +57,11 @@ pub trait Visitor<'a, N: Node<'a>>: Sized {
                 state = traverse_children(self, state, cursor);
             }
         }
+
+        match typed_node {
+            Ok(ok) => self.leave(ok, &mut state),
+            Err(err) => self.leave_error(err),
+        };
         state
     }
 

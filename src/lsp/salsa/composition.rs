@@ -11,7 +11,7 @@ macro_rules! composite_query {
             // Custom types for subquery variants:
             $(
                 $(#[doc = $subquery_doc:literal])*
-                $subquery_vis:vis fn $subquery:ident($($sub_name:ident: $sub_ty:ty),*) -> $ty:ty;
+                $subquery_vis:vis fn $subquery:ident($($sub_name:ident: $sub_ty:ty),*$(,)?) -> $ty:ty;
             )+
 
         }

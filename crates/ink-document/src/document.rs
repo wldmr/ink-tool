@@ -462,6 +462,10 @@ impl InkDocument {
         &self.text[n.byte_range()]
     }
 
+    pub fn text(&self, byte_range: std::ops::Range<usize>) -> &str {
+        &self.text[byte_range]
+    }
+
     pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(range.start_point);
         let end = self.lsp_position(range.end_point);

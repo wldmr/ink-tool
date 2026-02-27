@@ -1,4 +1,7 @@
-use crate::lsp::{salsa::InkGetters, state::GotoLocationError};
+use crate::lsp::{
+    salsa::InkGetters,
+    state::{DocumentNotFound, GotoLocationError},
+};
 use lsp_types::{Location, Position, Uri};
 
 impl super::State {
@@ -7,30 +10,27 @@ impl super::State {
         from_uri: Uri,
         from_position: Position,
     ) -> Result<Vec<Location>, GotoLocationError> {
-        let (this_doc, this_docid) = self.get_doc_and_id(&from_uri)?;
-
-        let mut result = Vec::new();
-
-        let Some(usage) = this_doc.usage_at(from_position) else {
-            return Ok(result);
-        };
-
-        let defs = self.db.resolve_definition(this_docid, usage.range.start);
-
         let docs = self.db.doc_ids();
+        let docid = docs
+            .get_id(&from_uri)
+            .ok_or_else(|| DocumentNotFound(from_uri.clone()))?;
+        let doc = self.db.document(docid);
 
-        for &(def_docid, def_range) in defs.iter() {
-            let references = self.db.references(def_docid);
-            if let Some(refs) = references.get(&def_range.start) {
-                for &(ref_docid, ref_range) in refs {
-                    let ref_uri = docs[ref_docid].clone();
-                    let reference = Location::new(ref_uri, ref_range);
-                    result.push(reference);
-                }
+        let mut references = Vec::new();
+
+        if let Some(usage) = doc.usage_at(from_position) {
+            let def = self.db.definition_of(docid, usage.range.into());
+            for (docid, def) in def.iter().copied() {
+                let usages = self.db.usages_of(docid, def);
+                references.extend(
+                    usages
+                        .iter()
+                        .copied()
+                        .map(|(docid, range)| Location::new(docs[docid].clone(), range.into())),
+                );
             }
         }
-
-        Ok(result)
+        Ok(references)
     }
 }
 
@@ -275,9 +275,9 @@ mod tests {
                     annotate_snippets::Level::Error
                         .span(ann.text_location.byte_range())
                         .label(label),
-                    annotate_snippets::Level::Info
-                        .span(ann.claim_location.byte_range())
-                        .label("due to this claim"),
+                    // annotate_snippets::Level::Info
+                    //     .span(ann.claim_location.byte_range())
+                    //     .label("due to this claim"),
                 ])
         }
     }
@@ -346,6 +346,7 @@ mod tests {
         use itertools::Itertools;
         use std::collections::HashMap;
         use text_annotations::{scan_default_annotations, TextRegion};
+        use util::testing::setup_logging;
 
         const TEXT: &str = indoc::indoc! {r"
                 -> knot.stitch.label
@@ -381,6 +382,7 @@ mod tests {
 
         #[test]
         fn goto_definition_label() {
+            setup_logging(log::LevelFilter::Debug);
             let state = new_state().with_comment_separated_files(TEXT);
 
             let loc = named_ranges::<lsp_types::Range>(TEXT);
@@ -391,7 +393,6 @@ mod tests {
                 .into_iter()
                 .map(|it| it.range)
                 .sorted_unstable_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)))
-                .inspect(|it| eprintln!("{it:#?}"))
                 .collect_vec();
 
             check!(defs == vec![loc["label-ref1"], loc["label-ref2"], loc["label"]]);
