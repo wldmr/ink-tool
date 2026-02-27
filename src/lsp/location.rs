@@ -42,13 +42,33 @@ impl Location {
     }
 }
 
-// We mimic some basic LSP types to get around the orphan rule.
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
-#[debug("{start:?}..{end:?}")]
-pub(crate) struct TextRange {
+// We mimic some basic LSP types to get around the orphan rule, and to implement our own, more compact Debug/Display
+#[derive(Clone, PartialEq, Eq, Hash, Copy)]
+pub struct TextRange {
     start: TextPos,
     end: TextPos,
+}
+
+/// Debug formats the numbers 0-based
+impl std::fmt::Debug for TextRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start.line == self.end.line {
+            write!(f, "{:?}-{}", self.start, self.end.character)
+        } else {
+            write!(f, "{:?}-{:?}", self.start, self.end)
+        }
+    }
+}
+
+/// Display formats the numbers 1-based (for output to the user, so that navigation links work)
+impl std::fmt::Display for TextRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start.line == self.end.line {
+            write!(f, "{}-{}", self.start, self.end.character + 1)
+        } else {
+            write!(f, "{}-{}", self.start, self.end)
+        }
+    }
 }
 
 /// Subtracting two `FilePos`s creates a `FileRange`.
@@ -93,15 +113,17 @@ impl TextRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
-#[debug("{line}|{character}")]
+#[derive(Debug, Display, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
+#[debug("{}:{}⁰", line, character)] // (we add a little superscript to remind ourselves that this 0 based)
+#[display("{}:{}", line + 1, character + 1)]
 pub(crate) struct TextPos {
     line: u32,
     character: u32,
 }
 
 #[derive(Debug, Display, Clone, Copy, PartialEq, Eq, Hash)]
-#[display("{file:?}:{range:?}")]
+#[debug("{file:?}:{range:?}")]
+#[display("{file:?}:{range}")]
 pub(crate) struct FileTextRange {
     file: Id<Uri>,
     range: TextRange,
