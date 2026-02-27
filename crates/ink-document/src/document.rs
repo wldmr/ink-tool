@@ -302,6 +302,9 @@ impl InkDocument {
     /// ```
     pub fn usage_at(&self, pos: Position) -> Option<IdentUnderCursor<'_>> {
         let usage = self.thing_under_cursor::<syntax::Usages>(pos)?;
+        // FIXME: Inefficient: We go down to the ident, and then maybe back up again, which
+        // walks down from the root once more. We can instead just descend once and then
+        // stop at the first (i.e. outermost) Usage we find.
         let usage = usage.parent_of_type::<syntax::Usages>().unwrap_or(usage); // widen to catch qualified names
         self.individual_idents(usage).find(|it| it.range.end >= pos)
     }

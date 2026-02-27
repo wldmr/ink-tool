@@ -12,7 +12,9 @@ pub struct Id<T>(usize, PhantomData<T>);
 impl<T> std::fmt::Debug for Id<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = std::any::type_name::<T>();
-        write!(f, "Id<{name}>({})", &self.0)
+        let name = name.split("::").last().unwrap_or(name);
+        let n = self.0;
+        write!(f, "{name}-{n}")
     }
 }
 

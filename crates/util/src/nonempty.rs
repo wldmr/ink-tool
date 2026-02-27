@@ -26,10 +26,14 @@ pub struct Vec1<T> {
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Vec1<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut vec = f.debug_list();
-        vec.entry(&self.first);
-        vec.entries(&self.rest);
-        vec.finish()
+        if self.rest.is_empty() {
+            write!(f, "{:?}", self.first)
+        } else {
+            let mut vec = f.debug_list();
+            vec.entry(&self.first);
+            vec.entries(&self.rest);
+            vec.finish()
+        }
     }
 }
 
