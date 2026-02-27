@@ -4,6 +4,7 @@ use crate::fmt::{
     formatting::Formatting,
     node_rule::{DedentType, IndentType, NodeRules},
 };
+use itertools::Itertools;
 use std::collections::HashMap;
 use tree_sitter::{Node, QueryPredicateArg, StreamingIterator, TreeCursor};
 use tree_sitter::{Query, QueryCursor};
@@ -217,15 +218,18 @@ impl FormatScanner {
     }
 }
 
-fn collect_whitespace(outs: &mut impl Formatting, whitespace: &str) {
-    let newlines = whitespace
+/// If `text` is all non-newline whitespace, keep that number of spaces. If it has
+/// any newlines, output that many newlines without any spaces. If it contains,
+/// non-whitespace, output the text verbatim.
+fn collect_whitespace(outs: &mut impl Formatting, text: &str) {
+    let newlines = text
         .chars()
-        .inspect(|it| assert!(it.is_whitespace()))
-        .filter(|it| *it == '\n')
-        .count();
+        .map(|c| c.is_whitespace().then_some(c))
+        .fold_options(0usize, |sum, c| if c == '\n' { sum + 1 } else { sum });
     match newlines {
-        0 => outs.space(whitespace.len()),
-        n => outs.line(n),
+        Some(0) => outs.space(text.len()),
+        Some(n) => outs.line(n),
+        None => outs.text(text),
     }
 }
 
