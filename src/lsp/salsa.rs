@@ -11,6 +11,7 @@ use crate::lsp::{
         names::{self, Meta},
         ws_symbols::from_doc as get_workspace_symbols,
     },
+    location::TextRange,
 };
 use composition::composite_query;
 use ink_document::InkDocument;
@@ -46,6 +47,8 @@ composite_query!({
         fn references(docid: DocId) -> References;
 
         fn node_infos(docid: DocId) -> NodeInfos;
+        fn definition_of(docid: DocId, range: TextRange) -> SalsaLocations;
+        fn usages_of(docid: DocId, range: TextRange) -> SalsaLocations;
 
         /// Resolve the start(!) of an identifier to the place(s) where it is defined
         ///
@@ -97,22 +100,54 @@ subquery!(Ops, references, References, |self, db| {
     result
 });
 
-// pub type NodeRanges = HashMap<NodeId, Range>;
-// subquery!(Ops, node_ranges, NodeRanges, |self, db| {
-//     use ink_syntax::{Identifier, Ink, KnotBlock, QualifiedName, StitchBlock};
-//     let doc = db.document(self.docid);
-//     let root = doc.root();
-//     root.depth_first::<UntypedNode>()
-//         .filter_map(|node| match node.kind() {
-//             Ink::KIND
-//             | KnotBlock::KIND
-//             | StitchBlock::KIND
-//             | Identifier::KIND
-//             | QualifiedName::KIND => Some((NodeId::from(node), doc.lsp_range(node.range()))),
-//             _ => None,
-//         })
-//         .collect::<HashMap<_, _>>()
-// });
+type SalsaLocations = Vec<(DocId, TextRange)>;
+
+subquery!(Ops, definition_of, SalsaLocations, |self, db| {
+    let mut result = Vec::new();
+    let infos = db.node_infos(self.docid);
+
+    // Either we find something locally, *or* we look globally.
+    // In other words: Local definitions shadow global ones.
+    if let Some(local_defs) = infos.local_definitions(self.range) {
+        result.extend(local_defs.iter().map(|range| (self.docid, *range)));
+    } else if let Some(global_names) = infos.unresolved_names(self.range) {
+        let docs = db.doc_ids();
+        for docid in docs.ids() {
+            let def_info = db.node_infos(docid);
+            for global_name in global_names {
+                if let Some(global_defs) = def_info.global_ranges(global_name) {
+                    result.extend(global_defs.iter().map(|range| (docid, *range)));
+                }
+            }
+        }
+    }
+    result
+});
+
+subquery!(Ops, usages_of, SalsaLocations, |self, db| {
+    let mut result = Vec::new();
+    let infos = db.node_infos(self.docid);
+
+    // Try locals first, …
+    if let Some(usages) = infos.local_usages(self.range) {
+        result.extend(usages.iter().map(|range| (self.docid, *range)));
+    }
+
+    // A definition might also be visible globally under several names:
+    if let Some(global_names) = infos.global_names(self.range) {
+        let docs = db.doc_ids();
+        for docid in docs.ids() {
+            let ref_info = db.node_infos(docid);
+            for global_name in global_names {
+                if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
+                    result.extend(resolved.iter().map(|range| (docid, *range)))
+                }
+            }
+        }
+    }
+
+    result
+});
 
 subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
     let mut names = WorkspaceNames::new();
