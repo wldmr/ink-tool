@@ -11,14 +11,13 @@ use crate::lsp::{
         names::{self, Meta},
         ws_symbols::from_doc as get_workspace_symbols,
     },
-    location::TextRange,
 };
 use composition::composite_query;
 use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Position, Range, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::{HashMap, HashSet};
-use subqueries::node_info::NodeInfos;
+use subqueries::node_info::{DefRange, IdentRange, NodeInfos};
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -47,8 +46,8 @@ composite_query!({
         fn references(docid: DocId) -> References;
 
         fn node_infos(docid: DocId) -> NodeInfos;
-        fn definition_of(docid: DocId, range: TextRange) -> SalsaLocations;
-        fn usages_of(docid: DocId, range: TextRange) -> SalsaLocations;
+        fn definition_of(docid: DocId, range: IdentRange) -> SalsaLocations<DefRange>;
+        fn usages_of(docid: DocId, range: DefRange) -> SalsaLocations<IdentRange>;
 
         /// Resolve the start(!) of an identifier to the place(s) where it is defined
         ///
@@ -100,9 +99,9 @@ subquery!(Ops, references, References, |self, db| {
     result
 });
 
-type SalsaLocations = Vec<(DocId, TextRange)>;
+type SalsaLocations<T> = Vec<(DocId, T)>;
 
-subquery!(Ops, definition_of, SalsaLocations, |self, db| {
+subquery!(Ops, definition_of, SalsaLocations<DefRange>, |self, db| {
     let mut result = Vec::new();
     let infos = db.node_infos(self.docid);
 
@@ -124,7 +123,7 @@ subquery!(Ops, definition_of, SalsaLocations, |self, db| {
     result
 });
 
-subquery!(Ops, usages_of, SalsaLocations, |self, db| {
+subquery!(Ops, usages_of, SalsaLocations<IdentRange>, |self, db| {
     let mut result = Vec::new();
     let infos = db.node_infos(self.docid);
 

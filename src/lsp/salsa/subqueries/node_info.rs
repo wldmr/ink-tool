@@ -2,6 +2,7 @@ use crate::lsp::{
     location::TextRange,
     salsa::{node_infos, InkGetters as _, Ops},
 };
+use derive_more::derive::{Deref, Into};
 use enumflags2::{bitflags, BitFlags};
 use ink_document::InkDocument;
 use lsp_types::Uri;
@@ -26,24 +27,24 @@ impl Subquery<Ops, NodeInfos> for node_infos {
 // Public interface
 impl NodeInfos {
     /// NOTE: `range` must be the actual definition site.
-    pub fn local_usages(&self, range: TextRange) -> Option<&Vec1<TextRange>> {
+    pub fn local_usages(&self, range: DefRange) -> Option<&Vec1<IdentRange>> {
         self.def_to_usage.get(&range)
     }
-    pub fn local_definitions(&self, range: TextRange) -> Option<&Vec1<TextRange>> {
+    pub fn local_definitions(&self, range: IdentRange) -> Option<&Vec1<DefRange>> {
         self.usage_to_def.get(&range)
     }
 
-    pub fn global_names(&self, range: TextRange) -> Option<&Vec1<String>> {
+    pub fn global_names(&self, range: DefRange) -> Option<&Vec1<String>> {
         self.global_names_by_range.get(&range)
     }
-    pub fn global_ranges(&self, text: &str) -> Option<&Vec1<TextRange>> {
+    pub fn global_ranges(&self, text: &str) -> Option<&Vec1<DefRange>> {
         self.global_ranges_by_name.get(text)
     }
 
-    pub fn unresolved_names(&self, range: TextRange) -> Option<&Vec1<String>> {
+    pub fn unresolved_names(&self, range: IdentRange) -> Option<&Vec1<String>> {
         self.unresolved_name_by_range.get(&range)
     }
-    pub fn unresolved_ranges(&self, text: &str) -> Option<&Vec1<TextRange>> {
+    pub fn unresolved_ranges(&self, text: &str) -> Option<&Vec1<IdentRange>> {
         self.unresolved_range_by_name.get(text)
     }
 }
@@ -54,11 +55,11 @@ pub struct NodeInfos {
     parent_scope: HashMap<TextRange, TextRange>,
 
     /// The global names defined in this file.
-    global_names_by_range: HashMap<TextRange, Vec1<String>>,
-    global_ranges_by_name: HashMap<String, Vec1<TextRange>>,
+    global_names_by_range: HashMap<DefRange, Vec1<String>>,
+    global_ranges_by_name: HashMap<String, Vec1<DefRange>>,
 
-    usage_to_def: HashMap<TextRange, Vec1<TextRange>>,
-    def_to_usage: HashMap<TextRange, Vec1<TextRange>>,
+    usage_to_def: HashMap<IdentRange, Vec1<DefRange>>,
+    def_to_usage: HashMap<DefRange, Vec1<IdentRange>>,
 
     /// Which names could not be resolved and the corresponding *identifier* ranges.
     ///
@@ -69,8 +70,8 @@ pub struct NodeInfos {
     /// // ^^^^^^^^^^^^ this is the key (String)
     /// //        ^^^^^ this is the value (the TextRange of the `Label` identifier)
     /// ```
-    unresolved_range_by_name: HashMap<String, Vec1<TextRange>>,
-    unresolved_name_by_range: HashMap<TextRange, Vec1<String>>,
+    unresolved_range_by_name: HashMap<String, Vec1<IdentRange>>,
+    unresolved_name_by_range: HashMap<IdentRange, Vec1<String>>,
 
     node_kind: HashMap<TextRange, BitFlags<NodeKind>>,
 }
@@ -78,6 +79,7 @@ pub struct NodeInfos {
 // Private helpers
 impl NodeInfos {
     fn add_global<T: ToString>(&mut self, text: T, range: TextRange) {
+        let range = DefRange(range);
         self.global_names_by_range
             .entry(range)
             .and_modify(|vec1| vec1.push(text.to_string()))
@@ -88,7 +90,7 @@ impl NodeInfos {
             .or_insert_with(|| vec1![range]);
     }
 
-    fn add_unresolved<T: AsRef<str> + ToString>(&mut self, usage: TextRange, text: T) {
+    fn add_unresolved<T: AsRef<str> + ToString>(&mut self, usage: IdentRange, text: T) {
         // Assume the unresolved usages happen several times (referring to existing globals),
         // so we only create the owned string as late as possible (but with 2 accesses :-/)
         if let Some(unresolved_ids) = self.unresolved_range_by_name.get_mut(text.as_ref()) {
@@ -103,7 +105,7 @@ impl NodeInfos {
             .push(text.to_string());
     }
 
-    fn resolve_from<'a>(&mut self, defs: &mut Definitions, usage: TextRange, text: &str) -> bool {
+    fn resolve_from<'a>(&mut self, defs: &mut Definitions, usage: IdentRange, text: &str) -> bool {
         if let Some(def) = defs.get(text).cloned() {
             for def in def {
                 self.usage_to_def
@@ -153,6 +155,15 @@ pub enum NodeKind {
     Call,
 }
 
+/// Definitions are a bit special (you can only find usages when you have an actual
+/// definition), so we make that requirement type safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, Into)]
+#[into(lsp_types::Range)]
+pub struct DefRange(TextRange);
+
+/// To make it clear that any kind of usage is at the level of the individual identifier
+pub type IdentRange = TextRange;
+
 #[derive(Debug)]
 struct Scope<'a> {
     range: TextRange,
@@ -175,6 +186,7 @@ impl<'a> Scope<'a> {
     }
 
     fn add_local(&mut self, text: impl Into<Cow<'a, str>>, range: TextRange) {
+        let range = DefRange(range);
         self.locals
             .entry(text.into())
             .and_modify(|defs| defs.push(range))
@@ -182,6 +194,7 @@ impl<'a> Scope<'a> {
     }
 
     fn add_temp(&mut self, text: impl Into<Cow<'a, str>>, range: TextRange) {
+        let range = DefRange(range);
         self.temps
             .entry(text.into())
             .and_modify(|defs| defs.push(range))
@@ -189,12 +202,12 @@ impl<'a> Scope<'a> {
     }
 
     /// This is a "normal" usage that might resolve the a temp variable
-    fn add_usage(&mut self, usage_id: TextRange, text: &'a str) {
+    fn add_usage(&mut self, usage_id: IdentRange, text: &'a str) {
         self.usages.insert(usage_id, (text, true));
     }
 
     /// This is a usage from "outside" this scope, which means it can't  see our temps.
-    fn add_non_temp_usage(&mut self, usage_id: TextRange, text: &'a str) {
+    fn add_non_temp_usage(&mut self, usage_id: IdentRange, text: &'a str) {
         self.usages.insert(usage_id, (text, false));
     }
 }
@@ -209,8 +222,8 @@ impl<'a> std::fmt::Display for Scope<'a> {
     }
 }
 
-type Definitions<'a> = HashMap<Cow<'a, str>, Vec1<TextRange>>;
-type Usages<'a> = HashMap<TextRange, (&'a str, bool)>;
+type Definitions<'a> = HashMap<Cow<'a, str>, Vec1<DefRange>>;
+type Usages<'a> = HashMap<IdentRange, (&'a str, bool)>;
 
 #[derive(Debug)]
 struct Vstr<'a> {
@@ -601,93 +614,89 @@ mod tests {
     fn temps_are_only_visible_in_their_defining_scope() {
         let text = indoc! {"
             ~ temp toplevel_temp = 1
-            //     ^^^^^^^^^^^^^ top-def
+            //     ^^^^^^^^^^^^^ def top
             - {toplevel_temp}
-            // ^^^^^^^^^^^^^ top-ref1
+            // ^^^^^^^^^^^^^ ref top1
             - {knot_temp}
-            // ^^^^^^^^^ top-ref2
+            // ^^^^^^^^^ ref top2
             - {stitch_temp}
-            // ^^^^^^^^^^^ top-ref3
+            // ^^^^^^^^^^^ ref top3
 
             === Knot ===
             ~ temp knot_temp = 1
-            //     ^^^^^^^^^ knot-def
+            //     ^^^^^^^^^ def knot
 
             - {toplevel_temp}
-            // ^^^^^^^^^^^^^ knot-ref1
+            // ^^^^^^^^^^^^^ ref knot1
             - {knot_temp}
-            // ^^^^^^^^^ knot-ref2
+            // ^^^^^^^^^ ref knot2
             - {stitch_temp}
-            // ^^^^^^^^^^^ knot-ref3
+            // ^^^^^^^^^^^ ref knot3
 
             = Stitch
             ~ temp stitch_temp = 1
-            //     ^^^^^^^^^^^ stitch-def
+            //     ^^^^^^^^^^^ def stitch
 
             - {toplevel_temp}
-            // ^^^^^^^^^^^^^ stitch-ref1
+            // ^^^^^^^^^^^^^ ref stitch1
             - {knot_temp}
-            // ^^^^^^^^^ stitch-ref2
+            // ^^^^^^^^^ ref stitch2
             - {stitch_temp}
-            // ^^^^^^^^^^^ stitch-ref3
+            // ^^^^^^^^^^^ ref stitch3
         "};
         let doc = InkDocument::new(text.to_string(), None);
 
         let uri = Uri::from_str("file:///main.ink").unwrap();
         let mut vstr = Vstr::new(&uri, &doc);
         let infos = vstr.traverse(doc.root());
-        let loc: HashMap<&str, TextRange> = text_annotations::scan_default_annotations(text)
-            .map(|it| (it.claim(), lsp_types::Range::from(it.text_location).into()))
-            .collect();
+        let (defs, refs) = def_ref_annotations(text);
 
-        check!(infos.local_definitions(loc["top-ref1"]) == Some(&vec1![loc["top-def"]]));
-        check!(infos.local_definitions(loc["top-ref2"]) == None);
-        check!(infos.local_definitions(loc["top-ref3"]) == None);
+        check!(infos.local_definitions(refs["top1"]) == Some(&vec1![defs["top"]]));
+        check!(infos.local_definitions(refs["top2"]) == None);
+        check!(infos.local_definitions(refs["top3"]) == None);
 
-        check!(infos.local_definitions(loc["knot-ref1"]) == None);
-        check!(infos.local_definitions(loc["knot-ref2"]) == Some(&vec1![loc["knot-def"]]));
-        check!(infos.local_definitions(loc["knot-ref3"]) == None);
+        check!(infos.local_definitions(refs["knot1"]) == None);
+        check!(infos.local_definitions(refs["knot2"]) == Some(&vec1![defs["knot"]]));
+        check!(infos.local_definitions(refs["knot3"]) == None);
 
-        check!(infos.local_definitions(loc["stitch-ref1"]) == None);
-        check!(infos.local_definitions(loc["stitch-ref2"]) == None);
-        check!(infos.local_definitions(loc["stitch-ref3"]) == Some(&vec1![loc["stitch-def"]]));
+        check!(infos.local_definitions(refs["stitch1"]) == None);
+        check!(infos.local_definitions(refs["stitch2"]) == None);
+        check!(infos.local_definitions(refs["stitch3"]) == Some(&vec1![defs["stitch"]]));
     }
 
     #[test]
     fn params_are_visible_in_subscopes() {
         let text = indoc! {"
             === Knot(p1, p2) ===
-            //       ^^ def-knot-p1
-            //           ^^ def-knot-p2
+            //       ^^ def knot-p1
+            //           ^^ def knot-p2
 
             I see {p1} & {p2}.
-            //     ^^ usage-knot-p1
-            //            ^^ usage-knot-p2
+            //     ^^ ref knot-p1
+            //            ^^ ref knot-p2
 
             = Stitch(p1)
-            //       ^^ def-stitch-p1
+            //       ^^ def stitch-p1
             I see {p1} & {p2}.
-            //     ^^ usage-stitch-p1
-            //            ^^ usage-stitch-p2
+            //     ^^ ref stitch-p1
+            //            ^^ ref stitch-p2
         "};
         let doc = InkDocument::new(text.to_string(), None);
 
         let uri = Uri::from_str("file:///main.ink").unwrap();
         let mut vstr = Vstr::new(&uri, &doc);
         let infos = vstr.traverse(doc.root());
-        let loc: HashMap<&str, TextRange> = text_annotations::scan_default_annotations(text)
-            .map(|it| (it.claim(), lsp_types::Range::from(it.text_location).into()))
-            .collect();
+        let (defs, refs) = def_ref_annotations(text);
 
-        check!(infos.local_definitions(loc["usage-knot-p1"]) == Some(&vec1![loc["def-knot-p1"]]));
-        check!(infos.local_definitions(loc["usage-knot-p2"]) == Some(&vec1![loc["def-knot-p2"]]));
+        check!(infos.local_definitions(refs["knot-p1"]) == Some(&vec1![defs["knot-p1"]]));
+        check!(infos.local_definitions(refs["knot-p2"]) == Some(&vec1![defs["knot-p2"]]));
 
         check!(
-            infos.local_definitions(loc["usage-stitch-p1"]) == Some(&vec1![loc["def-stitch-p1"]]),
+            infos.local_definitions(refs["stitch-p1"]) == Some(&vec1![defs["stitch-p1"]]),
             "p1 refers to the inner stitch scope"
         );
         check!(
-            infos.local_definitions(loc["usage-stitch-p2"]) == Some(&vec1![loc["def-knot-p2"]]),
+            infos.local_definitions(refs["stitch-p2"]) == Some(&vec1![defs["knot-p2"]]),
             "p2 refers to the outer knot scope"
         );
     }
@@ -698,27 +707,27 @@ mod tests {
             === Knot ===
 
             -> outer
-            // ^^^^^ usage:knot-1
+            // ^^^^^ ref knot-1
             -> Stitch.inner
-            //        ^^^^^ usage:knot-2
-            // ^^^^^^ usage:knot-3
+            //        ^^^^^ ref knot-2
+            // ^^^^^^ ref knot-3
 
             - (outer) Yea!
-            // ^^^^^ outer
+            // ^^^^^ def outer
 
             = Stitch(p1)
-            //^^^^^^ Stitch
+            //^^^^^^ def Stitch
 
             - (inner) Yea!
-            // ^^^^^ inner
+            // ^^^^^ def inner
 
             -> inner
-            // ^^^^^ usage:stitch-1
+            // ^^^^^ ref stitch-1
             -> Stitch.outer
-            //        ^^^^^ usage:stitch-2
-            // ^^^^^^ usage:stitch-3
+            //        ^^^^^ ref stitch-2
+            // ^^^^^^ ref stitch-3
             -> outer
-            // ^^^^^ usage:stitch-4
+            // ^^^^^ ref stitch-4
              
         "};
         let doc = InkDocument::new(text.to_string(), None);
@@ -726,24 +735,22 @@ mod tests {
         let uri = Uri::from_str("file:///main.ink").unwrap();
         let mut vstr = Vstr::new(&uri, &doc);
         let infos = vstr.traverse(doc.root());
-        let loc: HashMap<&str, TextRange> = text_annotations::scan_default_annotations(text)
-            .map(|it| (it.claim(), lsp_types::Range::from(it.text_location).into()))
-            .collect();
+        let (defs, refs) = def_ref_annotations(text);
 
         dbg!(&infos);
-        check!(infos.local_definitions(loc["usage:knot-1"]) == Some(&vec1![loc["outer"]]));
-        check!(infos.local_definitions(loc["usage:knot-2"]) == Some(&vec1![loc["inner"]]));
-        check!(infos.local_definitions(loc["usage:knot-3"]) == Some(&vec1![loc["Stitch"]]));
+        check!(infos.local_definitions(refs["knot-1"]) == Some(&vec1![defs["outer"]]));
+        check!(infos.local_definitions(refs["knot-2"]) == Some(&vec1![defs["inner"]]));
+        check!(infos.local_definitions(refs["knot-3"]) == Some(&vec1![defs["Stitch"]]));
 
-        check!(infos.local_definitions(loc["usage:stitch-1"]) == Some(&vec1![loc["inner"]]));
+        check!(infos.local_definitions(refs["stitch-1"]) == Some(&vec1![defs["inner"]]));
         check!(
-            infos.local_definitions(loc["usage:stitch-2"]) == None,
+            infos.local_definitions(refs["stitch-2"]) == None,
             r"because `outer` is not namespaced by Stitch "
         );
-        check!(infos.local_definitions(loc["usage:stitch-3"]) == Some(&vec1![loc["Stitch"]]));
+        check!(infos.local_definitions(refs["stitch-3"]) == Some(&vec1![defs["Stitch"]]));
 
         check!(
-            infos.local_definitions(loc["usage:stitch-4"]) == Some(&vec1![loc["outer"]]),
+            infos.local_definitions(refs["stitch-4"]) == Some(&vec1![defs["outer"]]),
             "plain outer works"
         );
     }
@@ -797,5 +804,23 @@ mod tests {
                 ]
                 .into()
         );
+    }
+
+    fn def_ref_annotations(text: &str) -> (HashMap<&str, DefRange>, HashMap<&str, IdentRange>) {
+        let mut defs = HashMap::new();
+        let mut refs = HashMap::new();
+        for ann in text_annotations::scan_default_annotations(text) {
+            let range = TextRange::from(lsp_types::Range::from(ann.text_location));
+            match ann.claim().split_once(' ') {
+                Some(("def", name)) => {
+                    defs.insert(name, DefRange(range));
+                }
+                Some(("ref", name)) => {
+                    refs.insert(name, range);
+                }
+                _ => panic!("Unexpected claim {}", ann.claim()),
+            };
+        }
+        (defs, refs)
     }
 }
