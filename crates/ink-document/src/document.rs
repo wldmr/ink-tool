@@ -2,6 +2,7 @@ use derive_more::derive::{Display, Error, From};
 use ink_syntax::{self as syntax, Identifier, Ink};
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use lsp_types::Position;
+use std::ops::RangeBounds;
 use tree_traversal::TreeTraversal;
 use type_sitter::{Node, NodeResult};
 
@@ -423,7 +424,7 @@ impl InkDocument {
         }
     }
 
-    fn to_byte(&self, pos: lsp_types::Position) -> usize {
+    pub fn to_byte(&self, pos: lsp_types::Position) -> usize {
         let lsp_types::Position {
             line,
             character: col,
@@ -465,8 +466,19 @@ impl InkDocument {
         &self.text[n.byte_range()]
     }
 
-    pub fn text(&self, byte_range: std::ops::Range<usize>) -> &str {
-        &self.text[byte_range]
+    pub fn text(&self, byte_range: impl RangeBounds<usize>) -> &str {
+        use std::ops::Bound::*;
+        let start = byte_range.start_bound().cloned();
+        let end = byte_range.end_bound().cloned();
+        match (start, end) {
+            (Included(start), Included(end)) => &self.text[start..=end],
+            (Included(start), Excluded(end)) => &self.text[start..end],
+            (Included(start), _) => &self.text[start..],
+            (Unbounded, Included(end)) => &self.text[..=end],
+            (Unbounded, Excluded(end)) => &self.text[..end],
+            (Unbounded, _) => &self.text[..],
+            (Excluded(_), _) => panic!("Excluded range start not supported"),
+        }
     }
 
     pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {
