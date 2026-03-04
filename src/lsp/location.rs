@@ -49,6 +49,18 @@ pub struct TextRange {
     end: TextPos,
 }
 
+impl PartialEq<lsp_types::Range> for TextRange {
+    fn eq(&self, other: &lsp_types::Range) -> bool {
+        self.start == other.start && self.end == other.end
+    }
+}
+
+impl PartialEq<tree_sitter::Range> for TextRange {
+    fn eq(&self, other: &tree_sitter::Range) -> bool {
+        self.start == other.start_point && self.end == other.end_point
+    }
+}
+
 /// Debug formats the numbers 0-based
 impl std::fmt::Debug for TextRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -119,6 +131,17 @@ impl TextRange {
 pub(crate) struct TextPos {
     line: u32,
     character: u32,
+}
+
+impl PartialEq<lsp_types::Position> for TextPos {
+    fn eq(&self, other: &lsp_types::Position) -> bool {
+        self.line == other.line && self.character == other.character
+    }
+}
+impl PartialEq<tree_sitter::Point> for TextPos {
+    fn eq(&self, other: &tree_sitter::Point) -> bool {
+        self.line as usize == other.row && self.character as usize == other.column
+    }
 }
 
 #[derive(Debug, Display, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,6 +1,6 @@
 use derive_more::derive::{Display, Error, From};
 use ink_syntax::{self as syntax, Identifier, Ink};
-use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
+use line_index::{LineCol, LineIndex, TextSize, WideEncoding, WideLineCol};
 use lsp_types::Position;
 use std::ops::RangeBounds;
 use tree_traversal::TreeTraversal;
@@ -442,6 +442,17 @@ impl InkDocument {
             .expect("LineCol must correspond to an offset")
     }
 
+    pub fn from_byte(&self, byte: usize) -> lsp_types::Position {
+        let offset = TextSize::try_from(byte).unwrap();
+        let line_col = self.lines.line_col(offset);
+        if let Some(wide) = self.enc {
+            let wide = self.lines.to_wide(wide, line_col).unwrap();
+            lsp_types::Position::new(wide.line, wide.col)
+        } else {
+            lsp_types::Position::new(line_col.line, line_col.col)
+        }
+    }
+
     fn lsp_position(&self, point: tree_sitter::Point) -> lsp_types::Position {
         let native = LineCol {
             line: point.row as u32,
@@ -484,6 +495,12 @@ impl InkDocument {
     pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(range.start_point);
         let end = self.lsp_position(range.end_point);
+        lsp_types::Range { start, end }
+    }
+
+    pub fn lsp_range_from_bytes(&self, start: usize, end: usize) -> lsp_types::Range {
+        let start = self.from_byte(start);
+        let end = self.from_byte(end);
         lsp_types::Range { start, end }
     }
 }
@@ -547,33 +564,6 @@ mod tests {
         let mut document = new_doc(text, enc);
         document.edit(((0, code_units)..(0, code_units), " "));
         pretty_assertions::assert_str_eq!(document.text, "🥺 🥺");
-    }
-
-    /// Creates a UTF-8 encoded document and an LSP `Position` based on where the first `@` symbol is.
-    /// Panics if there is no `@` symbol.
-    fn doc_with_caret(input: &str) -> (InkDocument, lsp_types::Position) {
-        let mut row = 0;
-        let mut col = 0;
-        // Generating positons this way only works for UTF-8!
-        // For other encodings we'd need to look at InkDocument internals, which we don't want.
-        for (idx, chr) in input.char_indices() {
-            match chr {
-                '@' => {
-                    let pos = lsp_types::Position::new(row, col);
-                    let mut output = input.to_string();
-                    output.remove(idx);
-                    return (new_doc(output, None), pos);
-                }
-                '\n' => {
-                    row += 1;
-                    col = 0;
-                }
-                _ => {
-                    col += 1;
-                }
-            }
-        }
-        panic!("There should have been an '@' in there somewhere.");
     }
 
     fn new_doc(text: impl Into<String>, enc: Option<WideEncoding>) -> InkDocument {

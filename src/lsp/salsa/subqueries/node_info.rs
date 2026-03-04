@@ -40,6 +40,11 @@ impl NodeInfos {
     pub fn global_ranges(&self, text: &str) -> Option<&Vec1<DefRange>> {
         self.global_ranges_by_name.get(text)
     }
+    pub fn iter_globals(&self) -> impl Iterator<Item = (&String, DefRange)> {
+        self.global_ranges_by_name
+            .iter()
+            .flat_map(|(s, ranges)| ranges.iter().map(move |r| (s, *r)))
+    }
 
     pub fn unresolved_names(&self, range: IdentRange) -> Option<&Vec1<String>> {
         self.unresolved_name_by_range.get(&range)
@@ -47,12 +52,49 @@ impl NodeInfos {
     pub fn unresolved_ranges(&self, text: &str) -> Option<&Vec1<IdentRange>> {
         self.unresolved_range_by_name.get(text)
     }
+
+    pub fn parent_scope(&self, range: impl Into<TextRange>) -> Option<TextRange> {
+        let range = range.into();
+        self.parent_scope.get(&range).copied()
+    }
+
+    pub fn locals_in_scope<T: Into<TextRange>>(
+        &self,
+        range: T,
+    ) -> impl Iterator<Item = (&String, DefRange)> + use<'_, T> {
+        let iter: Box<dyn Iterator<Item = (&String, DefRange)>> =
+            match self.locals_in_scope.get(&range.into()) {
+                Some(vec1) => Box::new(
+                    vec1.iter()
+                        .flat_map(|(s, ranges)| ranges.iter().map(move |r| (s, *r))),
+                ),
+                None => Box::new(std::iter::empty()),
+            };
+        iter
+    }
+
+    pub fn temps_in_scope<T: Into<TextRange>>(
+        &self,
+        range: T,
+    ) -> impl Iterator<Item = (&String, DefRange)> + use<'_, T> {
+        let iter: Box<dyn Iterator<Item = (&String, DefRange)>> =
+            match self.temps_in_scope.get(&range.into()) {
+                Some(vec1) => Box::new(
+                    vec1.iter()
+                        .flat_map(|(s, ranges)| ranges.iter().map(move |r| (s, *r))),
+                ),
+                None => Box::new(std::iter::empty()),
+            };
+        iter
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct NodeInfos {
     /// Which scope node the node resides in
     parent_scope: HashMap<TextRange, TextRange>,
+    locals_in_scope: HashMap<TextRange, Vec1<(String, Vec1<DefRange>)>>,
+    temps_in_scope: HashMap<TextRange, Vec1<(String, Vec1<DefRange>)>>,
 
     /// The global names defined in this file.
     global_names_by_range: HashMap<DefRange, Vec1<String>>,
@@ -185,7 +227,7 @@ impl<'a> Scope<'a> {
         }
     }
 
-    fn add_local(&mut self, text: impl Into<Cow<'a, str>>, range: TextRange) {
+    fn add_local(&mut self, text: impl Into<String>, range: TextRange) {
         let range = DefRange(range);
         self.locals
             .entry(text.into())
@@ -193,7 +235,7 @@ impl<'a> Scope<'a> {
             .or_insert_with(|| Vec1::new(range));
     }
 
-    fn add_temp(&mut self, text: impl Into<Cow<'a, str>>, range: TextRange) {
+    fn add_temp(&mut self, text: impl Into<String>, range: TextRange) {
         let range = DefRange(range);
         self.temps
             .entry(text.into())
@@ -222,7 +264,7 @@ impl<'a> std::fmt::Display for Scope<'a> {
     }
 }
 
-type Definitions<'a> = HashMap<Cow<'a, str>, Vec1<DefRange>>;
+type Definitions<'a> = HashMap<String, Vec1<DefRange>>;
 type Usages<'a> = HashMap<IdentRange, (&'a str, bool)>;
 
 #[derive(Debug)]
@@ -543,6 +585,9 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                         state.add_unresolved(usage_id, text);
                     }
                 }
+                if let Some(temps) = Vec1::from_iter(self.ink.temps.drain()) {
+                    state.temps_in_scope.insert(self.ink.range, temps);
+                }
             }
 
             KnotBlock(_) => {
@@ -560,6 +605,12 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     if !resolved_locally {
                         state.add_unresolved(usage_id, text);
                     }
+                }
+                if let Some(temps) = Vec1::from_iter(scope.temps.drain()) {
+                    state.temps_in_scope.insert(scope.range, temps);
+                }
+                if let Some(locals) = Vec1::from_iter(scope.locals.drain()) {
+                    state.locals_in_scope.insert(scope.range, locals);
                 }
             }
 
@@ -584,6 +635,12 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                             state.add_unresolved(usage_id, text);
                         }
                     }
+                }
+                if let Some(temps) = Vec1::from_iter(scope.temps.drain()) {
+                    state.temps_in_scope.insert(scope.range, temps);
+                }
+                if let Some(locals) = Vec1::from_iter(scope.locals.drain()) {
+                    state.locals_in_scope.insert(scope.range, locals);
                 }
             }
 

@@ -13,82 +13,88 @@ impl super::State {
     ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
         let (doc, this_doc) = self.get_doc_and_id(uri)?;
 
-        let spec = self.what_to_search_for(&doc, position);
-
-        let Some(usage) = doc.usage_at(position) else {
-            return Ok(Default::default());
+        let Some(spec) = self.what_to_search_for(&doc, position) else {
+            return Ok(None);
         };
 
-        let ws_names = self.db.workspace_names();
-        use ink_document::ids::DefinitionInfo::*;
-        use lsp_types::CompletionItemKind;
-        Ok(Some(
-            ws_names
-                .iter()
-                .filter(|(key, _)| key.contains(usage.term))
-                .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
-                .filter(|(_, (docid, meta))| {
-                    meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(position))
-                })
-                .map(|(key, (_, meta))| CompletionItem {
-                    label: key.clone(),
-                    label_details: None,
-                    kind: Some(match meta.id.info() {
-                        Section { .. } => CompletionItemKind::MODULE,
-                        Subsection { .. } => CompletionItemKind::CLASS,
-                        Function => CompletionItemKind::FUNCTION,
-                        External => CompletionItemKind::INTERFACE,
-                        Var => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
-                        Const => CompletionItemKind::CONSTANT, // TODO: Differentiate between VAR and CONST
-                        List => CompletionItemKind::ENUM,
-                        ListItem { .. } => CompletionItemKind::ENUM_MEMBER,
-                        Label => CompletionItemKind::PROPERTY,
-                        Param { .. } => CompletionItemKind::VARIABLE,
-                        Temp => CompletionItemKind::UNIT,
-                    }),
-                    // TODO: Fetch actual definition
-                    detail: Some(match meta.id.info() {
-                        Section { stitch, params } => {
-                            format!(
-                                "{} {key}{}",
-                                if stitch { "=" } else { "==" },
-                                if params { "(…)" } else { "" }
-                            )
-                        }
-                        Subsection { params, .. } => {
-                            format!("= {key}{}", if params { "(…)" } else { "" })
-                        }
-                        Function => format!("== function {key}(…)"),
-                        External => format!("EXTERNAL {key}(…)"),
-                        Var => format!("VAR {key} = …"),
-                        Const => format!("CONST {key} = …"),
-                        List => format!("LIST {key} = …"),
-                        ListItem { .. } => format!("LIST … = … {key}, "),
-                        Label => format!("({key}) // label"),
-                        Param { .. } => format!("param // parameter"),
-                        Temp => format!("~ temp {key} = …"),
-                    }),
-                    // TODO: Fetch actual docs
-                    documentation: None,
-                    deprecated: None,
-                    preselect: None,
-                    sort_text: None,
-                    filter_text: None,
-                    insert_text: None,
-                    insert_text_format: None,
-                    insert_text_mode: None,
-                    text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                        range: usage.range,
-                        new_text: key.to_owned(),
-                    })),
-                    additional_text_edits: None,
-                    command: None,
-                    commit_characters: None,
-                    data: None,
-                    tags: None,
-                })
-                .collect(),
-        ))
+        let node_info = self.db.node_infos(this_doc);
+
+        let mut block = spec.block;
+        let mut result_ranges = Vec::new();
+
+        // SMELL: We're repeating the name resolution logic here.
+
+        // From innermost block: locals + temps
+        for (name, range) in node_info
+            .temps_in_scope(block)
+            .chain(node_info.locals_in_scope(block))
+        {
+            if name.contains(spec.search_text) {
+                let item = self.completion(this_doc, name, range, spec.search_text_range);
+                result_ranges.push(item);
+            }
+        }
+
+        // From parent blocks: locals only
+        while let Some(parent) = node_info.parent_scope(block) {
+            if parent == block {
+                break;
+            }
+            for (name, range) in node_info.locals_in_scope(parent) {
+                if name.contains(spec.search_text) {
+                    let item = self.completion(this_doc, name, range, spec.search_text_range);
+                    result_ranges.push(item);
+                }
+            }
+            block = parent.into();
+        }
+
+        // And finally the globals:
+        for gid in self.db.doc_ids().ids() {
+            let ginfos = self.db.node_infos(gid);
+            for (name, range) in ginfos.iter_globals() {
+                if name.contains(spec.search_text) {
+                    let item = self.completion(gid, name, range, spec.search_text_range);
+                    result_ranges.push(item);
+                }
+            }
+        }
+
+        Ok(Some(result_ranges))
+    }
+
+    fn completion(
+        &self,
+        _docid: DocId,
+        text: &str,
+        _range: impl Into<lsp_types::Range>,
+        edit_range: impl Into<lsp_types::Range>,
+    ) -> CompletionItem {
+        CompletionItem {
+            label: text.to_string(),
+            label_details: None,
+            kind: None,
+            // TODO: Fetch actual definition
+            detail: None,
+            // TODO: Fetch actual docs
+            documentation: None,
+            deprecated: None,
+            preselect: None,
+            sort_text: None,
+            filter_text: None,
+            insert_text: None,
+            insert_text_format: None,
+            insert_text_mode: None,
+            text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                range: edit_range.into(),
+                new_text: text.to_string(),
+            })),
+            additional_text_edits: None,
+            command: None,
+            commit_characters: None,
+            data: None,
+            tags: None,
+        }
     }
 
     fn what_to_search_for<'a>(
@@ -107,17 +113,21 @@ impl super::State {
         // (e.g. `-> knot.stitch.<cursor>`), there’s almost no chance of tree-sitter being
         // of any help.
 
-        let actual_cursor = doc.to_byte(position);
-        // Be lenient: We allow completions even when the user has typed spaces
+        // In the following search closure: Have we found any word characters?
         let mut found_word_char = false;
-        let mut check_qname = |(_idx, chr): &(usize, char)| {
-            if chr.is_alphabetic() || *chr == '_' {
-                found_word_char = true;
-                true
-            } else {
-                chr.is_numeric() || *chr == '.'
-            }
+
+        // Determines whether this character can be part of a name, and thus the search string
+        let mut is_qname_char = |(_idx, chr): &(usize, char)| {
+            let is_word_char = chr.is_alphabetic() || *chr == '_';
+            found_word_char |= is_word_char;
+            is_word_char || chr.is_numeric() || *chr == '.'
         };
+
+        let actual_cursor = doc.to_byte(position);
+
+        // Be lenient: We allow completions even when the user has typed spaces (This also
+        // catches cases where the cursor is at the end of the line, which is really the
+        // reason this exists in the first place.)
         let cursor = doc
             .text(..actual_cursor)
             .char_indices()
@@ -126,26 +136,27 @@ impl super::State {
             .map(|(idx, _)| idx)
             .last()
             .unwrap_or(actual_cursor);
-        // Determine first and last valid (Qualified) name characters around cursor.
-        let first = doc
+
+        // Determine first and last valid (qualified) name characters around cursor.
+        let first_byte = doc
             .text(..cursor)
             .char_indices()
             .rev()
-            .take_while(&mut check_qname)
+            .take_while(&mut is_qname_char)
             .last()
             .map(|(idx, _)| idx)
             .unwrap_or(cursor);
-        let first = Bound::Included(first);
+        let first_bound = Bound::Included(first_byte);
 
-        let last = doc
+        let last_bound = doc
             .text(cursor..)
             .char_indices()
-            .take_while(&mut check_qname)
+            .take_while(&mut is_qname_char)
             .last()
             .map(|(idx, _)| Bound::Included(cursor + idx)) // because we started from cursor
             .unwrap_or_else(|| Bound::Excluded(cursor)); // Excluded because the cursor is already included in the start.
 
-        let search_text = doc.text((first, last));
+        let search_text = doc.text((first_bound, last_bound));
 
         // What we found might be a number, but we don't complete those:
         if !search_text.is_empty() && !found_word_char {
@@ -155,7 +166,6 @@ impl super::State {
         let mut node = doc.root().upcast();
         let mut block = None;
         loop {
-            log::trace!("{node:?}");
             // We don’t complete text, so if we can determine that we’re definitely not in
             // code, we can just abort.
             if !node.has_error() && node.kind() == ink_syntax::Text::KIND {
@@ -169,13 +179,25 @@ impl super::State {
                 _ => break,
             };
         }
-        Some(SearchSpec { block, search_text })
+
+        let block = block
+            .map(|it| it.range())
+            .unwrap_or_else(|| doc.root().range());
+
+        Some(SearchSpec {
+            block: doc.lsp_range(block),
+            search_text,
+            search_text_range: doc.lsp_range_from_bytes(first_byte, first_byte + search_text.len()),
+            first_byte,
+        })
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct SearchSpec<'a> {
-    block: Option<ink_syntax::ScopeBlock<'a>>,
+    block: lsp_types::Range,
+    first_byte: usize,
+    search_text_range: lsp_types::Range,
     search_text: &'a str,
 }
 
@@ -197,6 +219,7 @@ mod tests {
         use super::*;
 
         fn do_test(text: &str, expectation: fn(Option<SearchSpec<'_>>)) {
+            setup_logging(log::LevelFilter::Trace);
             let mut state = new_state();
             let (text, caret) = text_with_caret(text);
             state.edit(uri("main.ink"), text);
