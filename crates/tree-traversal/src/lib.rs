@@ -56,6 +56,11 @@ pub trait TreeTraversal<'a>: Node<'a> {
             .map(UntypedNode::from)
     }
 
+    fn named_descendant_for_byte_range(self, start: usize, end: usize) -> Option<UntypedNode<'a>> {
+        type_sitter::raw::Node::named_descendant_for_byte_range(self.raw(), start, end)
+            .map(UntypedNode::from)
+    }
+
     fn descendant_containing(self, node: impl Node<'a>) -> Option<UntypedNode<'a>> {
         self.descendant_for_point_range(node.start_position(), node.end_position())
     }

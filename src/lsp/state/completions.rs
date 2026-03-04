@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use lsp_types::{CompletionItem, Position, Uri};
 use std::ops::Bound;
 use tree_traversal::TreeTraversal;
@@ -20,7 +19,9 @@ impl super::State {
 
         let node_info = self.db.node_infos(this_doc);
 
-        let mut block = spec.block;
+        let mut block = node_info
+            .parent_scope(doc.lsp_range(spec.node.range()))
+            .unwrap_or_else(|| doc.lsp_range(doc.root().range()).into());
         let mut completions = Vec::new();
 
         // SMELL: We're repeating the name resolution logic here.
@@ -165,51 +166,28 @@ impl super::State {
             return None;
         }
 
-        let mut node = doc.root().upcast();
-        let mut block = None;
-        // HACK: If at end of line, go one to the left (otherwise we don't find text nodes)
-        let mut adjusted_cursor = cursor;
-        if doc
-            .text(cursor..)
-            .chars()
-            .skip_while(|it| it.is_whitespace() && *it != '\n')
-            .next()
-            .is_none_or(|it| it == '\n')
-        {
-            adjusted_cursor -= 1;
-        }
-        loop {
-            // We don’t complete text, so if we can determine that we’re definitely not in
-            // code, we can just abort.
-            if !node.has_error() && node.kind() == ink_syntax::Text::KIND {
-                return None;
-            }
-            if let Ok(it) = node.downcast::<ink_syntax::ScopeBlock>() {
-                block = Some(it);
-            }
-            node = match node.first_child_for_byte(adjusted_cursor) {
-                Some(node) if node.byte_range().contains(&adjusted_cursor) => node,
-                _ => break,
-            };
-        }
+        // The closest named node that contains the text we just selected.
+        let node = doc
+            .root()
+            .named_descendant_for_byte_range(first_byte, first_byte + search_text.len())?;
 
-        let block = block
-            .map(|it| it.range())
-            .unwrap_or_else(|| doc.root().range());
+        // We don’t complete text, so if we can determine that we’re definitely not in
+        // code, we can just abort.
+        if node.kind() == ink_syntax::Text::KIND && !node.is_error() {
+            return None;
+        }
 
         Some(SearchSpec {
-            block: doc.lsp_range(block),
+            node,
             search_text,
             search_text_range: doc.lsp_range_from_bytes(first_byte, first_byte + search_text.len()),
-            first_byte,
         })
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct SearchSpec<'a> {
-    block: lsp_types::Range,
-    first_byte: usize,
+    node: type_sitter::UntypedNode<'a>,
     search_text_range: lsp_types::Range,
     search_text: &'a str,
 }
