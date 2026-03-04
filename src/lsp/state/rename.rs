@@ -2,7 +2,6 @@ use derive_more::derive::{Display, Error};
 use itertools::Itertools;
 use lsp_types::{TextEdit, Uri, WorkspaceEdit};
 use std::collections::HashMap;
-use util::testing::Compact;
 
 impl From<RenameError> for lsp_server::ResponseError {
     fn from(value: RenameError) -> Self {

@@ -5,7 +5,7 @@ use crate::lsp::{
 use derive_more::derive::{Display, Error};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
-use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
+use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use mini_milc::Cached;
 use tap::Tap as _;
 

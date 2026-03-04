@@ -5,21 +5,16 @@ use crate::lsp::{
 use derive_more::derive::{Deref, Into};
 use enumflags2::{bitflags, BitFlags};
 use ink_document::InkDocument;
-use lsp_types::Uri;
 use mini_milc::{Db, Old, Subquery, Updated};
-use std::{borrow::Cow, collections::HashMap, hint::unreachable_unchecked};
+use std::{collections::HashMap, hint::unreachable_unchecked};
 use tree_traversal::Visitor;
 use type_sitter::Node;
 use util::{nonempty::Vec1, vec1};
 
 impl Subquery<Ops, NodeInfos> for node_infos {
     fn value(&self, db: &impl Db<Ops>, old: Old<NodeInfos>) -> Updated<NodeInfos> {
-        let doc_ids = db.doc_ids();
-        let uri = doc_ids
-            .get(self.docid)
-            .expect("We docid should only exist when URI exsists.");
         let doc = db.document(self.docid);
-        let new = Vstr::new(uri, &doc).traverse(doc.root());
+        let new = Vstr::new(&doc).traverse(doc.root());
         old.update(new)
     }
 }
@@ -269,7 +264,6 @@ type Usages<'a> = HashMap<IdentRange, (&'a str, bool)>;
 
 #[derive(Debug)]
 struct Vstr<'a> {
-    uri: &'a Uri,
     doc: &'a InkDocument,
     ink: Scope<'a>,
     knot: Option<Scope<'a>>,
@@ -298,9 +292,8 @@ impl<'a> Vstr<'a> {
 }
 
 impl<'a> Vstr<'a> {
-    fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
+    fn new(doc: &'a InkDocument) -> Self {
         Self {
-            uri,
             doc,
             ink: Scope::new(TextRange::from(doc.lsp_range(doc.root().range()))),
             knot: None,
@@ -665,7 +658,6 @@ mod tests {
     use super::*;
     use assert2::check;
     use indoc::indoc;
-    use std::str::FromStr as _;
 
     #[test]
     fn temps_are_only_visible_in_their_defining_scope() {
@@ -703,8 +695,7 @@ mod tests {
         "};
         let doc = InkDocument::new(text.to_string(), None);
 
-        let uri = Uri::from_str("file:///main.ink").unwrap();
-        let mut vstr = Vstr::new(&uri, &doc);
+        let mut vstr = Vstr::new(&doc);
         let infos = vstr.traverse(doc.root());
         let (defs, refs) = def_ref_annotations(text);
 
@@ -740,8 +731,7 @@ mod tests {
         "};
         let doc = InkDocument::new(text.to_string(), None);
 
-        let uri = Uri::from_str("file:///main.ink").unwrap();
-        let mut vstr = Vstr::new(&uri, &doc);
+        let mut vstr = Vstr::new(&doc);
         let infos = vstr.traverse(doc.root());
         let (defs, refs) = def_ref_annotations(text);
 
@@ -789,8 +779,7 @@ mod tests {
         "};
         let doc = InkDocument::new(text.to_string(), None);
 
-        let uri = Uri::from_str("file:///main.ink").unwrap();
-        let mut vstr = Vstr::new(&uri, &doc);
+        let mut vstr = Vstr::new(&doc);
         let infos = vstr.traverse(doc.root());
         let (defs, refs) = def_ref_annotations(text);
 
@@ -831,8 +820,7 @@ mod tests {
         "};
         let doc = InkDocument::new(text.to_string(), None);
 
-        let uri = Uri::from_str("file:///main.ink").unwrap();
-        let mut vstr = Vstr::new(&uri, &doc);
+        let mut vstr = Vstr::new(&doc);
         let infos = vstr.traverse(doc.root());
 
         // Just a quick glance at whether they are there. Let's trust that the locations, node types etc. are correct.

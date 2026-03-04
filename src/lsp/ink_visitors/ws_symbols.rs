@@ -3,7 +3,6 @@ use std::ops::Deref;
 use ink_document::InkDocument;
 use ink_syntax::{AllNamed, GlobalKeyword};
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSymbol};
-use tap::TapOptional;
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKindCause, Node};
 
