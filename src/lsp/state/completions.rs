@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use lsp_types::{CompletionItem, Position, Uri};
 use std::ops::Bound;
 use tree_traversal::TreeTraversal;
@@ -20,18 +21,19 @@ impl super::State {
         let node_info = self.db.node_infos(this_doc);
 
         let mut block = spec.block;
-        let mut result_ranges = Vec::new();
+        let mut completions = Vec::new();
 
         // SMELL: We're repeating the name resolution logic here.
 
         // From innermost block: locals + temps
-        for (name, range) in node_info
-            .temps_in_scope(block)
-            .chain(node_info.locals_in_scope(block))
-        {
+        let innermost = std::iter::chain(
+            node_info.temps_in_scope(block),
+            node_info.locals_in_scope(block),
+        );
+        for (name, range) in innermost {
             if name.contains(spec.search_text) {
                 let item = self.completion(this_doc, name, range, spec.search_text_range);
-                result_ranges.push(item);
+                completions.push(item);
             }
         }
 
@@ -43,7 +45,7 @@ impl super::State {
             for (name, range) in node_info.locals_in_scope(parent) {
                 if name.contains(spec.search_text) {
                     let item = self.completion(this_doc, name, range, spec.search_text_range);
-                    result_ranges.push(item);
+                    completions.push(item);
                 }
             }
             block = parent.into();
@@ -55,12 +57,12 @@ impl super::State {
             for (name, range) in ginfos.iter_globals() {
                 if name.contains(spec.search_text) {
                     let item = self.completion(gid, name, range, spec.search_text_range);
-                    result_ranges.push(item);
+                    completions.push(item);
                 }
             }
         }
 
-        Ok(Some(result_ranges))
+        Ok(Some(completions))
     }
 
     fn completion(
@@ -165,6 +167,17 @@ impl super::State {
 
         let mut node = doc.root().upcast();
         let mut block = None;
+        // HACK: If at end of line, go one to the left (otherwise we don't find text nodes)
+        let mut adjusted_cursor = cursor;
+        if doc
+            .text(cursor..)
+            .chars()
+            .skip_while(|it| it.is_whitespace() && *it != '\n')
+            .next()
+            .is_none_or(|it| it == '\n')
+        {
+            adjusted_cursor -= 1;
+        }
         loop {
             // We don’t complete text, so if we can determine that we’re definitely not in
             // code, we can just abort.
@@ -174,8 +187,8 @@ impl super::State {
             if let Ok(it) = node.downcast::<ink_syntax::ScopeBlock>() {
                 block = Some(it);
             }
-            node = match node.first_child_for_byte(cursor) {
-                Some(node) if node.byte_range().contains(&cursor) => node,
+            node = match node.first_child_for_byte(adjusted_cursor) {
+                Some(node) if node.byte_range().contains(&adjusted_cursor) => node,
                 _ => break,
             };
         }
@@ -229,13 +242,13 @@ mod tests {
         }
 
         macro_rules! search_text {
-            ($name:ident, $text:literal, |$actual:ident| $expectation:expr) => {
+            ($name:ident, $text:expr, |$actual:ident| $expectation:expr) => {
                 #[test]
                 fn $name() {
                     do_test($text, |$actual| $expectation);
                 }
             };
-            ($name:ident, $text:literal, $expectation:literal) => {
+            ($name:ident, $text:expr, $expectation:literal) => {
                 #[test]
                 fn $name() {
                     do_test($text, |it| {
@@ -247,7 +260,7 @@ mod tests {
                     });
                 }
             };
-            ($name:ident, $text:literal, $expectation:expr) => {
+            ($name:ident, $text:expr, $expectation:expr) => {
                 #[test]
                 fn $name() {
                     do_test($text, |it| {
@@ -282,6 +295,33 @@ mod tests {
 
         search_text!(inside_normal_text, "Just@ text.", None);
         search_text!(inside_normal_text_space, "Just @ text.", None);
+        // These next ones are a bit tricky, so we have slightly more paranoid tests. The
+        // reason is that, basically, tree-sitter (or our ink-grammar) behaves a little
+        // weird at the end of the line when it comes to finding text nodes.
+        search_text!(
+            inside_normal_text_eol,
+            indoc! {"
+            == Knot
+            This is just text, nothing to complet@
+            "},
+            None
+        );
+        search_text!(
+            inside_normal_text_eol_space,
+            indoc! {"
+            == Knot
+            This is just text, nothing to complet  @  
+            "},
+            None
+        );
+        search_text!(
+            inside_normal_text_sol,
+            indoc! {"
+            == Knot
+            @Neither does it do anything at the start of the line.
+            "},
+            None
+        );
 
         search_text!(dont_complete_numbers, "{1.2@}", None);
         search_text!(
