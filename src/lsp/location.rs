@@ -45,8 +45,8 @@ impl Location {
 // We mimic some basic LSP types to get around the orphan rule, and to implement our own, more compact Debug/Display
 #[derive(Clone, PartialEq, Eq, Hash, Copy)]
 pub struct TextRange {
-    start: TextPos,
-    end: TextPos,
+    pub start: TextPos,
+    pub end: TextPos,
 }
 
 impl PartialEq<lsp_types::Range> for TextRange {

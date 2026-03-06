@@ -194,6 +194,8 @@ pub enum NodeFlag {
     Usage,
     Redirect,
     Call,
+    /// Other information
+    HasParams,
 }
 
 /// Definitions are a bit special (you can only find usages when you have an actual
@@ -351,12 +353,16 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Names ***/
             Knot(knot) => {
                 let range = self.range(knot.name());
-                let kind = if knot.function().is_some() {
-                    NodeFlag::Function
+                let mut kind = NodeFlag::Definition | NodeFlag::Global;
+                if knot.function().is_some() {
+                    kind |= NodeFlag::Function
                 } else {
-                    NodeFlag::Knot
+                    kind |= NodeFlag::Knot
                 };
-                state.add_node_kind(range, NodeFlag::Definition | NodeFlag::Global | kind);
+                if knot.params().is_some() {
+                    kind |= NodeFlag::HasParams;
+                }
+                state.add_node_kind(range, kind);
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(knot.name());
@@ -373,6 +379,9 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 self.current_scope_mut().name = name;
 
                 let mut kind = NodeFlag::Definition | NodeFlag::Global | NodeFlag::Stitch;
+                if stitch.params().is_some() {
+                    kind |= NodeFlag::HasParams;
+                }
 
                 if let Some(knot) = self.knot.as_mut() {
                     // If we are inside a knot block, add our name to its locals …
@@ -475,7 +484,11 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Globals ***/
             External(ext) => {
                 let range = self.range(ext.name());
-                let kind = NodeFlag::Definition | NodeFlag::Function | NodeFlag::External;
+                let mut kind = NodeFlag::Definition | NodeFlag::Function | NodeFlag::External;
+                if ext.params().is_ok() {
+                    kind |= NodeFlag::HasParams;
+                }
+
                 state.add_node_kind(range, kind);
                 state.add_global(self.doc.node_text(ext.name()), range);
                 Descend

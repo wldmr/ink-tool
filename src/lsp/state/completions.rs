@@ -1,4 +1,5 @@
-use crate::lsp::location::TextRange;
+use crate::lsp::{location::TextRange, salsa::NodeFlag};
+use enumflags2::BitFlags;
 use lsp_types::{CompletionItem, Position, Uri};
 use std::ops::Bound;
 use tree_traversal::TreeTraversal;
@@ -75,46 +76,79 @@ impl super::State {
         spec: &SearchSpec,
     ) -> CompletionItem {
         let infos = self.db.node_infos(docid);
-        use lsp_types::CompletionItemKind;
+        use lsp_types::{CompletionItemKind, CompletionTextEdit, TextEdit};
         use salsa::NodeFlag;
 
         // Poor man’s match statement for bitflags. I know a macro is a bit silly, but the
         // if-else-if is quite noisy and obscures the mapping.
-        macro_rules! map_flags {
-            ($flags:expr, $(($a:path, $b:path)),+ $(,)?) => {{
+        macro_rules! match_flags {
+            ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+ } ) => {{
                 let it = $flags;
                 $( if it.contains($a) { Some($b) } else )* { None }
             }};
         }
 
+        let flags = infos.flags(range);
+        let params = self.find_params(flags, docid, range);
+
         CompletionItem {
             label: text.to_string(),
 
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: spec.search_text_range.into(),
+                new_text: if let Some(params) = &params {
+                    format!("{text}{params}")
+                } else {
+                    format!("{text}")
+                },
+            })),
+
             label_details: Some(lsp_types::CompletionItemLabelDetails {
-                detail: None,
+                detail: params,
                 description: Some(self.db.short_path(docid).clone()),
             }),
 
-            kind: map_flags![
-                infos.flags(range),
-                (NodeFlag::Function, CompletionItemKind::FUNCTION),
-                (NodeFlag::Knot, CompletionItemKind::CLASS),
-                (NodeFlag::Stitch, CompletionItemKind::METHOD),
-                (NodeFlag::Label, CompletionItemKind::FIELD),
-                (NodeFlag::External, CompletionItemKind::INTERFACE),
-                (NodeFlag::ListItem, CompletionItemKind::ENUM_MEMBER),
-                (NodeFlag::List, CompletionItemKind::ENUM),
-                (NodeFlag::Const, CompletionItemKind::CONSTANT),
-                (NodeFlag::Var, CompletionItemKind::VARIABLE),
-            ],
-
-            text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                range: spec.search_text_range.into(),
-                new_text: text.to_string(),
-            })),
+            kind: match_flags!(match (flags) {
+                NodeFlag::Function => CompletionItemKind::FUNCTION,
+                NodeFlag::Knot => CompletionItemKind::CLASS,
+                NodeFlag::Stitch => CompletionItemKind::METHOD,
+                NodeFlag::Label => CompletionItemKind::FIELD,
+                NodeFlag::External => CompletionItemKind::INTERFACE,
+                NodeFlag::ListItem => CompletionItemKind::ENUM_MEMBER,
+                NodeFlag::List => CompletionItemKind::ENUM,
+                NodeFlag::Const => CompletionItemKind::CONSTANT,
+                NodeFlag::Var => CompletionItemKind::VARIABLE,
+            }),
 
             ..lsp_types::CompletionItem::default()
         }
+    }
+
+    fn find_params(
+        &self,
+        flags: BitFlags<NodeFlag>,
+        docid: DocId,
+        range: TextRange,
+    ) -> Option<String> {
+        if !flags.contains(NodeFlag::HasParams) {
+            return None;
+        }
+        let doc = self.db.document(docid);
+        let bytes = doc.byte_range(range.into());
+        if let Some(mut node) = doc
+            .root()
+            .named_descendant_for_byte_range(bytes.start, bytes.end)
+        {
+            while let Some(next) = node.next_named_sibling() {
+                if let Ok(param) = next.downcast::<ink_syntax::Params>() {
+                    return Some(doc.text(param.start_byte()..param.end_byte()).to_string());
+                }
+                node = next;
+            }
+        }
+        let path = &*self.db.short_path(docid);
+        log::warn!("Couldn't find params for {path}:{range}, although the flags indicate there should be some.");
+        None
     }
 
     fn what_to_search_for<'a>(
