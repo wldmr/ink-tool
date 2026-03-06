@@ -24,6 +24,7 @@ composite_query!({
     pub impl Ops<OpsV, InkGetters> {
         // === Inputs ===
         fn document(id: DocId) -> InkDocument;
+
         fn doc_ids() -> DocIds;
         fn opened_docs() -> HashSet<DocId>;
 
@@ -35,6 +36,11 @@ composite_query!({
         fn node_infos(docid: DocId) -> NodeInfos;
         fn definition_of(docid: DocId, range: IdentRange) -> Vec<(DocId, DefRange)>;
         fn usages_of(docid: DocId, range: DefRange) -> Vec<(DocId, IdentRange)>;
+
+        /// The longest prefix that all Uris share
+        fn common_path_prefix() -> String;
+        /// The path without the common prefix
+        fn short_path(id: DocId) -> String;
     }
 });
 
@@ -42,6 +48,27 @@ composite_query!({
 subquery!(Ops, document, InkDocument);
 subquery!(Ops, doc_ids, DocIds);
 subquery!(Ops, opened_docs, HashSet<DocId>);
+
+subquery!(Ops, common_path_prefix, String, |self, db| {
+    db.doc_ids()
+        .values()
+        .map(|it| it.path().to_string())
+        .reduce(|a, b| {
+            a.chars()
+                .zip(b.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| a)
+                .collect()
+        })
+        .unwrap_or_default()
+});
+
+subquery!(Ops, short_path, String, |self, db| {
+    let prefix = db.common_path_prefix().len();
+    let ids = db.doc_ids();
+    let path = ids.get(self.id).expect("Id implies URI").path().as_str();
+    path[prefix..].to_string()
+});
 
 subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
     let mut result = Vec::new();

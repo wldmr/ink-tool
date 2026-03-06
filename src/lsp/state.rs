@@ -57,18 +57,9 @@ impl State {
     }
 
     pub fn common_file_prefix(&self) -> String {
-        // TODO: Perfect candite for caching
-        self.uris()
-            .into_iter()
-            .map(|it| it.path().to_string())
-            .reduce(|acc, next| {
-                acc.chars()
-                    .zip(next.chars())
-                    .take_while(|(a, b)| a == b)
-                    .map(|(a, _)| a)
-                    .collect::<String>()
-            })
-            .unwrap_or_default()
+        self.db
+            .common_path_prefix()
+            .clone()
             .tap(|it| log::debug!("Common file name prefix: `{it}``"))
     }
 
