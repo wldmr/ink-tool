@@ -7,7 +7,6 @@ use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
         doc_symbols::document_symbols as get_document_symbols,
-        names::{self, Meta},
         ws_symbols::from_doc as get_workspace_symbols,
     },
 };
@@ -15,19 +14,17 @@ use composition::composite_query;
 use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
-use std::collections::{HashMap, HashSet};
-use subqueries::node_info::{DefRange, IdentRange, NodeInfos};
+use std::collections::HashSet;
+pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
-
-type Names = Vec<(String, Meta)>;
-type WorkspaceNames = HashMap<String, Vec<(DocId, Meta)>>;
 
 composite_query!({
     pub impl Ops<OpsV, InkGetters> {
         // === Inputs ===
         fn document(id: DocId) -> InkDocument;
+
         fn doc_ids() -> DocIds;
         fn opened_docs() -> HashSet<DocId>;
 
@@ -36,12 +33,14 @@ composite_query!({
         fn workspace_symbols(id: DocId) -> Vec<WorkspaceSymbol>;
 
         // === Intermediate Queries ===
-        fn document_names(id: DocId) -> Names; // TODO: Remove this and workspace_names in favor of `definitions`
-        fn workspace_names() -> WorkspaceNames;
-
         fn node_infos(docid: DocId) -> NodeInfos;
         fn definition_of(docid: DocId, range: IdentRange) -> Vec<(DocId, DefRange)>;
         fn usages_of(docid: DocId, range: DefRange) -> Vec<(DocId, IdentRange)>;
+
+        /// The longest prefix that all Uris share
+        fn common_path_prefix() -> String;
+        /// The path without the common prefix
+        fn short_path(id: DocId) -> String;
     }
 });
 
@@ -50,8 +49,25 @@ subquery!(Ops, document, InkDocument);
 subquery!(Ops, doc_ids, DocIds);
 subquery!(Ops, opened_docs, HashSet<DocId>);
 
-subquery!(Ops, document_names, Names, |self, db| {
-    names::document_names(&db.document(self.id))
+subquery!(Ops, common_path_prefix, String, |self, db| {
+    db.doc_ids()
+        .values()
+        .map(|it| it.path().to_string())
+        .reduce(|a, b| {
+            a.chars()
+                .zip(b.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| a)
+                .collect()
+        })
+        .unwrap_or_default()
+});
+
+subquery!(Ops, short_path, String, |self, db| {
+    let prefix = db.common_path_prefix().len();
+    let ids = db.doc_ids();
+    let path = ids.get(self.id).expect("Id implies URI").path().as_str();
+    path[prefix..].to_string()
 });
 
 subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
@@ -99,18 +115,6 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
     }
 
     result
-});
-
-subquery!(Ops, workspace_names, WorkspaceNames, |self, db| {
-    let mut names = WorkspaceNames::new();
-    // liberally clone the things, because we don’t expect many global name clashes
-    // (that is, we will mostly encounter each string once and must clone anyway).
-    for id in db.doc_ids().ids() {
-        for (name, meta) in db.document_names(id).iter().cloned() {
-            names.entry(name).or_default().push((id, meta));
-        }
-    }
-    names
 });
 
 subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {

@@ -5,10 +5,11 @@ use crate::lsp::{
 use derive_more::derive::{Display, Error};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
-use lsp_types::{CompletionItem, DocumentSymbol, Position, Uri, WorkspaceSymbol};
+use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
 use mini_milc::Cached;
 use tap::Tap as _;
 
+mod completions;
 mod goto_definition;
 mod goto_references;
 mod rename;
@@ -56,18 +57,9 @@ impl State {
     }
 
     pub fn common_file_prefix(&self) -> String {
-        // TODO: Perfect candite for caching
-        self.uris()
-            .into_iter()
-            .map(|it| it.path().to_string())
-            .reduce(|acc, next| {
-                acc.chars()
-                    .zip(next.chars())
-                    .take_while(|(a, b)| a == b)
-                    .map(|(a, _)| a)
-                    .collect::<String>()
-            })
-            .unwrap_or_default()
+        self.db
+            .common_path_prefix()
+            .clone()
             .tap(|it| log::debug!("Common file name prefix: `{it}``"))
     }
 
@@ -144,89 +136,6 @@ impl State {
             }
         }
         syms
-    }
-
-    pub fn completions(
-        &self,
-        uri: &Uri,
-        position: Position,
-    ) -> Result<Option<Vec<CompletionItem>>, DocumentNotFound> {
-        let (doc, this_doc) = self.get_doc_and_id(uri)?;
-
-        let Some(usage) = doc.usage_at(position) else {
-            return Ok(Default::default());
-        };
-
-        let ws_names = self.db.workspace_names();
-        use ink_document::ids::DefinitionInfo::*;
-        use lsp_types::CompletionItemKind;
-        Ok(Some(
-            ws_names
-                .iter()
-                .filter(|(key, _)| key.contains(usage.term))
-                .flat_map(|(key, metas)| metas.iter().map(move |meta| (key, meta)))
-                .filter(|(_, (docid, meta))| {
-                    meta.is_global() || (*docid == this_doc && meta.is_locally_visible_at(position))
-                })
-                .map(|(key, (_, meta))| lsp_types::CompletionItem {
-                    label: key.clone(),
-                    label_details: None,
-                    kind: Some(match meta.id.info() {
-                        Section { .. } => CompletionItemKind::MODULE,
-                        Subsection { .. } => CompletionItemKind::CLASS,
-                        Function => CompletionItemKind::FUNCTION,
-                        External => CompletionItemKind::INTERFACE,
-                        Var => CompletionItemKind::VARIABLE, // TODO: Differentiate between VAR and CONST
-                        Const => CompletionItemKind::CONSTANT, // TODO: Differentiate between VAR and CONST
-                        List => CompletionItemKind::ENUM,
-                        ListItem { .. } => CompletionItemKind::ENUM_MEMBER,
-                        Label => CompletionItemKind::PROPERTY,
-                        Param { .. } => CompletionItemKind::VARIABLE,
-                        Temp => CompletionItemKind::UNIT,
-                    }),
-                    // TODO: Fetch actual definition
-                    detail: Some(match meta.id.info() {
-                        Section { stitch, params } => {
-                            format!(
-                                "{} {key}{}",
-                                if stitch { "=" } else { "==" },
-                                if params { "(…)" } else { "" }
-                            )
-                        }
-                        Subsection { params, .. } => {
-                            format!("= {key}{}", if params { "(…)" } else { "" })
-                        }
-                        Function => format!("== function {key}(…)"),
-                        External => format!("EXTERNAL {key}(…)"),
-                        Var => format!("VAR {key} = …"),
-                        Const => format!("CONST {key} = …"),
-                        List => format!("LIST {key} = …"),
-                        ListItem { .. } => format!("LIST … = … {key}, "),
-                        Label => format!("({key}) // label"),
-                        Param { .. } => format!("param // parameter"),
-                        Temp => format!("~ temp {key} = …"),
-                    }),
-                    // TODO: Fetch actual docs
-                    documentation: None,
-                    deprecated: None,
-                    preselect: None,
-                    sort_text: None,
-                    filter_text: None,
-                    insert_text: None,
-                    insert_text_format: None,
-                    insert_text_mode: None,
-                    text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                        range: usage.range,
-                        new_text: key.to_owned(),
-                    })),
-                    additional_text_edits: None,
-                    command: None,
-                    commit_characters: None,
-                    data: None,
-                    tags: None,
-                })
-                .collect(),
-        ))
     }
 
     #[cfg(test)]
@@ -309,7 +218,7 @@ mod tests {
         <Uri as std::str::FromStr>::from_str(&format!("file://tmp/{name}")).unwrap()
     }
 
-    fn text_with_caret(input: &str) -> (String, lsp_types::Position) {
+    pub(super) fn text_with_caret(input: &str) -> (String, lsp_types::Position) {
         let mut row = 0;
         let mut col = 0;
         for (idx, chr) in input.char_indices() {
@@ -330,40 +239,5 @@ mod tests {
             }
         }
         panic!("There should have been an '@' in there somewhere.");
-    }
-
-    mod completions {
-        use super::{tests::text_with_caret, uri};
-        use itertools::Itertools;
-        use pretty_assertions::assert_eq;
-
-        #[test]
-        fn state() {
-            let mut state = super::new_state();
-            state.edit(
-                uri("context.ink"),
-                "
-                VAR some_var = true
-
-                == one
-                text
-
-                == two
-                text
-            ",
-            );
-            let (contents, caret) = text_with_caret("{o@}");
-            let uri = uri("test.ink");
-            state.edit(uri.clone(), contents);
-            let completions = state.completions(&uri, caret).unwrap().unwrap();
-            assert_eq!(
-                completions
-                    .into_iter()
-                    .map(|it| it.label)
-                    .sorted_unstable()
-                    .collect::<Vec<_>>(),
-                vec!["one", "some_var", "two"]
-            );
-        }
     }
 }
