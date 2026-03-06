@@ -7,6 +7,7 @@ use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
         doc_symbols::document_symbols as get_document_symbols,
+        parse_errors::{parse_errors, ParseErrors},
         ws_symbols::from_doc as get_workspace_symbols,
     },
 };
@@ -16,7 +17,6 @@ use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
 pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
-pub use subqueries::parse_errors::ParseErrors;
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -129,6 +129,11 @@ subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
 
 subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {
     get_document_symbols(&db.document(self.id))
+});
+
+subquery!(Ops, parse_errors, ParseErrors, |self, db| {
+    let doc = db.document(self.docid);
+    parse_errors(&doc)
 });
 
 pub trait InkSetters: Db<Ops> {

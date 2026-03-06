@@ -1,19 +1,15 @@
-use crate::lsp::salsa::{parse_errors, InkGetters as _, Ops};
 use ink_document::InkDocument;
 use ink_syntax::AllNamed;
 use lsp_types::{Diagnostic, DiagnosticSeverity};
-use mini_milc::subquery;
 use std::hint::unreachable_unchecked;
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKind, Node};
 
 pub type ParseErrors = Vec<Diagnostic>;
 
-subquery!(Ops, parse_errors, ParseErrors, |self, db| {
-    let doc = db.document(self.docid);
-    let root = doc.root();
-    ParseErrorsVisitor::new(&doc).traverse(root)
-});
+pub fn parse_errors(doc: &InkDocument) -> Vec<Diagnostic> {
+    ParseErrorsVisitor::new(doc).traverse(doc.root())
+}
 
 struct ParseErrorsVisitor<'a> {
     doc: &'a InkDocument,

@@ -128,7 +128,7 @@ impl TextRange {
 #[derive(Debug, Display, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 #[debug("{}:{}⁰", line, character)] // (we add a little superscript to remind ourselves that this 0 based)
 #[display("{}:{}", line + 1, character + 1)]
-pub(crate) struct TextPos {
+pub struct TextPos {
     line: u32,
     character: u32,
 }
