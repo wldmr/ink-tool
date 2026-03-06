@@ -15,7 +15,7 @@ use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
-use subqueries::node_info::{DefRange, IdentRange, NodeInfos};
+pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;

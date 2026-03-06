@@ -82,6 +82,10 @@ impl NodeInfos {
             };
         iter
     }
+
+    pub fn flags(&self, range: impl Into<TextRange>) -> BitFlags<NodeFlag> {
+        self.flags.get(&range.into()).copied().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -110,7 +114,7 @@ pub struct NodeInfos {
     unresolved_range_by_name: HashMap<String, Vec1<IdentRange>>,
     unresolved_name_by_range: HashMap<IdentRange, Vec1<String>>,
 
-    node_kind: HashMap<TextRange, BitFlags<NodeKind>>,
+    flags: HashMap<TextRange, BitFlags<NodeFlag>>,
 }
 
 // Private helpers
@@ -160,15 +164,15 @@ impl NodeInfos {
         }
     }
 
-    fn add_node_kind(&mut self, range: TextRange, kind: impl Into<BitFlags<NodeKind>>) {
-        self.node_kind.entry(range).or_default().insert(kind);
+    fn add_node_kind(&mut self, range: TextRange, kind: impl Into<BitFlags<NodeFlag>>) {
+        self.flags.entry(range).or_default().insert(kind);
     }
 }
 
 #[bitflags]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeKind {
+pub enum NodeFlag {
     /// Blocks
     Block,
     Global,
@@ -326,7 +330,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Scopes ***/
             KnotBlock(knot_block) => {
                 let range = self.range(knot_block);
-                state.add_node_kind(range, NodeKind::Knot | NodeKind::Block | NodeKind::Global);
+                state.add_node_kind(range, NodeFlag::Knot | NodeFlag::Block | NodeFlag::Global);
                 state.parent_scope.insert(range, self.current_scope().range);
                 self.knot = Some(Scope::new(range));
                 Descend
@@ -334,11 +338,11 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             StitchBlock(stitch_block) => {
                 let range = self.range(stitch_block);
                 let visibility = if self.knot.is_some() {
-                    NodeKind::Local
+                    NodeFlag::Local
                 } else {
-                    NodeKind::Global
+                    NodeFlag::Global
                 };
-                state.add_node_kind(range, NodeKind::Stitch | NodeKind::Block | visibility);
+                state.add_node_kind(range, NodeFlag::Stitch | NodeFlag::Block | visibility);
                 state.parent_scope.insert(range, self.current_scope().range);
                 self.stitch = Some(Scope::new(range));
                 Descend
@@ -348,11 +352,11 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Knot(knot) => {
                 let range = self.range(knot.name());
                 let kind = if knot.function().is_some() {
-                    NodeKind::Function
+                    NodeFlag::Function
                 } else {
-                    NodeKind::Knot
+                    NodeFlag::Knot
                 };
-                state.add_node_kind(range, NodeKind::Definition | NodeKind::Global | kind);
+                state.add_node_kind(range, NodeFlag::Definition | NodeFlag::Global | kind);
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(knot.name());
@@ -368,12 +372,12 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 let name = self.doc.node_text(stitch.name());
                 self.current_scope_mut().name = name;
 
-                let mut kind = NodeKind::Definition | NodeKind::Global | NodeKind::Stitch;
+                let mut kind = NodeFlag::Definition | NodeFlag::Global | NodeFlag::Stitch;
 
                 if let Some(knot) = self.knot.as_mut() {
                     // If we are inside a knot block, add our name to its locals …
                     knot.add_local(name, range);
-                    kind |= NodeKind::Local;
+                    kind |= NodeFlag::Local;
                     state.add_global(format!("{knot}.{name}"), range);
                 } else {
                     state.add_global(name, range);
@@ -384,7 +388,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             Label(label) => {
                 let range = self.range(label.name());
-                let mut kind = NodeKind::Definition | NodeKind::Global | NodeKind::Label;
+                let mut kind = NodeFlag::Definition | NodeFlag::Global | NodeFlag::Label;
                 state.parent_scope.insert(range, self.current_scope().range);
 
                 let name = self.doc.node_text(label.name());
@@ -394,12 +398,12 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                         state.add_global(name, range);
                     }
                     (None, Some(scope)) | (Some(scope), None) => {
-                        kind |= NodeKind::Local;
+                        kind |= NodeFlag::Local;
                         scope.add_local(name, range);
                         state.add_global(format!("{scope}.{name}"), range);
                     }
                     (Some(knot), Some(stitch)) => {
-                        kind |= NodeKind::Local;
+                        kind |= NodeFlag::Local;
                         // Basically, the stitch name is optional both inside the knot and globally.
                         knot.add_local(name, range);
                         knot.add_local(format!("{stitch}.{name}"), range);
@@ -417,7 +421,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     ink_syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
                 });
                 let range = self.range(name_node);
-                let kind = NodeKind::Definition | NodeKind::Local | NodeKind::Param;
+                let kind = NodeFlag::Definition | NodeFlag::Local | NodeFlag::Param;
                 state.add_node_kind(range, kind);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let param_name = self.doc.node_text(name_node);
@@ -427,7 +431,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             TempDef(temp) => {
                 let range = self.range(temp.name());
-                let kind = NodeKind::Definition | NodeKind::Local | NodeKind::Temp;
+                let kind = NodeFlag::Definition | NodeFlag::Local | NodeFlag::Temp;
                 state.add_node_kind(range, kind);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let temp_name = self.doc.node_text(temp.name());
@@ -454,10 +458,10 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             Identifier(identifier) | Expr(ink_syntax::Expr::Identifier(identifier)) => {
                 let range = self.range(identifier);
-                let mut kind = BitFlags::from(NodeKind::Usage);
-                kind.set(NodeKind::Call, self.call);
-                kind.set(NodeKind::Redirect, self.redirect);
-                kind.set(NodeKind::ListItem, self.listvalues);
+                let mut kind = BitFlags::from(NodeFlag::Usage);
+                kind.set(NodeFlag::Call, self.call);
+                kind.set(NodeFlag::Redirect, self.redirect);
+                kind.set(NodeFlag::ListItem, self.listvalues);
                 state.add_node_kind(range, kind);
                 let byte_range = self
                     .qname
@@ -471,7 +475,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Globals ***/
             External(ext) => {
                 let range = self.range(ext.name());
-                let kind = NodeKind::Definition | NodeKind::Function | NodeKind::External;
+                let kind = NodeFlag::Definition | NodeFlag::Function | NodeFlag::External;
                 state.add_node_kind(range, kind);
                 state.add_global(self.doc.node_text(ext.name()), range);
                 Descend
@@ -480,11 +484,11 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Global(global) => {
                 let range = self.range(global.name());
                 let keyword = if global.keyword().is_ok_and(|it| it.as_const().is_some()) {
-                    NodeKind::Const
+                    NodeFlag::Const
                 } else {
-                    NodeKind::Var
+                    NodeFlag::Var
                 };
-                state.add_node_kind(range, NodeKind::Definition | keyword);
+                state.add_node_kind(range, NodeFlag::Definition | keyword);
                 state.add_global(self.doc.node_text(global.name()), range);
                 Descend
             }
@@ -492,7 +496,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             List(list) => {
                 let list_name = self.doc.node_text(list.name());
                 let range = self.range(list.name());
-                state.add_node_kind(range, NodeKind::Definition | NodeKind::List);
+                state.add_node_kind(range, NodeFlag::Definition | NodeFlag::List);
                 self.list = Some((range, list_name));
                 state.add_global(list_name, range);
                 Descend
@@ -502,7 +506,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             ListValueDef(def) => {
                 let item_name = self.doc.node_text(def.name());
                 let range = self.range(def.name());
-                state.add_node_kind(range, NodeKind::Definition | NodeKind::ListItem);
+                state.add_node_kind(range, NodeFlag::Definition | NodeFlag::ListItem);
                 state.add_global(item_name, range);
                 if let Some((_range, list_name)) = self.list {
                     state.add_global(format!("{list_name}.{item_name}"), range);
