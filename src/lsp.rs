@@ -1,12 +1,16 @@
-use crate::AppResult;
+use crate::{
+    lsp::{idset::Id, salsa::InkGetters},
+    AppResult,
+};
 use futures::FutureExt as _;
 use line_index::WideEncoding;
 use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
 };
 use lsp_types::*;
+use mini_milc::{Db, Revision};
 use state::State;
-use std::{ops::Not, path::Path};
+use std::{collections::HashMap, ops::Not, path::Path, time::Duration};
 
 mod file_watching;
 mod http_server;
@@ -296,6 +300,67 @@ pub fn run_lsp() -> AppResult<()> {
     let shutdown_notification = shutdown_notification.map(|_| ());
     let http_handle = std::thread::spawn(|| http_server::start(http_state, shutdown_notification));
 
+    let diagnostic_state = state.clone();
+    let diagnostic_sender = client_connection.sender.clone();
+    let (shutdown_diag, shutdown_notification_diag) = std::sync::mpsc::channel();
+
+    let diagnostic_handle = std::thread::spawn(move || {
+        // keep track of when the diagnostics last changed, per file
+        let mut latest = HashMap::<Id<Uri>, Revision>::new();
+
+        loop {
+            static TIMEOUT: Duration = Duration::from_secs(1);
+
+            if let Ok(_) = shutdown_notification_diag.recv_timeout(TIMEOUT) {
+                log::debug!("Diagnostics thread received shutdown signal.");
+                break;
+            }
+
+            if let Ok(state) = diagnostic_state.lock() {
+                let docs = state.db.doc_ids();
+
+                for (docid, uri) in docs.pairs() {
+                    let errors_query = salsa::parse_errors { docid };
+                    let latest_diagnostics = state.db.get(errors_query);
+
+                    if let Some(rev) = state.db.changed_at(errors_query) {
+                        let old = latest.insert(docid, rev);
+                        if old.is_none_or(|it| it != rev) {
+                            static METHOD: &'static str = <lsp_types::notification::PublishDiagnostics as lsp_types::notification::Notification>::METHOD;
+                            let params = PublishDiagnosticsParams {
+                                uri: uri.clone(),
+                                diagnostics: latest_diagnostics.clone(),
+                                version: None,
+                            };
+                            let params = match serde_json::to_value(params) {
+                                Ok(ok) => ok,
+                                Err(err) => {
+                                    log::error!("Couldn't convert diagnostics to JSON: {err:?}");
+                                    continue;
+                                }
+                            };
+                            let notification = Message::Notification(Notification {
+                                method: METHOD.to_string(),
+                                params,
+                            });
+                            if let Err(err) = diagnostic_sender.send(notification) {
+                                log::error!("Notification error: {err:?}");
+                            } else {
+                                log::trace!(
+                                    "Sent updated parse errors for {}",
+                                    uri.path().as_str()
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                log::error!("Couldn't aquire state, aborting diagnostics");
+                break;
+            }
+        }
+    });
+
     // Ladies and gentlemen, the main loop:
     while let Ok(msg) = client_connection.receiver.recv() {
         if let Message::Request(ref req) = msg {
@@ -314,6 +379,7 @@ pub fn run_lsp() -> AppResult<()> {
     if let Err(_) = shutdown.send(()) {
         log::error!("shutdown signal failed ¯\\_(ツ)_/¯");
     };
+    _ = shutdown_diag.send(());
 
     // Shut down gracefully.
     if file_watcher.is_some() {
@@ -323,6 +389,9 @@ pub fn run_lsp() -> AppResult<()> {
 
     log::trace!("waiting for shutdown of view server");
     _ = http_handle.join();
+
+    log::trace!("waiting for shutdown of diagnostic thread");
+    _ = diagnostic_handle.join();
 
     log::trace!("dropping_client_connection");
     drop(client_connection);

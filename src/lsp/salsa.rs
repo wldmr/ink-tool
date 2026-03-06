@@ -16,6 +16,7 @@ use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
 pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
+pub use subqueries::parse_errors::ParseErrors;
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -41,6 +42,8 @@ composite_query!({
         fn common_path_prefix() -> String;
         /// The path without the common prefix
         fn short_path(id: DocId) -> String;
+
+        pub fn parse_errors(docid: DocId) -> ParseErrors;
     }
 });
 
