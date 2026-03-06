@@ -1,3 +1,4 @@
+use crate::lsp::location::TextRange;
 use lsp_types::{CompletionItem, Position, Uri};
 use std::ops::Bound;
 use tree_traversal::TreeTraversal;
@@ -33,7 +34,7 @@ impl super::State {
         );
         for (name, range) in innermost {
             if name.contains(spec.search_text) {
-                let item = self.completion(this_doc, name, range, spec.search_text_range);
+                let item = self.completion(this_doc, name, *range, &spec);
                 completions.push(item);
             }
         }
@@ -45,7 +46,7 @@ impl super::State {
             }
             for (name, range) in node_info.locals_in_scope(parent) {
                 if name.contains(spec.search_text) {
-                    let item = self.completion(this_doc, name, range, spec.search_text_range);
+                    let item = self.completion(this_doc, name, *range, &spec);
                     completions.push(item);
                 }
             }
@@ -57,7 +58,7 @@ impl super::State {
             let ginfos = self.db.node_infos(gid);
             for (name, range) in ginfos.iter_globals() {
                 if name.contains(spec.search_text) {
-                    let item = self.completion(gid, name, range, spec.search_text_range);
+                    let item = self.completion(gid, name, *range, &spec);
                     completions.push(item);
                 }
             }
@@ -68,35 +69,51 @@ impl super::State {
 
     fn completion(
         &self,
-        _docid: DocId,
+        docid: DocId,
         text: &str,
-        _range: impl Into<lsp_types::Range>,
-        edit_range: impl Into<lsp_types::Range>,
+        range: TextRange,
+        spec: &SearchSpec,
     ) -> CompletionItem {
+        let infos = self.db.node_infos(docid);
+        use lsp_types::CompletionItemKind;
+        use salsa::NodeFlag;
+
+        // Poor man’s match statement for bitflags. I know a macro is a bit silly, but the
+        // if-else-if is quite noisy and obscures the mapping.
+        macro_rules! map_flags {
+            ($flags:expr, $(($a:path, $b:path)),+ $(,)?) => {{
+                let it = $flags;
+                $( if it.contains($a) { Some($b) } else )* { None }
+            }};
+        }
+
         CompletionItem {
             label: text.to_string(),
-            label_details: None,
-            kind: None,
-            // TODO: Fetch actual definition
-            detail: None,
-            // TODO: Fetch actual docs
-            documentation: None,
-            deprecated: None,
-            preselect: None,
-            sort_text: None,
-            filter_text: None,
-            insert_text: None,
-            insert_text_format: None,
-            insert_text_mode: None,
+
+            label_details: Some(lsp_types::CompletionItemLabelDetails {
+                detail: None,
+                description: Some(self.db.short_path(docid).clone()),
+            }),
+
+            kind: map_flags![
+                infos.flags(range),
+                (NodeFlag::Function, CompletionItemKind::FUNCTION),
+                (NodeFlag::Knot, CompletionItemKind::CLASS),
+                (NodeFlag::Stitch, CompletionItemKind::METHOD),
+                (NodeFlag::Label, CompletionItemKind::FIELD),
+                (NodeFlag::External, CompletionItemKind::INTERFACE),
+                (NodeFlag::ListItem, CompletionItemKind::ENUM_MEMBER),
+                (NodeFlag::List, CompletionItemKind::ENUM),
+                (NodeFlag::Const, CompletionItemKind::CONSTANT),
+                (NodeFlag::Var, CompletionItemKind::VARIABLE),
+            ],
+
             text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                range: edit_range.into(),
+                range: spec.search_text_range.into(),
                 new_text: text.to_string(),
             })),
-            additional_text_edits: None,
-            command: None,
-            commit_characters: None,
-            data: None,
-            tags: None,
+
+            ..lsp_types::CompletionItem::default()
         }
     }
 
@@ -180,7 +197,9 @@ impl super::State {
         Some(SearchSpec {
             node,
             search_text,
-            search_text_range: doc.lsp_range_from_bytes(first_byte, first_byte + search_text.len()),
+            search_text_range: doc
+                .lsp_range_from_bytes(first_byte, first_byte + search_text.len())
+                .into(),
         })
     }
 }
@@ -188,7 +207,7 @@ impl super::State {
 #[derive(Debug, PartialEq, Eq)]
 struct SearchSpec<'a> {
     node: type_sitter::UntypedNode<'a>,
-    search_text_range: lsp_types::Range,
+    search_text_range: TextRange,
     search_text: &'a str,
 }
 

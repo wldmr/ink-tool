@@ -20,8 +20,8 @@ impl super::State {
 
         if let Some(usage) = doc.usage_at(from_position) {
             let def = self.db.definition_of(docid, usage.range.into());
-            for (docid, def) in def.iter().copied() {
-                let usages = self.db.usages_of(docid, def);
+            for (def_doc, def) in def.iter().copied() {
+                let usages = self.db.usages_of(def_doc, def);
                 references.extend(
                     usages
                         .iter()
