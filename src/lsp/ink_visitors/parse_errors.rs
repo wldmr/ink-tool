@@ -1,9 +1,8 @@
 use ink_document::InkDocument;
-use ink_syntax::AllNamed;
 use lsp_types::{Diagnostic, DiagnosticSeverity};
 use std::hint::unreachable_unchecked;
 use tree_traversal::{VisitInstruction, Visitor};
-use type_sitter::{IncorrectKind, Node};
+use type_sitter::{Node, UntypedNode};
 
 pub type ParseErrors = Vec<Diagnostic>;
 
@@ -21,55 +20,33 @@ impl<'a> ParseErrorsVisitor<'a> {
     }
 }
 
-impl<'a> Visitor<'a, AllNamed<'a>> for ParseErrorsVisitor<'a> {
+impl<'a> Visitor<'a, UntypedNode<'a>> for ParseErrorsVisitor<'a> {
     type State = ParseErrors;
 
     fn visit(
         &mut self,
-        node: AllNamed<'a>,
-        _state: &mut Self::State,
-    ) -> VisitInstruction<Self::State> {
-        use VisitInstruction::{Descend, Ignore};
-        if node.has_error() {
-            Descend
-        } else {
-            Ignore
-        }
-    }
-
-    fn visit_error_with_state(
-        &mut self,
-        err: IncorrectKind,
+        node: UntypedNode<'a>,
         state: &mut Self::State,
     ) -> VisitInstruction<Self::State> {
-        if err
-            .node
-            .raw()
-            .children(&mut err.node.raw().walk())
-            .any(|child| child.has_error())
-        {
-            return VisitInstruction::Descend;
+        use VisitInstruction::{Descend, Ignore};
+
+        if node.is_error() || node.is_missing() {
+            state.push(Diagnostic {
+                range: self.doc.lsp_range(node.range()),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some(String::from("ink-tool")),
+                // tree-sitter makes it very hard to be specific here, so we don't even try.
+                message: String::from("Syntax error"),
+                ..Diagnostic::default()
+            });
+            Ignore
+        } else if node.has_error() {
+            // One of our descendants is the actual error.
+            Descend
+        } else {
+            // No errors here, move on.
+            Ignore
         }
-
-        let mut diag = Diagnostic {
-            range: self.doc.lsp_range(err.node.range()),
-            severity: Some(DiagnosticSeverity::ERROR),
-            source: Some(String::from("ink-tool")),
-            message: String::from("Syntax error"),
-            ..Diagnostic::default()
-        };
-
-        match err.cause() {
-            type_sitter::IncorrectKindCause::Error => {}
-            type_sitter::IncorrectKindCause::Missing => {
-                diag.message = format!("Missing {}", err.actual_kind());
-            }
-            type_sitter::IncorrectKindCause::OtherKind(_) => return VisitInstruction::Descend,
-        };
-
-        state.push(diag);
-
-        VisitInstruction::Ignore
     }
 
     fn combine(_: &mut Self::State, _: Self::State) {
