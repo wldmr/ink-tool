@@ -39,9 +39,17 @@
 
 (label "(" @space.after.0 ")" @space.before.0) @space.before @space.after
 
-; Just leaving the eol as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
+; Just leaving the EOL as-is will bunch up multiple lines if the (eol) is followed by a formatter based line break.
 ; To get around this, we replace it by a formatting newline right away.
-(eol) @delete
+"EOL" @delete
+; HACK: We also need to delete these other anonymous non-zero markers, otherwise the indentation is off.
+; I couldn't quite figure out *why* that is the case, but this fixes it.
+[
+  "KNOT_BLOCK_START" "KNOT_BLOCK_END"
+  "STITCH_BLOCK_START" "STITCH_BLOCK_END"
+  "CHOICE_BLOCK_START" "CHOICE_BLOCK_END"
+  "GATHER_BLOCK_START" "GATHER_BLOCK_END"
+] @delete
 
 ;;; Normalize Knot/Stitch marks
 ((knot !function start_mark: _ @it @space.after) @break.after
