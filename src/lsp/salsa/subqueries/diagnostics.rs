@@ -25,19 +25,22 @@ fn find_unused(diags: &mut FileDiagnostics, db: &impl Db<Ops>, doc: &InkDocument
     let filter = node_infos.iter_definitions();
     for (range, flags) in filter {
         if db.usages_of(docid, range).len() <= 1 {
+            use NodeFlag::*;
             let kind = match_flags!(match (flags) {
-                NodeFlag::Function => "function",
-                NodeFlag::External => "external function",
-                NodeFlag::Knot => "knot",
-                NodeFlag::Stitch => "stitch",
-                NodeFlag::Label => "label",
-                NodeFlag::Temp => "temp",
-                NodeFlag::Param => "parameter",
-                NodeFlag::Var => "variable",
-                NodeFlag::Const => "constant",
-                NodeFlag::List => "list",
-                NodeFlag::ListItem => "list item",
-                _ => "definition",
+                // We don't consider external parameters unused, because EXTERNALs have no body anyway.
+                External | Param => continue,
+                External | Function => "external function",
+                Function => "function",
+                Knot => "knot",
+                Stitch => "stitch",
+                Label => "label",
+                Temp => "temporary variable",
+                Param => "parameter",
+                Var => "variable",
+                Const => "constant",
+                List => "list",
+                ListItem => "list item",
+                _ => "unknown kind of definition (this is a bug)",
             });
             let name = doc.text(doc.byte_range(range.into()));
             diags.push(lsp_types::Diagnostic {

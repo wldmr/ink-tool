@@ -313,6 +313,7 @@ struct Vstr<'a> {
     redirect: bool,
     /// is the current usage a listvalues query (`list_name ? (item.name)`)
     listvalues: bool,
+    external: bool,
 }
 
 impl<'a> Vstr<'a> {
@@ -342,6 +343,7 @@ impl<'a> Vstr<'a> {
             call: false,
             redirect: false,
             listvalues: false,
+            external: false,
         }
     }
 
@@ -463,12 +465,20 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     ink_syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
                 });
                 let range = self.range(name_node);
-                let kind = NodeFlag::Definition | NodeFlag::Local | NodeFlag::Param;
-                state.add_node_kind(range, kind);
-                state.parent_scope.insert(range, self.current_scope().range);
-                let param_name = self.doc.node_text(name_node);
-                self.current_scope_mut().add_local(param_name, range);
-                Descend
+                let kind =
+                    NodeFlag::Definition | NodeFlag::Usage | NodeFlag::Local | NodeFlag::Param;
+                if self.external {
+                    state.add_node_kind(range, kind | NodeFlag::External);
+                } else {
+                    state.add_node_kind(range, kind);
+                    let param_name = self.doc.node_text(name_node);
+                    let scope = self.current_scope_mut();
+                    // Externals don't define a scope so we only add params to the scope if we're not in an EXTERNAL.
+                    state.parent_scope.insert(range, scope.range);
+                    scope.add_local(param_name, range);
+                    scope.add_non_temp_usage(range, param_name);
+                }
+                Ignore // No need to descend, we've already recorded the usage.
             }
 
             TempDef(temp) => {
@@ -521,6 +531,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 if ext.params().is_ok() {
                     kind |= NodeFlag::HasParams;
                 }
+                self.external = true;
 
                 state.add_node_kind(range, kind);
                 state.add_global(self.doc.node_text(ext.name()), range);
@@ -693,6 +704,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Divert(_) | Tunnel(_) | Thread(_) => self.redirect = false,
             Call(_) => self.call = false,
             ListValues(_) => self.listvalues = false,
+            External(_) => self.external = false,
 
             _ => {}
         }
