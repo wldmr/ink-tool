@@ -86,7 +86,29 @@ impl NodeInfos {
     pub fn flags(&self, range: impl Into<TextRange>) -> BitFlags<NodeFlag> {
         self.flags.get(&range.into()).copied().unwrap_or_default()
     }
+
+    pub fn iter_flags(&self) -> impl Iterator<Item = (TextRange, BitFlags<NodeFlag>)> + use<'_> {
+        self.flags.iter().map(|(a, b)| (*a, *b))
+    }
+
+    pub fn iter_definitions(
+        &self,
+    ) -> impl Iterator<Item = (DefRange, BitFlags<NodeFlag>)> + use<'_> {
+        self.iter_flags()
+            .filter(|(_, flags)| flags.contains(NodeFlag::Definition))
+            .map(|(range, flags)| (DefRange(range), flags))
+    }
 }
+
+// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
+// if-else-if is quite noisy and obscures the mapping.
+macro_rules! match_flags {
+    ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+ } ) => {{
+        let it = $flags;
+        $( if it.contains($a) { Some($b) } else )* { None }
+    }};
+}
+pub(crate) use match_flags;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct NodeInfos {
@@ -637,6 +659,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     let resolved_locally = resolved_temps || resolved_locals;
 
                     // If we've not yet found anything, and the stitch is part of a knot, we look at its locals:
+                    // FIXME: This is wrong! Ink doesn't even resolve parent params!
                     if !resolved_locally {
                         if let Some(knot) = self.knot.as_mut() {
                             // NOTE: Not looking at parent's temps here, we can't see those.
