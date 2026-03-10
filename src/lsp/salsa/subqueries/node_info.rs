@@ -100,12 +100,23 @@ impl NodeInfos {
     }
 }
 
-// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
-// if-else-if is quite noisy and obscures the mapping.
+/// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
+/// if-else-if is quite noisy and obscures the mapping.
+///
+/// Has two versions, depending on whether the last branch is a catch-all branch
+/// (`_ => [expr]`):
+///
+/// 1.  If there is no catch-all branch, then return an `Option<…>`,
+/// 2.  if there is one, then return the plain type of the expressions.
 macro_rules! match_flags {
     ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+ } ) => {{
         let it = $flags;
         $( if it.contains($a) { Some($b) } else )* { None }
+    }};
+
+    ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+, _ => $fallback:expr $(,)? } ) => {{
+        let it = $flags;
+        $( if it.contains($a) { $b } else )* { $fallback }
     }};
 }
 pub(crate) use match_flags;

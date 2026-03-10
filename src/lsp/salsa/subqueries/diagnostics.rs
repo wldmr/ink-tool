@@ -37,8 +37,8 @@ fn find_unused(diags: &mut FileDiagnostics, db: &impl Db<Ops>, doc: &InkDocument
                 NodeFlag::Const => "constant",
                 NodeFlag::List => "list",
                 NodeFlag::ListItem => "list item",
-            })
-            .unwrap_or("definition");
+                _ => "definition",
+            });
             let name = doc.text(doc.byte_range(range.into()));
             diags.push(lsp_types::Diagnostic {
                 range: range.into(),
