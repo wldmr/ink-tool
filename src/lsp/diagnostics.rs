@@ -35,10 +35,10 @@ pub fn start(
             let docs = state.db.doc_ids();
 
             for (docid, uri) in docs.pairs() {
-                let errors_query = salsa::parse_errors { docid };
-                let latest_diagnostics = state.db.get(errors_query);
+                let diagnostics_query = salsa::file_diagnostics { docid };
+                let latest_diagnostics = state.db.get(diagnostics_query);
 
-                if let Some(rev) = state.db.changed_at(errors_query) {
+                if let Some(rev) = state.db.changed_at(diagnostics_query) {
                     let old = latest.insert(docid, rev);
                     if old.is_none_or(|it| it != rev) {
                         static METHOD: &'static str = <lsp_types::notification::PublishDiagnostics as lsp_types::notification::Notification>::METHOD;

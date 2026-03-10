@@ -4,8 +4,6 @@ use std::hint::unreachable_unchecked;
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{Node, UntypedNode};
 
-pub type ParseErrors = Vec<Diagnostic>;
-
 pub fn parse_errors(doc: &InkDocument) -> Vec<Diagnostic> {
     ParseErrorsVisitor::new(doc).traverse(doc.root())
 }
@@ -21,7 +19,7 @@ impl<'a> ParseErrorsVisitor<'a> {
 }
 
 impl<'a> Visitor<'a, UntypedNode<'a>> for ParseErrorsVisitor<'a> {
-    type State = ParseErrors;
+    type State = Vec<Diagnostic>;
 
     fn visit(
         &mut self,

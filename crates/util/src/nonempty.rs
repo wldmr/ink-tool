@@ -120,6 +120,10 @@ impl<T> Vec1<T> {
         self.try_single().ok()
     }
 
+    pub fn first(&self) -> &T {
+        &self.first
+    }
+
     pub fn try_single(&self) -> Result<&T, &Self> {
         if self.rest.is_empty() {
             Ok(&self.first)

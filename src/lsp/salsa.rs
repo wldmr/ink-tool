@@ -7,9 +7,9 @@ use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
         doc_symbols::document_symbols as get_document_symbols,
-        parse_errors::{parse_errors, ParseErrors},
         ws_symbols::from_doc as get_workspace_symbols,
     },
+    salsa::subqueries::diagnostics::FileDiagnostics,
 };
 use composition::composite_query;
 use ink_document::InkDocument;
@@ -43,7 +43,7 @@ composite_query!({
         /// The path without the common prefix
         fn short_path(id: DocId) -> String;
 
-        pub fn parse_errors(docid: DocId) -> ParseErrors;
+        pub fn file_diagnostics(docid: DocId) -> FileDiagnostics;
     }
 });
 
@@ -129,11 +129,6 @@ subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
 
 subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {
     get_document_symbols(&db.document(self.id))
-});
-
-subquery!(Ops, parse_errors, ParseErrors, |self, db| {
-    let doc = db.document(self.docid);
-    parse_errors(&doc)
 });
 
 pub trait InkSetters: Db<Ops> {
