@@ -27,7 +27,7 @@ tap = "1"
 test-case = "3.3.1"
 text-annotations = { path = "./crates/text-annotations" }
 tree-sitter = "0.25" # TODO: Stopgap measure? Ideally, we want this confined to the ink-document crate
-tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", rev = "962bf36"}
+tree-sitter-ink = { git = "https://github.com/wldmr/tree-sitter-ink.git", rev = "6106808"}
 tree-traversal = { path = "./crates/tree-traversal" }
 util = { path = "./crates/util" }
 walkdir = "2.5.0"

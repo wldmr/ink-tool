@@ -615,8 +615,8 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Paren(_) => Descend,
             Path(_) => Ignore,
             Postfix(_) => Descend,
-            Return(_) => Ignore,
-            String(_) => Ignore,
+            Return(_) => Descend,
+            String(_) => Descend, // because String interpolation/evaluation
             Tag(_) => Descend,
             Text(_) => Ignore,
             TodoComment(_) => Ignore,
