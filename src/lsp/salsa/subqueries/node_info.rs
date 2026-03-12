@@ -86,7 +86,40 @@ impl NodeInfos {
     pub fn flags(&self, range: impl Into<TextRange>) -> BitFlags<NodeFlag> {
         self.flags.get(&range.into()).copied().unwrap_or_default()
     }
+
+    pub fn iter_flags(&self) -> impl Iterator<Item = (TextRange, BitFlags<NodeFlag>)> + use<'_> {
+        self.flags.iter().map(|(a, b)| (*a, *b))
+    }
+
+    pub fn iter_definitions(
+        &self,
+    ) -> impl Iterator<Item = (DefRange, BitFlags<NodeFlag>)> + use<'_> {
+        self.iter_flags()
+            .filter(|(_, flags)| flags.contains(NodeFlag::Definition))
+            .map(|(range, flags)| (DefRange(range), flags))
+    }
 }
+
+/// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
+/// if-else-if is quite noisy and obscures the mapping.
+///
+/// Has two versions, depending on whether the last branch is a catch-all branch
+/// (`_ => [expr]`):
+///
+/// 1.  If there is no catch-all branch, then return an `Option<…>`,
+/// 2.  if there is one, then return the plain type of the expressions.
+macro_rules! match_flags {
+    ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+ } ) => {{
+        let it = $flags;
+        $( if it.contains($a) { Some($b) } else )* { None }
+    }};
+
+    ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+, _ => $fallback:expr $(,)? } ) => {{
+        let it = $flags;
+        $( if it.contains($a) { $b } else )* { $fallback }
+    }};
+}
+pub(crate) use match_flags;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct NodeInfos {
@@ -280,6 +313,7 @@ struct Vstr<'a> {
     redirect: bool,
     /// is the current usage a listvalues query (`list_name ? (item.name)`)
     listvalues: bool,
+    external: bool,
 }
 
 impl<'a> Vstr<'a> {
@@ -309,6 +343,7 @@ impl<'a> Vstr<'a> {
             call: false,
             redirect: false,
             listvalues: false,
+            external: false,
         }
     }
 
@@ -430,12 +465,20 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     ink_syntax::ParamValue::Identifier(identifier) => identifier.upcast(),
                 });
                 let range = self.range(name_node);
-                let kind = NodeFlag::Definition | NodeFlag::Local | NodeFlag::Param;
-                state.add_node_kind(range, kind);
-                state.parent_scope.insert(range, self.current_scope().range);
-                let param_name = self.doc.node_text(name_node);
-                self.current_scope_mut().add_local(param_name, range);
-                Descend
+                let kind =
+                    NodeFlag::Definition | NodeFlag::Usage | NodeFlag::Local | NodeFlag::Param;
+                if self.external {
+                    state.add_node_kind(range, kind | NodeFlag::External);
+                } else {
+                    state.add_node_kind(range, kind);
+                    let param_name = self.doc.node_text(name_node);
+                    let scope = self.current_scope_mut();
+                    // Externals don't define a scope so we only add params to the scope if we're not in an EXTERNAL.
+                    state.parent_scope.insert(range, scope.range);
+                    scope.add_local(param_name, range);
+                    scope.add_non_temp_usage(range, param_name);
+                }
+                Ignore // No need to descend, we've already recorded the usage.
             }
 
             TempDef(temp) => {
@@ -488,6 +531,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 if ext.params().is_ok() {
                     kind |= NodeFlag::HasParams;
                 }
+                self.external = true;
 
                 state.add_node_kind(range, kind);
                 state.add_global(self.doc.node_text(ext.name()), range);
@@ -571,8 +615,8 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Paren(_) => Descend,
             Path(_) => Ignore,
             Postfix(_) => Descend,
-            Return(_) => Ignore,
-            String(_) => Ignore,
+            Return(_) => Descend,
+            String(_) => Descend, // because String interpolation/evaluation
             Tag(_) => Descend,
             Text(_) => Ignore,
             TodoComment(_) => Ignore,
@@ -637,6 +681,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     let resolved_locally = resolved_temps || resolved_locals;
 
                     // If we've not yet found anything, and the stitch is part of a knot, we look at its locals:
+                    // FIXME: This is wrong! Ink doesn't even resolve parent params!
                     if !resolved_locally {
                         if let Some(knot) = self.knot.as_mut() {
                             // NOTE: Not looking at parent's temps here, we can't see those.
@@ -659,6 +704,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             Divert(_) | Tunnel(_) | Thread(_) => self.redirect = false,
             Call(_) => self.call = false,
             ListValues(_) => self.listvalues = false,
+            External(_) => self.external = false,
 
             _ => {}
         }

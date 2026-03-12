@@ -1714,8 +1714,8 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-ink"
-version = "24.6.18"
-source = "git+https://github.com/wldmr/tree-sitter-ink.git#bb834445534e32841bb9e120bd76fbaa83ce3fae"
+version = "26.2.27"
+source = "git+https://github.com/wldmr/tree-sitter-ink.git?rev=6106808#6106808e2593512045a08a99fccd3c287037c809"
 dependencies = [
  "cc",
  "tree-sitter-language",

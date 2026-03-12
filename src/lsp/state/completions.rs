@@ -77,16 +77,6 @@ impl super::State {
     ) -> CompletionItem {
         let infos = self.db.node_infos(docid);
         use lsp_types::{CompletionItemKind, CompletionTextEdit, TextEdit};
-        use salsa::NodeFlag;
-
-        // Poor man’s match statement for bitflags. I know a macro is a bit silly, but the
-        // if-else-if is quite noisy and obscures the mapping.
-        macro_rules! match_flags {
-            ( match ($flags:expr) { $($a:expr => $b:expr$(,)?)+ } ) => {{
-                let it = $flags;
-                $( if it.contains($a) { Some($b) } else )* { None }
-            }};
-        }
 
         let flags = infos.flags(range);
         let params = self.find_params(flags, docid, range);
@@ -108,7 +98,7 @@ impl super::State {
                 description: Some(self.db.short_path(docid).clone()),
             }),
 
-            kind: match_flags!(match (flags) {
+            kind: salsa::match_flags!(match (flags) {
                 NodeFlag::Function => CompletionItemKind::FUNCTION,
                 NodeFlag::Knot => CompletionItemKind::CLASS,
                 NodeFlag::Stitch => CompletionItemKind::METHOD,

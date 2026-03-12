@@ -51,7 +51,7 @@ macro_rules! composite_query {
         $(
             #[derive(PartialEq, Eq, Clone, Hash, Copy)]
             $(#[doc = $subquery_doc])*
-            $subquery_vis struct $subquery {$($sub_name: $sub_ty),*}
+            $subquery_vis struct $subquery {$($subquery_vis $sub_name: $sub_ty),*}
         )*
 
         // And the conversion traits.

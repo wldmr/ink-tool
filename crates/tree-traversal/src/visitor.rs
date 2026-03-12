@@ -21,6 +21,14 @@ pub trait Visitor<'a, N: Node<'a>>: Sized {
         VisitInstruction::Descend
     }
 
+    fn visit_error_with_state(
+        &mut self,
+        err: IncorrectKind,
+        state: &mut Self::State,
+    ) -> VisitInstruction<Self::State> {
+        self.visit_error(err)
+    }
+
     fn leave_error(&mut self, err: IncorrectKind) {}
 
     /// Merge the `inner` into the `outer` state.
@@ -40,7 +48,7 @@ pub trait Visitor<'a, N: Node<'a>>: Sized {
 
         let instruction = match typed_node {
             Ok(ok) => self.visit(ok, &mut state),
-            Err(err) => self.visit_error(err),
+            Err(err) => self.visit_error_with_state(err, &mut state),
         };
 
         let (inner_state, should_descend) = match instruction {

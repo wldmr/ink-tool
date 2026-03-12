@@ -9,13 +9,14 @@ use crate::lsp::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
     },
+    salsa::subqueries::diagnostics::FileDiagnostics,
 };
 use composition::composite_query;
 use ink_document::InkDocument;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
-pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
+pub(crate) use subqueries::node_info::{match_flags, DefRange, IdentRange, NodeFlag, NodeInfos};
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -41,6 +42,8 @@ composite_query!({
         fn common_path_prefix() -> String;
         /// The path without the common prefix
         fn short_path(id: DocId) -> String;
+
+        pub fn file_diagnostics(docid: DocId) -> FileDiagnostics;
     }
 });
 

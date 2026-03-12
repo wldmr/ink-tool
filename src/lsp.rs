@@ -6,8 +6,9 @@ use lsp_server::{
 };
 use lsp_types::*;
 use state::State;
-use std::{ops::Not, path::Path};
+use std::{ops::Not, path::Path, time::Duration};
 
+mod diagnostics;
 mod file_watching;
 mod http_server;
 mod idset;
@@ -296,6 +297,21 @@ pub fn run_lsp() -> AppResult<()> {
     let shutdown_notification = shutdown_notification.map(|_| ());
     let http_handle = std::thread::spawn(|| http_server::start(http_state, shutdown_notification));
 
+    let diagnostic_state = state.clone();
+    let diagnostic_sender = client_connection.sender.clone();
+    let (shutdown_diag, shutdown_diag_rcv) = std::sync::mpsc::channel();
+
+    let diagnostic_handle = std::thread::spawn(move || {
+        diagnostics::start(
+            diagnostic_state,
+            |msg| diagnostic_sender.send(msg).map_err(Into::into),
+            || match shutdown_diag_rcv.recv_timeout(Duration::from_secs(1)) {
+                Ok(_) => std::ops::ControlFlow::Break(()),
+                Err(_) => std::ops::ControlFlow::Continue(()),
+            },
+        )
+    });
+
     // Ladies and gentlemen, the main loop:
     while let Ok(msg) = client_connection.receiver.recv() {
         if let Message::Request(ref req) = msg {
@@ -314,6 +330,7 @@ pub fn run_lsp() -> AppResult<()> {
     if let Err(_) = shutdown.send(()) {
         log::error!("shutdown signal failed ¯\\_(ツ)_/¯");
     };
+    _ = shutdown_diag.send(());
 
     // Shut down gracefully.
     if file_watcher.is_some() {
@@ -323,6 +340,9 @@ pub fn run_lsp() -> AppResult<()> {
 
     log::trace!("waiting for shutdown of view server");
     _ = http_handle.join();
+
+    log::trace!("waiting for shutdown of diagnostic thread");
+    _ = diagnostic_handle.join();
 
     log::trace!("dropping_client_connection");
     drop(client_connection);
