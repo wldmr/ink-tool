@@ -150,8 +150,3 @@ pub trait InkSetters: Db<Ops> {
     }
 }
 impl<D: InkGetters> InkSetters for D {}
-
-pub struct LspDiagnostic {
-    doc: DocId,
-    diagnostic: lsp_types::Diagnostic,
-}
