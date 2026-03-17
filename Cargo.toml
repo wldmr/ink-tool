@@ -32,6 +32,14 @@ tree-traversal = { path = "./crates/tree-traversal" }
 util = { path = "./crates/util" }
 walkdir = "2.5.0"
 
+[workspace.dependencies.rassert]
+# version = "1"
+
+# My own fork with customizations
+git = "https://github.com/wldmr/rassert.git"
+branch = "multiple-expectations"
+# path = "../rassert"
+
 [workspace.dependencies.type-sitter]
 version = "0.8"
 # path = "../type-sitter/type-sitter-lib"
@@ -80,6 +88,7 @@ pretty_assertions.workspace = true
 quickcheck.workspace = true
 strum = { version = "0.26.3", features = ["derive"] }
 test-case.workspace = true
+rassert.workspace = true
 
 [build-dependencies]
 cc="*"

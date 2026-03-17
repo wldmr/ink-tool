@@ -229,6 +229,7 @@ pub enum NodeFlag {
     Call,
     /// Other information
     HasParams,
+    Builtin,
 }
 
 /// Definitions are a bit special (you can only find usages when you have an actual
@@ -501,6 +502,13 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 Descend
             }
 
+            Args(_) => {
+                // Arguments don't inherit redirect or call flags.
+                self.redirect = false;
+                self.call = false;
+                Descend
+            }
+
             // XXX: There is a bug(?) somewhere that causes qualified names and identifiers to be wrapped in an expr.
             // Not sure why, but we work around this here:
             QualifiedName(qname) | Expr(ink_syntax::Expr::QualifiedName(qname)) => {
@@ -510,17 +518,24 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
             Identifier(identifier) | Expr(ink_syntax::Expr::Identifier(identifier)) => {
                 let range = self.range(identifier);
-                let mut kind = BitFlags::from(NodeFlag::Usage);
-                kind.set(NodeFlag::Call, self.call);
-                kind.set(NodeFlag::Redirect, self.redirect);
-                kind.set(NodeFlag::ListItem, self.listvalues);
-                state.add_node_kind(range, kind);
                 let byte_range = self
                     .qname
                     .map(|qname| qname.start_byte()..identifier.end_byte())
                     .unwrap_or_else(|| identifier.byte_range());
                 let text = self.doc.text(byte_range);
-                self.current_scope_mut().add_usage(range, text);
+                let builtin =
+                    (self.redirect && builtin_addr(text)) || (self.call && builtin_func(text));
+
+                let mut kind = BitFlags::from(NodeFlag::Usage);
+                kind.set(NodeFlag::Call, self.call);
+                kind.set(NodeFlag::Redirect, self.redirect);
+                kind.set(NodeFlag::ListItem, self.listvalues);
+                kind.set(NodeFlag::Builtin, builtin);
+                state.add_node_kind(range, kind);
+
+                if !builtin {
+                    self.current_scope_mut().add_usage(range, text);
+                }
                 Ignore
             }
 
@@ -580,7 +595,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             /*** Unused ***/
             AltArm(_) => Descend,
             Alternatives(_) => Descend,
-            Args(_) => Descend,
             Assignment(_) => Descend,
             Binary(_) => Descend,
             BlockComment(_) => Ignore,
@@ -716,11 +730,30 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
     }
 }
 
+fn builtin_addr(s: &str) -> bool {
+    match s {
+        "DONE" | "END" => true,
+        _ => false,
+    }
+}
+
+fn builtin_func(s: &str) -> bool {
+    match s {
+        "CHOICE_COUNT" | "FLOAT" | "FLOOR" | "INT" | "LIST_ALL" | "LIST_COUNT" | "LIST_INVERT"
+        | "LIST_MAX" | "LIST_MIN" | "LIST_RANDOM" | "LIST_RANGE" | "LIST_VALUE" | "POW"
+        | "RANDOM" | "SEED_RANDOM" | "TURNS" | "TURNS_SINCE" => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    pub mod assertions;
+
     use super::*;
     use assert2::check;
     use indoc::indoc;
+    use rassert::prelude::*;
 
     #[test]
     fn temps_are_only_visible_in_their_defining_scope() {
@@ -930,5 +963,124 @@ mod tests {
             };
         }
         (defs, refs)
+    }
+
+    mod flags {
+        use super::*;
+        use assertions::BitFlagsExpectation as _;
+        use NodeFlag::*;
+
+        #[test]
+        fn builtins() {
+            let text = indoc! {"
+            {
+                - TURNS_SINCE(-> somewhere) > 3: -> END
+                //|         |                       ^^^@
+                //|         |    ^^^^^^^^^@
+                //^^^^^^^^^^^@
+                - RANDOM(0, 100) > 50: -> DONE
+                //|    |                  ^^^^@
+                //^^^^^^@
+                - OTHER(): -> somewhere_else
+                //|   |       ^^^^^^^^^^^^^^@
+                //^^^^^@
+            }"};
+
+            let doc = InkDocument::new(text.to_string(), None);
+            let infos = Vstr::new(&doc).traverse(doc.root());
+            let flags = scan_flags(text, infos);
+
+            start_expectations()
+                .and(expect!(&flags["TURNS_SINCE"]).to_contain(Builtin | Call))
+                .and(expect!(&flags["RANDOM"]).to_contain(Builtin | Call))
+                .and(expect!(&flags["END"]).to_contain(Builtin | Redirect))
+                .and(expect!(&flags["DONE"]).to_contain(Builtin | Redirect))
+                .and(
+                    expect!(&flags["OTHER"])
+                        .not()
+                        .to_contain(Builtin)
+                        .and()
+                        .to_contain(Call),
+                )
+                .and(
+                    expect!(&flags["somewhere"])
+                        .not()
+                        .to_contain(Builtin)
+                        .and()
+                        .to_contain(Redirect),
+                )
+                .and(
+                    expect!(&flags["somewhere_else"])
+                        .not()
+                        .to_contain(Builtin)
+                        .and()
+                        .to_contain(Redirect),
+                )
+                .conclude_panic();
+        }
+
+        #[test]
+        fn only_function_name_has_call_flag() {
+            let text = indoc! {"
+                Nested calls: {func1(a, func2(b, c)) + other} are possible
+                //             |   | |  |   | |  |     ^^^^^@
+                //             |   | |  |   | |  ^@
+                //             |   | |  |   | ^@
+                //             |   | |  ^^^^^@
+                //             |   | ^@
+                //             ^^^^^@
+            "};
+
+            let doc = InkDocument::new(text.to_string(), None);
+            let infos = Vstr::new(&doc).traverse(doc.root());
+            let flags = scan_flags(text, infos);
+
+            start_expectations()
+                .and(expect!(&flags["func1"]).to_contain(Call))
+                .and(expect!(&flags["func2"]).to_contain(Call))
+                .and(expect!(&flags["a"]).not().to_contain(Call))
+                .and(expect!(&flags["b"]).not().to_contain(Call))
+                .and(expect!(&flags["c"]).not().to_contain(Call))
+                .and(expect!(&flags["other"]).not().to_contain(Call))
+                .conclude_panic();
+        }
+
+        #[test]
+        fn only_redirect_target_contains_redirect_flag() {
+            let text = indoc! {r"
+                Redirects -> knot(param, -> next_knot) can be nested
+                //           |  | |   |     ^^^^^^^^^@
+                //           |  | ^^^^^@
+                //           ^^^^@
+            "};
+
+            let doc = InkDocument::new(text.to_string(), None);
+            let infos = Vstr::new(&doc).traverse(doc.root());
+            let flags = scan_flags(text, infos);
+
+            start_expectations()
+                .and(expect!(&flags["knot"]).to_contain(Redirect))
+                .and(expect!(&flags["next_knot"]).to_contain(Redirect))
+                .and(expect!(&flags["param"]).not().to_contain(Redirect))
+                .conclude_panic();
+        }
+
+        fn scan_flags<'a>(
+            text: &'a str,
+            infos: NodeInfos,
+        ) -> HashMap<&'a str, BitFlags<NodeFlag, u32>> {
+            text_annotations::scan_default_annotations(text)
+                .map(|ann| {
+                    // convention to use "the text itself"
+                    let name = if ann.claim() == "@" {
+                        ann.text()
+                    } else {
+                        ann.claim()
+                    };
+                    let flags = infos.flags(lsp_types::Range::from(ann.text_location));
+                    (name, flags)
+                })
+                .collect()
+        }
     }
 }

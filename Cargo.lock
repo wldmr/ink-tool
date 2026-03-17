@@ -850,6 +850,7 @@ dependencies = [
  "notify",
  "pretty_assertions",
  "quickcheck",
+ "rassert",
  "serde",
  "serde_json",
  "strum",
@@ -1295,6 +1296,11 @@ name = "rand_core"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
+
+[[package]]
+name = "rassert"
+version = "1.3.0"
+source = "git+https://github.com/wldmr/rassert.git?branch=multiple-expectations#7f0b8460fcfb678b380b0666ebb3982241e72c15"
 
 [[package]]
 name = "redox_syscall"
