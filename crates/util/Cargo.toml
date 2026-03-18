@@ -14,5 +14,7 @@ text-annotations.workspace = true
 tree-sitter.workspace = true
 
 [dev-dependencies]
+assert2.workspace = true
 pretty_assertions.workspace = true
+rassert.workspace = true
 

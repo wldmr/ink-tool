@@ -968,6 +968,7 @@ mod tests {
     mod flags {
         use super::*;
         use assertions::BitFlagsExpectation as _;
+        use util::softly;
         use NodeFlag::*;
 
         #[test]
@@ -990,33 +991,36 @@ mod tests {
             let infos = Vstr::new(&doc).traverse(doc.root());
             let flags = scan_flags(text, infos);
 
-            start_expectations()
-                .and(expect!(&flags["TURNS_SINCE"]).to_contain(Builtin | Call))
-                .and(expect!(&flags["RANDOM"]).to_contain(Builtin | Call))
-                .and(expect!(&flags["END"]).to_contain(Builtin | Redirect))
-                .and(expect!(&flags["DONE"]).to_contain(Builtin | Redirect))
-                .and(
-                    expect!(&flags["OTHER"])
-                        .not()
-                        .to_contain(Builtin)
-                        .and()
-                        .to_contain(Call),
-                )
-                .and(
-                    expect!(&flags["somewhere"])
-                        .not()
-                        .to_contain(Builtin)
-                        .and()
-                        .to_contain(Redirect),
-                )
-                .and(
-                    expect!(&flags["somewhere_else"])
-                        .not()
-                        .to_contain(Builtin)
-                        .and()
-                        .to_contain(Redirect),
-                )
-                .conclude_panic();
+            softly!(expect!(&flags["TURNS_SINCE"])
+                .to_contain(Builtin | Call)
+                .conclude_panic());
+            softly!(expect!(&flags["RANDOM"])
+                .to_contain(Builtin | Call)
+                .conclude_panic());
+            softly!(expect!(&flags["END"])
+                .to_contain(Builtin | Redirect)
+                .conclude_panic());
+            softly!(expect!(&flags["DONE"])
+                .to_contain(Builtin | Redirect)
+                .conclude_panic());
+            softly!(expect!(&flags["OTHER"])
+                .not()
+                .to_contain(Builtin)
+                .and()
+                .to_contain(Call)
+                .conclude_panic());
+            softly!(expect!(&flags["somewhere"])
+                .not()
+                .to_contain(Builtin)
+                .and()
+                .to_contain(Redirect)
+                .conclude_panic());
+            softly!(expect!(&flags["somewhere_else"])
+                .not()
+                .to_contain(Builtin)
+                .and()
+                .to_contain(Redirect)
+                .conclude_panic());
         }
 
         #[test]
@@ -1035,14 +1039,15 @@ mod tests {
             let infos = Vstr::new(&doc).traverse(doc.root());
             let flags = scan_flags(text, infos);
 
-            start_expectations()
-                .and(expect!(&flags["func1"]).to_contain(Call))
-                .and(expect!(&flags["func2"]).to_contain(Call))
-                .and(expect!(&flags["a"]).not().to_contain(Call))
-                .and(expect!(&flags["b"]).not().to_contain(Call))
-                .and(expect!(&flags["c"]).not().to_contain(Call))
-                .and(expect!(&flags["other"]).not().to_contain(Call))
-                .conclude_panic();
+            softly!(expect!(&flags["func1"]).to_contain(Call).conclude_panic());
+            softly!(expect!(&flags["func2"]).to_contain(Call).conclude_panic());
+            softly!(expect!(&flags["a"]).not().to_contain(Call).conclude_panic());
+            softly!(expect!(&flags["b"]).not().to_contain(Call).conclude_panic());
+            softly!(expect!(&flags["c"]).not().to_contain(Call).conclude_panic());
+            softly!(expect!(&flags["other"])
+                .not()
+                .to_contain(Call)
+                .conclude_panic());
         }
 
         #[test]
@@ -1058,11 +1063,16 @@ mod tests {
             let infos = Vstr::new(&doc).traverse(doc.root());
             let flags = scan_flags(text, infos);
 
-            start_expectations()
-                .and(expect!(&flags["knot"]).to_contain(Redirect))
-                .and(expect!(&flags["next_knot"]).to_contain(Redirect))
-                .and(expect!(&flags["param"]).not().to_contain(Redirect))
-                .conclude_panic();
+            softly!(expect!(&flags["knot"])
+                .to_contain(Redirect)
+                .conclude_panic());
+            softly!(expect!(&flags["next_knot"])
+                .to_contain(Redirect)
+                .conclude_panic());
+            softly!(expect!(&flags["param"])
+                .not()
+                .to_contain(Redirect)
+                .conclude_panic());
         }
 
         fn scan_flags<'a>(

@@ -33,11 +33,11 @@ util = { path = "./crates/util" }
 walkdir = "2.5.0"
 
 [workspace.dependencies.rassert]
-# version = "1"
+version = "1"
 
 # My own fork with customizations
-git = "https://github.com/wldmr/rassert.git"
-branch = "multiple-expectations"
+# git = "https://github.com/wldmr/rassert.git"
+# branch = "multiple-expectations"
 # path = "../rassert"
 
 [workspace.dependencies.type-sitter]
