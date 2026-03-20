@@ -12,6 +12,7 @@ lsp-types.workspace = true
 quickcheck.workspace = true
 text-annotations.workspace = true
 tree-sitter.workspace = true
+rassert.workspace = true
 
 [dev-dependencies]
 assert2.workspace = true
