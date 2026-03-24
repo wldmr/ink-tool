@@ -98,6 +98,10 @@ impl NodeInfos {
             .filter(|(_, flags)| flags.contains(NodeFlag::Definition))
             .map(|(range, flags)| (DefRange(range), flags))
     }
+
+    pub fn imported_files(&self) -> impl ExactSizeIterator<Item = TextRange> + use<'_> {
+        self.imported_files.iter().copied()
+    }
 }
 
 /// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
@@ -146,6 +150,8 @@ pub struct NodeInfos {
     /// ```
     unresolved_range_by_name: HashMap<String, Vec1<IdentRange>>,
     unresolved_name_by_range: HashMap<IdentRange, Vec1<String>>,
+
+    imported_files: Vec<TextRange>,
 
     flags: HashMap<TextRange, BitFlags<NodeFlag>>,
 }
@@ -592,6 +598,13 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 Descend
             }
 
+            Include(include) => {
+                state
+                    .imported_files
+                    .push(self.doc.lsp_range(include.path().range()).into());
+                Ignore
+            }
+
             /*** Unused ***/
             AltArm(_) => Descend,
             Alternatives(_) => Descend,
@@ -619,7 +632,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             GatherMark(_) => Ignore,
             GatherMarks(_) => Ignore,
             Glue(_) => Ignore,
-            Include(_) => Ignore,
             Ink(_) => Descend,
             LineComment(_) => Ignore,
             MultilineAlternatives(_) => Descend,

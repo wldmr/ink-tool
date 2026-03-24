@@ -129,8 +129,8 @@ impl TextRange {
 #[debug("{}:{}⁰", line, character)] // (we add a little superscript to remind ourselves that this 0 based)
 #[display("{}:{}", line + 1, character + 1)]
 pub struct TextPos {
-    line: u32,
-    character: u32,
+    pub line: u32,
+    pub character: u32,
 }
 
 impl PartialEq<lsp_types::Position> for TextPos {

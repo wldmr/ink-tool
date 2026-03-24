@@ -51,7 +51,7 @@ fn add_unused(
                 ListItem => "list item",
                 _ => "unknown kind of definition (This is likely a bug in ink-tool.)",
             });
-            let name = doc.text(doc.byte_range(range.into()));
+            let name = doc.lsp_text(range);
             diags.push(Diagnostic {
                 range: range.into(),
                 severity: Some(DiagnosticSeverity::WARNING),
@@ -78,7 +78,7 @@ fn add_illegal_targets(
     let uris = db.doc_ids();
     for (usage, flags) in usages {
         let definition = db.definition_of(docid, usage);
-        let text = doc.text(doc.byte_range(usage.into()));
+        let text = doc.lsp_text(usage);
 
         if definition.is_empty() {
             let kind = match_flags!(match (flags) {
@@ -173,16 +173,18 @@ fn add_illegal_targets(
 fn add_unresolved_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid: DocId) {
     for story in db.stories_of(docid).iter().copied() {
         let transitive_imports = db.transitive_imports(story);
-        let mut import_problems = transitive_imports
+
+        let mut unresolved_ranges = transitive_imports
             .iter()
-            .filter_map(|it| it.err())
-            .filter(|(file, _range)| *file == docid)
+            .filter(|it| it.target.is_none() && it.importer == docid)
+            .map(|it| it.range)
             .peekable();
-        if import_problems.peek().is_some() {
+
+        if unresolved_ranges.peek().is_some() {
             let uris = db.doc_ids();
             let story_uri = &uris[story];
             let story_path = db.short_path(story.into());
-            for (_file, range) in import_problems {
+            for range in unresolved_ranges {
                 diags.push(Diagnostic {
                     range,
                     message: format!("Import not found relative to story {}", story_path.as_str()),

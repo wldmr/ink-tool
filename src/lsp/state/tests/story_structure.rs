@@ -25,13 +25,13 @@ impl State {
                 .db
                 .transitive_imports(story)
                 .iter()
-                .map(|it| match *it {
-                    Ok(ok) => Ok(self.path(ok)),
-                    Err((id, range)) => {
+                .map(|it| match it.target {
+                    Some(ok) => Ok(self.path(ok)),
+                    None => {
                         use std::path::Path;
-                        let doc = self.db.document(id);
-                        let text = doc.text(doc.byte_range(range));
-                        let docpath = self.db.short_path(id);
+                        let doc = self.db.document(it.importer);
+                        let text = doc.lsp_text(it.range);
+                        let docpath = self.db.short_path(it.importer);
                         let path = Path::new(story_path.as_str()).parent().unwrap().join(text);
                         Err(format!("{}:{}", docpath.as_str(), path.to_string_lossy()))
                     }

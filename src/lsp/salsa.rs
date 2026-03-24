@@ -9,7 +9,7 @@ use crate::lsp::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
     },
-    salsa::subqueries::diagnostics::FileDiagnostics,
+    salsa::subqueries::{diagnostics::FileDiagnostics, story_structure::TransitiveImports},
 };
 use composition::composite_query;
 use ink_document::InkDocument;
@@ -50,9 +50,6 @@ composite_query!({
         /// All the story roots in the project
         fn story_roots() -> HashSet<StoryRoot>;
 
-        /// All the paths that this file `INCLUDE`s
-        fn relative_imports(docid: DocId) -> HashSet<lsp_types::Range>;
-
         /// All the documents that this story contains
         ///
         /// For each entry:
@@ -60,8 +57,7 @@ composite_query!({
         /// - `Ok` : This file was transitively imported by the root file.
         /// - `Err` : This import has an unresolvable import statement relative to the root
         ///   file.
-        fn transitive_imports(root: StoryRoot)
-            -> HashSet<Result<DocId, (DocId, lsp_types::Range)>>;
+        fn transitive_imports(root: StoryRoot) -> TransitiveImports;
 
         /// All the stories that this file is contained in.
         fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
@@ -107,7 +103,11 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
         result.extend(local_defs.iter().map(|range| (self.docid, *range)));
     } else if let Some(global_names) = infos.unresolved_names(self.range) {
         for story in db.stories_of(self.docid).iter().copied() {
-            for docid in db.transitive_imports(story).iter().filter_map(|it| it.ok()) {
+            for docid in db
+                .transitive_imports(story)
+                .iter()
+                .filter_map(|it| it.target)
+            {
                 let def_info = db.node_infos(docid);
                 for global_name in global_names {
                     if let Some(global_defs) = def_info.global_ranges(global_name) {
@@ -116,6 +116,7 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
                 }
             }
         }
+    } else {
     }
     result
 });
@@ -132,7 +133,8 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
     // A definition might also be visible globally under several names:
     if let Some(global_names) = infos.global_names(self.range) {
         for story in db.stories_of(self.docid).iter().copied() {
-            for docid in db.transitive_imports(story).iter().filter_map(|it| it.ok()) {
+            let imports = db.transitive_imports(story);
+            for docid in imports.iter().filter_map(|it| it.target) {
                 let ref_info = db.node_infos(docid);
                 for global_name in global_names {
                     if let Some(resolved) = ref_info.unresolved_ranges(global_name) {

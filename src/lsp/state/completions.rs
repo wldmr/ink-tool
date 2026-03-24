@@ -124,7 +124,7 @@ impl super::State {
             return None;
         }
         let doc = self.db.document(docid);
-        let bytes = doc.byte_range(range.into());
+        let bytes = doc.byte_range(range);
         if let Some(mut node) = doc
             .root()
             .named_descendant_for_byte_range(bytes.start, bytes.end)
