@@ -1,3 +1,6 @@
+INCLUDE b.ink
+INCLUDE c.ink
+
 *   -> KKKa
     // ^^^^ references knot:KKKa
 *   -> KKKa.SSSa

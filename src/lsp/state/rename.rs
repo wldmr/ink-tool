@@ -187,6 +187,9 @@ mod tests {
         test_rename![
             knot_definition,
             "
+            INCLUDE def.ink
+            INCLUDE ref.ink
+
             // file: def.ink
             === knot ===
             //  ^ rename-symbol new
@@ -211,6 +214,9 @@ mod tests {
         test_rename![
             knot_usage,
             "
+            INCLUDE def.ink
+            INCLUDE ref.ink
+
             // file: def.ink
             === knot ===
             = stitch
@@ -239,6 +245,9 @@ mod tests {
         test_rename![
             stitch_definition,
             "
+            INCLUDE def.ink
+            INCLUDE ref.ink
+
             // file: def.ink
             === knot ===
             = stitch
@@ -263,6 +272,9 @@ mod tests {
         test_rename![
             stitch_reference,
             "
+            INCLUDE def.ink
+            INCLUDE ref.ink
+
             // file: def.ink
             === knot ===
             = stitch
@@ -324,6 +336,9 @@ mod tests {
         test_rename![
             label_definition,
             "
+            INCLUDE def.ink
+            INCLUDE ref.ink
+
             // file: def.ink
             === knot ===
             = stitch
@@ -348,6 +363,9 @@ mod tests {
         test_rename![
             label_reference,
             "
+            INCLUDE def.ink
+            INCLUDE ref.ink
+
             // file: def.ink
             === knot ===
             = stitch
@@ -454,7 +472,10 @@ mod tests {
         "Renames don't clobber each other",
         no_clobber,
         "
-        // file: main.ink
+        INCLUDE var.ink
+        INCLUDE a.ink
+
+        // file: var.ink
         VAR name = 1
         //  ^ rename-symbol something_longer
         
@@ -463,7 +484,7 @@ mod tests {
         {name} {name}
         ",
         "
-        // file: main.ink
+        // file: var.ink
         VAR something_longer = 1
         //  ^ rename-symbol something_longer
         
@@ -477,6 +498,10 @@ mod tests {
         "Renames of ambiguous names affect all usages",
         ambiguous_names_are_treated_as_equal,
         "
+        INCLUDE var.ink
+        INCLUDE list.ink
+        INCLUDE a.ink
+
         // file: var.ink
         VAR ambig = 1
 

@@ -105,12 +105,13 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
     if let Some(local_defs) = infos.local_definitions(self.range) {
         result.extend(local_defs.iter().map(|range| (self.docid, *range)));
     } else if let Some(global_names) = infos.unresolved_names(self.range) {
-        let docs = db.doc_ids();
-        for docid in docs.ids() {
-            let def_info = db.node_infos(docid);
-            for global_name in global_names {
-                if let Some(global_defs) = def_info.global_ranges(global_name) {
-                    result.extend(global_defs.iter().map(|range| (docid, *range)));
+        for story in db.stories_of(self.docid).iter().copied() {
+            for docid in db.transitive_imports(story).iter().filter_map(|it| it.ok()) {
+                let def_info = db.node_infos(docid);
+                for global_name in global_names {
+                    if let Some(global_defs) = def_info.global_ranges(global_name) {
+                        result.extend(global_defs.iter().map(|range| (docid, *range)));
+                    }
                 }
             }
         }
@@ -129,12 +130,13 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
 
     // A definition might also be visible globally under several names:
     if let Some(global_names) = infos.global_names(self.range) {
-        let docs = db.doc_ids();
-        for docid in docs.ids() {
-            let ref_info = db.node_infos(docid);
-            for global_name in global_names {
-                if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
-                    result.extend(resolved.iter().map(|range| (docid, *range)))
+        for story in db.stories_of(self.docid).iter().copied() {
+            for docid in db.transitive_imports(story).iter().filter_map(|it| it.ok()) {
+                let ref_info = db.node_infos(docid);
+                for global_name in global_names {
+                    if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
+                        result.extend(resolved.iter().map(|range| (docid, *range)))
+                    }
                 }
             }
         }
