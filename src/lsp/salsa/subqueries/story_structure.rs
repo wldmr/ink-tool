@@ -14,6 +14,7 @@ use crate::lsp::{
 use lsp_types::Uri;
 use mini_milc::{Db, Old, Subquery, Updated};
 use tree_traversal::TreeTraversal;
+use type_sitter::Node as _;
 use util::nonempty::Vec1;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, derive_more::Into)]
@@ -24,8 +25,8 @@ impl PartialEq<Id<Uri>> for StoryRoot {
     }
 }
 
-type StoryRoots = HashSet<StoryRoot>;
-type TransitiveImports = HashSet<Result<DocId, DocId>>;
+pub(crate) type StoryRoots = HashSet<StoryRoot>;
+pub(crate) type TransitiveImports = HashSet<Result<DocId, (DocId, lsp_types::Range)>>;
 
 impl Subquery<Ops, TransitiveImports> for transitive_imports {
     fn value(&self, db: &impl Db<Ops>, old: Old<TransitiveImports>) -> Updated<TransitiveImports> {
@@ -61,7 +62,10 @@ fn fill_transitive(
     log::debug!("Adding current file: {current_file:?}:{current_path}",);
     imported.insert(Ok(current_file));
 
-    for import in db.relative_imports(current_file).iter() {
+    let doc = db.document(current_file);
+
+    for range in db.relative_imports(current_file).iter().copied() {
+        let import = doc.text(doc.byte_range(range));
         let path = root_dir.join(import);
         log::debug!("Resolved import {import} to {path:?}");
         let imported_file_id = ids.get(path.as_path());
@@ -70,22 +74,25 @@ fn fill_transitive(
         if let Some(child) = imported_file_id {
             fill_transitive(imported, db, ids, root_dir, *child);
         } else {
-            imported.insert(Err(current_file));
+            imported.insert(Err((current_file, range)));
             log::warn!("Could not resolve import {import} in {current_file:?}:{current_path}",);
             continue;
         };
     }
 }
 
-impl Subquery<Ops, HashSet<String>> for relative_imports {
-    fn value(&self, db: &impl Db<Ops>, old: Old<HashSet<String>>) -> Updated<HashSet<String>> {
+impl Subquery<Ops, HashSet<lsp_types::Range>> for relative_imports {
+    fn value(
+        &self,
+        db: &impl Db<Ops>,
+        old: Old<HashSet<lsp_types::Range>>,
+    ) -> Updated<HashSet<lsp_types::Range>> {
         log::debug!("Finding realitve imports for {:?}", self.docid);
         let doc = db.document(self.docid);
-        let new: HashSet<String> = doc
+        let new: HashSet<_> = doc
             .root()
             .depth_first::<ink_syntax::Include>()
-            .inspect(|it| log::debug!("Found {it:?}"))
-            .map(|it| doc.node_text(it.path()).to_string())
+            .map(|it| doc.lsp_range(it.path().range()))
             .collect();
         log::debug!("Relative imports: {new:?}");
         old.update(new)

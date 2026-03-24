@@ -51,16 +51,17 @@ composite_query!({
         fn story_roots() -> HashSet<StoryRoot>;
 
         /// All the paths that this file `INCLUDE`s
-        fn relative_imports(docid: DocId) -> HashSet<String>;
+        fn relative_imports(docid: DocId) -> HashSet<lsp_types::Range>;
 
         /// All the documents that this story contains
         ///
         /// For each entry:
         ///
         /// - `Ok` : This file was transitively imported by the root file.
-        /// - `Err` : This file *contained* an unresolvable import statement relative to the
-        ///   root file.
-        fn transitive_imports(root: StoryRoot) -> HashSet<Result<DocId, DocId>>;
+        /// - `Err` : This import has an unresolvable import statement relative to the root
+        ///   file.
+        fn transitive_imports(root: StoryRoot)
+            -> HashSet<Result<DocId, (DocId, lsp_types::Range)>>;
 
         /// All the stories that this file is contained in.
         fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
@@ -92,7 +93,7 @@ subquery!(Ops, common_path_prefix, String, |self, db| {
 subquery!(Ops, short_path, String, |self, db| {
     let prefix = db.common_path_prefix().len();
     let ids = db.doc_ids();
-    let path = ids.get(self.id).expect("Id implies URI").path().as_str();
+    let path = ids[self.id].path().as_str();
     path[prefix..].to_string()
 });
 

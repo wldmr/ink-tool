@@ -34,11 +34,11 @@ impl<T> Clone for Id<T> {
 #[repr(transparent)]
 pub struct IdSet<T>(IndexSet<T>);
 
-impl<T> Index<Id<T>> for IdSet<T> {
+impl<T, Probe: Into<Id<T>>> Index<Probe> for IdSet<T> {
     type Output = T;
 
-    fn index(&self, index: Id<T>) -> &Self::Output {
-        self.0.index(index.0)
+    fn index(&self, index: Probe) -> &Self::Output {
+        self.0.index(index.into().0)
     }
 }
 
@@ -87,8 +87,8 @@ impl<T: Eq + Hash> IdSet<T> {
         id(idx)
     }
 
-    pub fn get(&self, id: Id<T>) -> Option<&T> {
-        self.0.get_index(id.0)
+    pub fn get(&self, id: impl Into<Id<T>>) -> Option<&T> {
+        self.0.get_index(id.into().0)
     }
 
     pub fn pairs(&self) -> impl Iterator<Item = (Id<T>, &T)> {

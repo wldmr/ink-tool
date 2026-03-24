@@ -492,6 +492,10 @@ impl InkDocument {
         }
     }
 
+    pub fn lsp_text(&self, range: lsp_types::Range) -> &str {
+        &self.text[self.byte_range(range)]
+    }
+
     pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {
         let start = self.lsp_position(range.start_point);
         let end = self.lsp_position(range.end_point);

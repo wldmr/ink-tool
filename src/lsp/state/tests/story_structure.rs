@@ -20,13 +20,21 @@ impl State {
     fn story_structure(&self) -> BTreeMap<String, BTreeSet<Result<String, String>>> {
         let mut structure = BTreeMap::new();
         for story in self.db.story_roots().iter().copied() {
+            let story_path = self.db.short_path(story.into());
             let files = self
                 .db
                 .transitive_imports(story)
                 .iter()
                 .map(|it| match *it {
                     Ok(ok) => Ok(self.path(ok)),
-                    Err(err) => Err(self.path(err)),
+                    Err((id, range)) => {
+                        use std::path::Path;
+                        let doc = self.db.document(id);
+                        let text = doc.text(doc.byte_range(range));
+                        let docpath = self.db.short_path(id);
+                        let path = Path::new(story_path.as_str()).parent().unwrap().join(text);
+                        Err(format!("{}:{}", docpath.as_str(), path.to_string_lossy()))
+                    }
                 })
                 .collect();
             structure.insert(self.path(story), files);
@@ -159,6 +167,51 @@ fn multiple_roots_all_files_exist() {
                         Ok("main/beginning.ink"),
                         Ok("side/beginning.ink"),
                         Ok("common/stats.ink"),
+                    ]
+                ),
+            ])
+    );
+}
+
+#[test]
+fn unresolved_imports() {
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: lib/include.ink
+        INCLUDE content.ink
+
+        This file can only find `content.ink` for story roots
+        that are a sibling files of this very file.
+
+        // file: lib/content.ink
+        The actual library content.
+
+        // file: toplevel.ink
+        INCLUDE lib/include.ink
+        This story will cause an include error.
+
+        // file: lib/test.ink
+        INCLUDE include.ink
+        This story root will be fine.
+
+    "});
+
+    check!(
+        state.story_structure()
+            == structure([
+                (
+                    "toplevel.ink",
+                    vec![
+                        Ok("toplevel.ink"),
+                        Ok("lib/include.ink"),
+                        Err("lib/include.ink:content.ink"), // a:b -> file a tried to import path b relative to the root file.
+                    ]
+                ),
+                (
+                    "lib/test.ink",
+                    vec![
+                        Ok("lib/test.ink"),
+                        Ok("lib/include.ink"),
+                        Ok("lib/content.ink"),
                     ]
                 ),
             ])

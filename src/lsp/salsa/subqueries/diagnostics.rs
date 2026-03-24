@@ -19,6 +19,7 @@ subquery!(Ops, file_diagnostics, FileDiagnostics, |self, db| {
     let mut errors = parse_errors(&doc);
     add_unused(&mut errors, db, &doc, self.docid, &node_infos);
     add_illegal_targets(&mut errors, db, &doc, self.docid, &node_infos);
+    add_unresolved_imports(&mut errors, db, self.docid);
     errors
 });
 
@@ -162,6 +163,37 @@ fn add_illegal_targets(
                         },
                     }),
                     related_information: Some(illegal_targets),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+}
+
+fn add_unresolved_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid: DocId) {
+    for story in db.stories_of(docid).iter().copied() {
+        let transitive_imports = db.transitive_imports(story);
+        let mut import_problems = transitive_imports
+            .iter()
+            .filter_map(|it| it.err())
+            .filter(|(file, _range)| *file == docid)
+            .peekable();
+        if import_problems.peek().is_some() {
+            let uris = db.doc_ids();
+            let story_uri = &uris[story];
+            let story_path = db.short_path(story.into());
+            for (_file, range) in import_problems {
+                diags.push(Diagnostic {
+                    range,
+                    message: format!("Import not found relative to story {}", story_path.as_str()),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    related_information: Some(vec![DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: story_uri.clone(),
+                            range: lsp_types::Range::default(),
+                        },
+                        message: format!("This story root file"),
+                    }]),
                     ..Default::default()
                 });
             }
