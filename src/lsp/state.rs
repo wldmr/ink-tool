@@ -172,6 +172,8 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    mod story_structure;
+
     use super::*;
 
     pub(super) fn new_state() -> State {
@@ -215,7 +217,7 @@ mod tests {
     }
 
     pub(super) fn uri(name: &str) -> Uri {
-        <Uri as std::str::FromStr>::from_str(&format!("file://tmp/{name}")).unwrap()
+        <Uri as std::str::FromStr>::from_str(&format!("file:///{name}")).unwrap()
     }
 
     pub(super) fn text_with_caret(input: &str) -> (String, lsp_types::Position) {

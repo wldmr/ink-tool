@@ -30,6 +30,8 @@ impl<T> Clone for Id<T> {
 }
 
 /// A unique set of [`T`]s, indexable by [`Id<T>`].
+#[derive(Debug)]
+#[repr(transparent)]
 pub struct IdSet<T>(IndexSet<T>);
 
 impl<T> Index<Id<T>> for IdSet<T> {

@@ -16,7 +16,6 @@ mod ink_visitors;
 mod location;
 mod notification_handlers;
 mod request_handlers;
-mod root_detection;
 mod salsa;
 mod shared;
 mod state;

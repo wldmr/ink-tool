@@ -17,6 +17,8 @@ use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
 pub(crate) use subqueries::node_info::{match_flags, DefRange, IdentRange, NodeFlag, NodeInfos};
+pub(crate) use subqueries::story_structure::StoryRoot;
+use util::nonempty::Vec1;
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -43,6 +45,27 @@ composite_query!({
         /// The path without the common prefix
         fn short_path(id: DocId) -> String;
 
+        // === Story Structure ===
+
+        /// All the story roots in the project
+        fn story_roots() -> HashSet<StoryRoot>;
+
+        /// All the paths that this file `INCLUDE`s
+        fn relative_imports(docid: DocId) -> HashSet<String>;
+
+        /// All the documents that this story contains
+        ///
+        /// For each entry:
+        ///
+        /// - `Ok` : This file was transitively imported by the root file.
+        /// - `Err` : This file *contained* an unresolvable import statement relative to the
+        ///   root file.
+        fn transitive_imports(root: StoryRoot) -> HashSet<Result<DocId, DocId>>;
+
+        /// All the stories that this file is contained in.
+        fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
+
+        // === Errors / Diagnostics ===
         pub fn file_diagnostics(docid: DocId) -> FileDiagnostics;
     }
 });
