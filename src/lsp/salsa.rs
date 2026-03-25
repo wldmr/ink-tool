@@ -9,7 +9,7 @@ use crate::lsp::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
     },
-    salsa::subqueries::{diagnostics::FileDiagnostics, story_structure::TransitiveImports},
+    salsa::subqueries::{diagnostics::FileDiagnostics, story_structure::StoryRoots},
 };
 use composition::composite_query;
 use ink_document::InkDocument;
@@ -48,16 +48,7 @@ composite_query!({
         // === Story Structure ===
 
         /// All the story roots in the project
-        fn story_roots() -> HashSet<StoryRoot>;
-
-        /// All the documents that this story contains
-        ///
-        /// For each entry:
-        ///
-        /// - `Ok` : This file was transitively imported by the root file.
-        /// - `Err` : This import has an unresolvable import statement relative to the root
-        ///   file.
-        fn transitive_imports(root: StoryRoot) -> TransitiveImports;
+        fn stories() -> StoryRoots;
 
         /// All the stories that this file is contained in.
         fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
@@ -102,8 +93,9 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
     if let Some(local_defs) = infos.local_definitions(self.range) {
         result.extend(local_defs.iter().map(|range| (self.docid, *range)));
     } else if let Some(global_names) = infos.unresolved_names(self.range) {
+        let stories = db.stories();
         for story in db.stories_of(self.docid).iter().copied() {
-            for docid in db.transitive_imports(story).resolved.keys().copied() {
+            for docid in stories[&story].resolved.keys().copied() {
                 let def_info = db.node_infos(docid);
                 for global_name in global_names {
                     if let Some(global_defs) = def_info.global_ranges(global_name) {
@@ -128,9 +120,9 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
 
     // A definition might also be visible globally under several names:
     if let Some(global_names) = infos.global_names(self.range) {
+        let stories = db.stories();
         for story in db.stories_of(self.docid).iter().copied() {
-            let imports = db.transitive_imports(story);
-            for docid in imports.resolved.keys().copied() {
+            for docid in stories[&story].resolved.keys().copied() {
                 let ref_info = db.node_infos(docid);
                 for global_name in global_names {
                     if let Some(resolved) = ref_info.unresolved_ranges(global_name) {

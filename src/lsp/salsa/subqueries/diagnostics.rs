@@ -171,8 +171,9 @@ fn add_illegal_targets(
 }
 
 fn add_unresolved_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid: DocId) {
+    let stories = db.stories();
     for story in db.stories_of(docid).iter().copied() {
-        let transitive_imports = db.transitive_imports(story);
+        let transitive_imports = &stories[&story];
 
         if let Some(unresolved) = transitive_imports.unresolved.get(&docid) {
             let uris = db.doc_ids();

@@ -95,6 +95,11 @@ impl TextRange {
         }
     }
 
+    pub(crate) fn contains_pos(&self, other: impl Into<TextPos>) -> bool {
+        let other = other.into();
+        self.start <= other && other <= self.end
+    }
+
     pub(crate) fn contains(&self, other: &Self) -> bool {
         self.start <= other.start && other.end <= self.end
     }

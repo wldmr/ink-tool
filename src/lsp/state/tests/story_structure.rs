@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Deref;
 use std::path::Path;
 
 use assert2::check;
@@ -11,20 +12,16 @@ use crate::lsp::{
 
 /// Some helpers to make the tests more readable.
 impl State {
-    fn path(&self, id: impl Into<DocId>) -> String {
-        let ids = self.db.doc_ids();
-        let uri = ids.get(id.into()).expect("You gave me a DocId!");
-        let prefix = self.db.common_path_prefix().len();
-        uri.path().as_str()[prefix..].to_string()
+    fn path<T: Into<DocId>>(&self, id: T) -> impl Deref<Target = String> + use<'_, T> {
+        self.db.short_path(id.into())
     }
 
     fn story_structure(&self) -> BTreeMap<String, BTreeSet<Result<String, String>>> {
         let mut structure = BTreeMap::new();
-        for story in self.db.story_roots().iter().copied() {
-            let story_path = self.db.short_path(story.into());
-            let imports = self.db.transitive_imports(story);
+        for (root, imports) in self.db.stories().iter() {
+            let story_path = self.path(*root);
 
-            let resolved = imports.resolved.keys().map(|it| Ok(self.path(*it)));
+            let resolved = imports.resolved.keys().map(|it| Ok(self.path(*it).clone()));
 
             let unresolved = imports
                 .unresolved
@@ -38,7 +35,7 @@ impl State {
                     Err(format!("{}:{}", docpath.as_str(), path.to_string_lossy()))
                 });
 
-            structure.insert(self.path(story), resolved.chain(unresolved).collect());
+            structure.insert(story_path.to_string(), resolved.chain(unresolved).collect());
         }
         structure
     }
