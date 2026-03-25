@@ -43,7 +43,7 @@ impl Location {
 }
 
 // We mimic some basic LSP types to get around the orphan rule, and to implement our own, more compact Debug/Display
-#[derive(Clone, PartialEq, Eq, Hash, Copy)]
+#[derive(Default, Clone, PartialEq, Eq, Hash, Copy)]
 pub struct TextRange {
     pub start: TextPos,
     pub end: TextPos,
@@ -125,7 +125,7 @@ impl TextRange {
     }
 }
 
-#[derive(Debug, Display, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
+#[derive(Debug, Display, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 #[debug("{}:{}⁰", line, character)] // (we add a little superscript to remind ourselves that this 0 based)
 #[display("{}:{}", line + 1, character + 1)]
 pub struct TextPos {
@@ -147,12 +147,19 @@ impl PartialEq<tree_sitter::Point> for TextPos {
 #[derive(Debug, Display, Clone, Copy, PartialEq, Eq, Hash)]
 #[debug("{file:?}:{range:?}")]
 #[display("{file:?}:{range}")]
-pub(crate) struct FileTextRange {
-    file: Id<Uri>,
-    range: TextRange,
+pub struct FileTextRange {
+    pub file: Id<Uri>,
+    pub range: TextRange,
 }
 
 impl FileTextRange {
+    pub fn start_of(file: Id<Uri>) -> Self {
+        Self {
+            file,
+            range: Default::default(),
+        }
+    }
+
     pub(crate) fn new(file: Id<Uri>, range: impl Into<TextRange>) -> Self {
         Self {
             file,

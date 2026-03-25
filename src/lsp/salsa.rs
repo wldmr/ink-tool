@@ -103,11 +103,7 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
         result.extend(local_defs.iter().map(|range| (self.docid, *range)));
     } else if let Some(global_names) = infos.unresolved_names(self.range) {
         for story in db.stories_of(self.docid).iter().copied() {
-            for docid in db
-                .transitive_imports(story)
-                .iter()
-                .filter_map(|it| it.target)
-            {
+            for docid in db.transitive_imports(story).resolved.keys().copied() {
                 let def_info = db.node_infos(docid);
                 for global_name in global_names {
                     if let Some(global_defs) = def_info.global_ranges(global_name) {
@@ -134,7 +130,7 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
     if let Some(global_names) = infos.global_names(self.range) {
         for story in db.stories_of(self.docid).iter().copied() {
             let imports = db.transitive_imports(story);
-            for docid in imports.iter().filter_map(|it| it.target) {
+            for docid in imports.resolved.keys().copied() {
                 let ref_info = db.node_infos(docid);
                 for global_name in global_names {
                     if let Some(resolved) = ref_info.unresolved_ranges(global_name) {

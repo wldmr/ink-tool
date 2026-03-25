@@ -7,6 +7,7 @@ use std::{
 
 use crate::lsp::{
     idset::Id,
+    location::{FileTextRange, TextRange},
     salsa::{stories_of, story_roots, transitive_imports, DocId, InkGetters, Ops},
 };
 use lsp_types::Uri;
@@ -22,13 +23,13 @@ impl PartialEq<Id<Uri>> for StoryRoot {
 }
 
 pub(crate) type StoryRoots = HashSet<StoryRoot>;
-pub(crate) type TransitiveImports = HashSet<TransitiveImport>;
 
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct TransitiveImport {
-    pub target: Option<DocId>,
-    pub importer: DocId,
-    pub range: lsp_types::Range,
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TransitiveImports {
+    /// Imported file -> Location of the import statement
+    pub resolved: HashMap<DocId, Vec1<FileTextRange>>,
+    /// File with unresolved imports -> Locations of import statements which couldn't be resolved
+    pub unresolved: HashMap<DocId, Vec<TextRange>>,
 }
 
 impl Subquery<Ops, TransitiveImports> for transitive_imports {
@@ -42,7 +43,7 @@ impl Subquery<Ops, TransitiveImports> for transitive_imports {
             .map(|(id, uri)| (Path::new(uri.path().as_str()), id))
             .collect();
 
-        let mut result = TransitiveImports::new();
+        let mut result = TransitiveImports::default();
         fill_transitive(&mut result, db, &ids, root_dir, self.root.0);
         old.update(result)
     }
@@ -55,11 +56,11 @@ fn fill_transitive(
     root_dir: &Path,
     current_file: DocId,
 ) {
-    imported.insert(TransitiveImport {
-        target: Some(current_file),
-        importer: current_file,
-        range: Default::default(),
-    });
+    imported
+        .resolved
+        .entry(current_file)
+        .and_modify(|vec1| vec1.push(FileTextRange::start_of(current_file)))
+        .or_insert_with(|| Vec1::new(FileTextRange::start_of(current_file)));
 
     let doc = db.document(current_file);
     let infos = db.node_infos(current_file);
@@ -67,17 +68,29 @@ fn fill_transitive(
     for range in infos.imported_files() {
         let import = doc.lsp_text(range);
         let path = root_dir.join(import);
-        let maybe_target = ids.get(path.as_path());
-
-        imported.insert(TransitiveImport {
-            target: maybe_target.cloned(), // None means unresolved
-            importer: current_file,
-            range: range.into(),
-        });
-
-        if let Some(target) = maybe_target {
-            fill_transitive(imported, db, ids, root_dir, *target);
-        };
+        if let Some(resolved) = ids.get(path.as_path()).copied() {
+            let import_location = FileTextRange::new(current_file, range);
+            let imports = imported
+                .resolved
+                .entry(resolved)
+                .and_modify(|vec1| vec1.push(import_location))
+                .or_insert_with(|| Vec1::new(import_location));
+            if imports.len() > 1 {
+                let uris = db.doc_ids();
+                let resolved_uri = uris[resolved].path().as_str();
+                let source_uri = uris[import_location.file].path().as_str();
+                let source_range = import_location.range;
+                log::warn!("{source_uri}:{source_range} : Duplicate (or circular) import of {resolved_uri}");
+            } else {
+                fill_transitive(imported, db, ids, root_dir, resolved);
+            }
+        } else {
+            imported
+                .unresolved
+                .entry(current_file)
+                .or_default()
+                .push(range);
+        }
     }
 }
 
@@ -85,18 +98,28 @@ impl Subquery<Ops, StoryRoots> for story_roots {
     fn value(&self, db: &impl Db<Ops>, old: Old<StoryRoots>) -> Updated<StoryRoots> {
         let docs = db.doc_ids();
         let mut imported = HashSet::new();
+        let mut circular = HashSet::new();
         for id in docs.ids() {
+            let transitive_imports = db.transitive_imports(StoryRoot(id));
             imported.extend(
-                db.transitive_imports(StoryRoot(id))
-                    .iter()
-                    .filter_map(|it| it.target.as_ref())
-                    .filter(|it| **it != id) // "self-imports" aren't considered here
-                    .copied(),
+                transitive_imports
+                    .resolved
+                    .keys()
+                    .copied()
+                    .filter(|import| *import != id), // "self-imports" aren't considered here
             );
+            if let Some(self_imports) = transitive_imports.resolved.get(&id) {
+                let default = FileTextRange::start_of(id);
+                let is_circular = self_imports.iter().any(|it| *it != default);
+                if is_circular {
+                    circular.insert(id);
+                }
+            }
         }
         let roots = docs
             .ids()
             .filter(|it| !imported.contains(it))
+            .chain(circular)
             .map(StoryRoot)
             .collect::<StoryRoots>();
         old.update(roots)
@@ -106,12 +129,12 @@ impl Subquery<Ops, StoryRoots> for story_roots {
 impl Subquery<Ops, Vec1<StoryRoot>> for stories_of {
     fn value(&self, db: &impl Db<Ops>, old: Old<Vec1<StoryRoot>>) -> Updated<Vec1<StoryRoot>> {
         let roots = db.story_roots();
-        let iter = roots.iter().filter(|it| {
+        let parents = roots.iter().filter(|it| {
             db.transitive_imports(**it)
-                .iter()
-                .any(|import| import.target.is_some_and(|it| it == self.docid))
+                .resolved
+                .contains_key(&self.docid)
         });
-        let new = Vec1::from_iter(iter.copied())
+        let new = Vec1::from_iter(parents.copied())
             .expect("Every document must belong to at least one story, by definition");
         old.update(new)
     }

@@ -45,13 +45,14 @@ impl super::State {
                 for story in stories.iter().copied() {
                     let transitive_imports = self.db.transitive_imports(story);
                     let targets = transitive_imports
+                        .resolved
                         .iter()
-                        .filter(|import| {
-                            log::debug!("Considering import {import:?}");
-                            import.importer == this_docid && import.range.start.line == pos.line
+                        .filter(|(target, _)| **target != this_docid) // ignore the implicit "self import"
+                        .flat_map(|(target, defs)| defs.iter().copied().map(|it| (*target, it)))
+                        .filter(|(_, def)| {
+                            def.file == this_docid && def.range.start.line == pos.line
                         })
-                        .filter_map(|import| import.target)
-                        .filter(|target| *target != this_docid);
+                        .map(|(target, _)| target);
 
                     for target in targets {
                         if seen.insert(target) {

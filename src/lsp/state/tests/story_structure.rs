@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use assert2::check;
 use indoc::indoc;
@@ -21,23 +22,23 @@ impl State {
         let mut structure = BTreeMap::new();
         for story in self.db.story_roots().iter().copied() {
             let story_path = self.db.short_path(story.into());
-            let files = self
-                .db
-                .transitive_imports(story)
+            let imports = self.db.transitive_imports(story);
+
+            let resolved = imports.resolved.keys().map(|it| Ok(self.path(*it)));
+
+            let unresolved = imports
+                .unresolved
                 .iter()
-                .map(|it| match it.target {
-                    Some(ok) => Ok(self.path(ok)),
-                    None => {
-                        use std::path::Path;
-                        let doc = self.db.document(it.importer);
-                        let text = doc.lsp_text(it.range);
-                        let docpath = self.db.short_path(it.importer);
-                        let path = Path::new(story_path.as_str()).parent().unwrap().join(text);
-                        Err(format!("{}:{}", docpath.as_str(), path.to_string_lossy()))
-                    }
-                })
-                .collect();
-            structure.insert(self.path(story), files);
+                .flat_map(|(file, ranges)| ranges.iter().copied().map(|it| (*file, it)))
+                .map(|(file, range)| {
+                    let doc = self.db.document(file);
+                    let text = doc.lsp_text(range);
+                    let docpath = self.db.short_path(file);
+                    let path = Path::new(story_path.as_str()).parent().unwrap().join(text);
+                    Err(format!("{}:{}", docpath.as_str(), path.to_string_lossy()))
+                });
+
+            structure.insert(self.path(story), resolved.chain(unresolved).collect());
         }
         structure
     }
@@ -192,7 +193,6 @@ fn unresolved_imports() {
         // file: lib/test.ink
         INCLUDE include.ink
         This story root will be fine.
-
     "});
 
     check!(
@@ -214,6 +214,99 @@ fn unresolved_imports() {
                         Ok("lib/content.ink"),
                     ]
                 ),
+            ])
+    );
+}
+
+#[test]
+fn duplicate_imports() {
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: main.ink
+        INCLUDE a.ink
+        INCLUDE b.ink
+
+        // file: a.ink
+        INCLUDE b.ink
+        I require b.
+
+        // file: b.ink
+        I am b.
+    "});
+
+    check!(
+        state.story_structure()
+            == structure([("main.ink", vec![Ok("main.ink"), Ok("a.ink"), Ok("b.ink")])])
+    );
+}
+
+#[test]
+fn circular_imports() {
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: a.ink
+        INCLUDE b.ink
+
+        // file: b.ink
+        INCLUDE c.ink
+
+        // file: c.ink
+        INCLUDE a.ink
+    "});
+
+    check!(
+        state.story_structure()
+            == structure([
+                ("a.ink", vec![Ok("a.ink"), Ok("b.ink"), Ok("c.ink")]),
+                ("b.ink", vec![Ok("b.ink"), Ok("c.ink"), Ok("a.ink")]),
+                ("c.ink", vec![Ok("c.ink"), Ok("a.ink"), Ok("b.ink")])
+            ])
+    );
+}
+
+#[test]
+fn semi_circular_imports() {
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: a.ink
+        INCLUDE b.ink
+
+        // file: b.ink
+        INCLUDE c.ink
+
+        // file: c.ink
+        INCLUDE b.ink
+    "});
+
+    check!(
+        state.story_structure()
+            == structure([
+                ("a.ink", vec![Ok("a.ink"), Ok("b.ink"), Ok("c.ink")]),
+                ("b.ink", vec![Ok("b.ink"), Ok("c.ink")]),
+                ("c.ink", vec![Ok("c.ink"), Ok("b.ink")])
+            ])
+    );
+}
+
+#[test]
+fn circular_and_non_circular_imports() {
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: main.ink
+        INCLUDE a.ink
+
+        // file: circle.ink
+        INCLUDE b.ink
+
+        // file: a.ink
+        Hi, I'm a.
+
+        // file: b.ink
+        INCLUDE circle.ink
+    "});
+
+    check!(
+        state.story_structure()
+            == structure([
+                ("main.ink", vec![Ok("main.ink"), Ok("a.ink")]),
+                ("circle.ink", vec![Ok("circle.ink"), Ok("b.ink")]),
+                ("b.ink", vec![Ok("circle.ink"), Ok("b.ink")]),
             ])
     );
 }

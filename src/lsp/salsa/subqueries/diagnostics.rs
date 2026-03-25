@@ -174,19 +174,13 @@ fn add_unresolved_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid:
     for story in db.stories_of(docid).iter().copied() {
         let transitive_imports = db.transitive_imports(story);
 
-        let mut unresolved_ranges = transitive_imports
-            .iter()
-            .filter(|it| it.target.is_none() && it.importer == docid)
-            .map(|it| it.range)
-            .peekable();
-
-        if unresolved_ranges.peek().is_some() {
+        if let Some(unresolved) = transitive_imports.unresolved.get(&docid) {
             let uris = db.doc_ids();
             let story_uri = &uris[story];
             let story_path = db.short_path(story.into());
-            for range in unresolved_ranges {
+            for range in unresolved.iter().copied() {
                 diags.push(Diagnostic {
-                    range,
+                    range: range.into(),
                     message: format!("Import not found relative to story {}", story_path.as_str()),
                     severity: Some(DiagnosticSeverity::ERROR),
                     related_information: Some(vec![DiagnosticRelatedInformation {
