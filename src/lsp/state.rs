@@ -2,7 +2,7 @@ use crate::lsp::{
     idset::Id,
     salsa::{self, DocId, InkGetters, InkSetters},
 };
-use derive_more::derive::{Display, Error};
+use derive_more::derive::{Display, Error, From};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
 use lsp_types::{DocumentSymbol, Position, Uri, WorkspaceSymbol};
@@ -33,11 +33,11 @@ pub(crate) struct State {
 #[display("Document not found: `{}`", _0.path())]
 pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
 #[display("Not a valid position: {}:{}", _0.line, _0.character)]
 pub(crate) struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
-#[derive(Debug, Clone, Display, Error, derive_more::From)]
+#[derive(Debug, Clone, Display, Error, PartialEq, Eq, From)]
 #[display("Could not go to position: {}", self)]
 pub(crate) enum GotoLocationError {
     DocumentNotFound(DocumentNotFound),
@@ -172,6 +172,7 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    mod goto_definition;
     mod story_structure;
 
     use super::*;

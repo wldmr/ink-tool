@@ -32,7 +32,7 @@ impl super::State {
                 .db
                 .node_infos(this_docid)
                 .imported_files()
-                .any(|(_, range)| range.contains_pos(pos));
+                .any(|(_, range)| range.start.line == pos.line); // imports always occupy the whole line, no need to be pernickety
 
             if is_import {
                 let stories = self.db.stories();
@@ -44,7 +44,9 @@ impl super::State {
                         .iter()
                         .filter(|(target, _)| **target != this_docid) // ignore the implicit "self import"
                         .flat_map(|(target, defs)| defs.iter().copied().map(|it| (*target, it)))
-                        .filter(|(_, def)| def.file == this_docid && def.range.contains_pos(pos))
+                        .filter(|(_, def)| {
+                            def.file == this_docid && def.range.start.line == pos.line
+                        })
                         .map(|(target, _)| target)
                 });
 
