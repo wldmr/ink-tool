@@ -13,6 +13,7 @@ use crate::lsp::{
 };
 use composition::composite_query;
 use ink_document::InkDocument;
+use itertools::Itertools;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
@@ -94,17 +95,22 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
         result.extend(local_defs.iter().map(|range| (self.docid, *range)));
     } else if let Some(global_names) = infos.unresolved_names(self.range) {
         let stories = db.stories();
-        for story in db.stories_of(self.docid).iter().copied() {
-            for docid in stories[&story].resolved.keys().copied() {
-                let def_info = db.node_infos(docid);
-                for global_name in global_names {
-                    if let Some(global_defs) = def_info.global_ranges(global_name) {
-                        result.extend(global_defs.iter().map(|range| (docid, *range)));
-                    }
+        let roots = db.stories_of(self.docid);
+
+        let targets = roots
+            .iter()
+            .flat_map(|root| stories[&root].resolved.keys())
+            .unique() // might have picked up duplicates if we are in multple overlapping stories;
+            .copied();
+
+        for target in targets {
+            let def_info = db.node_infos(target);
+            for global_name in global_names {
+                if let Some(global_defs) = def_info.global_ranges(global_name) {
+                    result.extend(global_defs.iter().map(|range| (target, *range)));
                 }
             }
         }
-    } else {
     }
     result
 });
@@ -121,13 +127,19 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
     // A definition might also be visible globally under several names:
     if let Some(global_names) = infos.global_names(self.range) {
         let stories = db.stories();
-        for story in db.stories_of(self.docid).iter().copied() {
-            for docid in stories[&story].resolved.keys().copied() {
-                let ref_info = db.node_infos(docid);
-                for global_name in global_names {
-                    if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
-                        result.extend(resolved.iter().map(|range| (docid, *range)))
-                    }
+        let roots = db.stories_of(self.docid);
+
+        let targets = roots
+            .iter()
+            .flat_map(|root| stories[&root].resolved.keys())
+            .unique() // might have picked up duplicates if we are in multple overlapping stories;
+            .copied();
+
+        for target in targets {
+            let ref_info = db.node_infos(target);
+            for global_name in global_names {
+                if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
+                    result.extend(resolved.iter().map(|range| (target, *range)))
                 }
             }
         }
