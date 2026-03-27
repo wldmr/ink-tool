@@ -30,7 +30,7 @@ impl State {
                 .map(|(file, range)| {
                     let doc = self.db.document(file);
                     let text = doc.lsp_text(range);
-                    let docpath = self.db.short_path(file);
+                    let docpath = self.path(file);
                     let path = Path::new(story_path.as_str()).parent().unwrap().join(text);
                     Err(format!("{}:{}", docpath.as_str(), path.to_string_lossy()))
                 });
@@ -237,7 +237,7 @@ fn duplicate_imports() {
 }
 
 #[test]
-fn circular_imports() {
+fn cyclic_import() {
     let state = new_state().with_comment_separated_files(indoc! {"
         // file: a.ink
         INCLUDE b.ink
@@ -251,16 +251,33 @@ fn circular_imports() {
 
     check!(
         state.story_structure()
-            == structure([
-                ("a.ink", vec![Ok("a.ink"), Ok("b.ink"), Ok("c.ink")]),
-                ("b.ink", vec![Ok("b.ink"), Ok("c.ink"), Ok("a.ink")]),
-                ("c.ink", vec![Ok("c.ink"), Ok("a.ink"), Ok("b.ink")])
-            ])
+            == structure([("a.ink", vec![Ok("a.ink"), Ok("b.ink"), Ok("c.ink")])])
     );
 }
 
 #[test]
-fn semi_circular_imports() {
+fn cyclic_imports_root_is_determined_by_lexical_sort() {
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: a.ink
+        INCLUDE b.ink
+
+        // file: b.ink
+        INCLUDE a.ink
+    "});
+    check!(state.story_structure() == structure([("a.ink", vec![Ok("a.ink"), Ok("b.ink")])]));
+
+    let state = new_state().with_comment_separated_files(indoc! {"
+        // file: z.ink
+        INCLUDE b.ink
+
+        // file: b.ink
+        INCLUDE z.ink
+    "});
+    check!(state.story_structure() == structure([("b.ink", vec![Ok("z.ink"), Ok("b.ink")])]));
+}
+
+#[test]
+fn semi_cyclic_imports() {
     let state = new_state().with_comment_separated_files(indoc! {"
         // file: a.ink
         INCLUDE b.ink
@@ -274,16 +291,12 @@ fn semi_circular_imports() {
 
     check!(
         state.story_structure()
-            == structure([
-                ("a.ink", vec![Ok("a.ink"), Ok("b.ink"), Ok("c.ink")]),
-                ("b.ink", vec![Ok("b.ink"), Ok("c.ink")]),
-                ("c.ink", vec![Ok("c.ink"), Ok("b.ink")])
-            ])
+            == structure([("a.ink", vec![Ok("a.ink"), Ok("b.ink"), Ok("c.ink")])])
     );
 }
 
 #[test]
-fn circular_and_non_circular_imports() {
+fn cyclic_and_non_cyclic_imports() {
     let state = new_state().with_comment_separated_files(indoc! {"
         // file: main.ink
         INCLUDE a.ink
@@ -302,7 +315,6 @@ fn circular_and_non_circular_imports() {
         state.story_structure()
             == structure([
                 ("main.ink", vec![Ok("main.ink"), Ok("a.ink")]),
-                ("circle.ink", vec![Ok("circle.ink"), Ok("b.ink")]),
                 ("b.ink", vec![Ok("circle.ink"), Ok("b.ink")]),
             ])
     );

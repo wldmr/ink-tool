@@ -245,7 +245,7 @@ pub enum NodeFlag {
 /// Definitions are a bit special (you can only find usages when you have an actual
 /// definition), so we make that requirement type safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, Into)]
-#[into(lsp_types::Range)]
+#[into(lsp_types::Range, TextRange)]
 pub struct DefRange(TextRange);
 
 /// To make it clear that any kind of usage is at the level of the individual identifier

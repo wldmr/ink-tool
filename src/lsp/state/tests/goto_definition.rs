@@ -6,6 +6,7 @@ use lsp_types::{Location, Position, Range};
 
 use crate::lsp::{
     location::TextPos,
+    salsa::InkGetters,
     state::tests::{new_state, uri},
 };
 
@@ -45,12 +46,17 @@ fn can_navigate_to_resolved_imports_from_anywhere_on_the_import_line() {
 
 #[test]
 fn can_not_navigate_to_unresolved_imports() {
-    let state = new_state().with_comment_separated_files(indoc! {"
+    let mut state = new_state().with_comment_separated_files(indoc! {"
         // file: start.ink
         INCLUDE phantom.ink
         "});
 
-    let defs = state.goto_definition(uri("start.ink"), Position::new(0, 8));
+    let over_import = Position::new(0, 8);
+    let defs = state.goto_definition(uri("start.ink"), over_import);
+    check!(defs == Ok(Vec::new()), "phantom.ink doesn't exist yet.");
 
-    check!(defs == Ok(Vec::new()));
+    state.edit(uri("phantom.ink"), "Boo!");
+
+    let defs = state.goto_definition(uri("start.ink"), over_import);
+    check!(defs == Ok(vec![Location::new(uri("phantom.ink"), Range::default())]));
 }

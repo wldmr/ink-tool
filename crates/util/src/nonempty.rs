@@ -124,6 +124,10 @@ impl<T> Vec1<T> {
         &self.first
     }
 
+    pub fn first_mut(&mut self) -> &mut T {
+        &mut self.first
+    }
+
     pub fn try_single(&self) -> Result<&T, &Self> {
         if self.rest.is_empty() {
             Ok(&self.first)
