@@ -55,13 +55,12 @@ pub struct TransitiveImports {
 
 impl TransitiveImports {
     pub fn new_root(docid: DocId) -> Self {
-        let mut this = Self {
-            resolved: Default::default(),
+        let mut resolved = HashMap::new();
+        resolved.insert(docid, Vec1::new(FileTextRange::start_of(docid)));
+        Self {
+            resolved,
             unresolved: Default::default(),
-        };
-        this.resolved
-            .insert(docid, Vec1::new(FileTextRange::start_of(docid)));
-        this
+        }
     }
 
     /// Fills `self` with the transitive import relative to `root` dir.

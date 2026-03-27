@@ -9,7 +9,10 @@ use crate::lsp::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
     },
-    salsa::subqueries::{diagnostics::FileDiagnostics, story_structure::StoryRoots},
+    salsa::subqueries::{
+        diagnostics::{DuplicateDefinitions, DuplicateImports, FileDiagnostics},
+        story_structure::StoryRoots,
+    },
 };
 use composition::composite_query;
 use ink_document::InkDocument;
@@ -55,6 +58,8 @@ composite_query!({
         fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
 
         // === Errors / Diagnostics ===
+        pub fn duplicate_definitions(story: StoryRoot) -> DuplicateDefinitions;
+        pub fn duplicate_imports(story: StoryRoot) -> DuplicateImports;
         pub fn file_diagnostics(docid: DocId) -> FileDiagnostics;
     }
 });
