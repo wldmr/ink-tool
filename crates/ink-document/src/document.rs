@@ -235,7 +235,8 @@ impl InkDocument {
         self.tree.root_node()
     }
 
-    pub fn byte_range(&self, range: lsp_types::Range) -> std::ops::Range<usize> {
+    pub fn byte_range(&self, range: impl Into<lsp_types::Range>) -> std::ops::Range<usize> {
+        let range = range.into();
         let start = self.to_byte(range.start);
         let end = self.to_byte(range.end);
         start..end
@@ -490,6 +491,10 @@ impl InkDocument {
             (Unbounded, _) => &self.text[..],
             (Excluded(_), _) => panic!("Excluded range start not supported"),
         }
+    }
+
+    pub fn lsp_text(&self, range: impl Into<lsp_types::Range>) -> &str {
+        &self.text[self.byte_range(range.into())]
     }
 
     pub fn lsp_range(&self, range: tree_sitter::Range) -> lsp_types::Range {

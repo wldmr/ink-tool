@@ -9,14 +9,20 @@ use crate::lsp::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
     },
-    salsa::subqueries::diagnostics::FileDiagnostics,
+    salsa::subqueries::{
+        diagnostics::{DuplicateDefinitions, DuplicateImports, FileDiagnostics},
+        story_structure::StoryRoots,
+    },
 };
 use composition::composite_query;
 use ink_document::InkDocument;
+use itertools::Itertools;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::collections::HashSet;
 pub(crate) use subqueries::node_info::{match_flags, DefRange, IdentRange, NodeFlag, NodeInfos};
+pub(crate) use subqueries::story_structure::StoryRoot;
+use util::nonempty::Vec1;
 
 pub(crate) type DocId = Id<Uri>;
 pub(crate) type DocIds = IdSet<Uri>;
@@ -43,6 +49,17 @@ composite_query!({
         /// The path without the common prefix
         fn short_path(id: DocId) -> String;
 
+        // === Story Structure ===
+
+        /// All the story roots in the project
+        fn stories() -> StoryRoots;
+
+        /// All the stories that this file is contained in.
+        fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
+
+        // === Errors / Diagnostics ===
+        pub fn duplicate_definitions(story: StoryRoot) -> DuplicateDefinitions;
+        pub fn duplicate_imports(story: StoryRoot) -> DuplicateImports;
         pub fn file_diagnostics(docid: DocId) -> FileDiagnostics;
     }
 });
@@ -69,7 +86,7 @@ subquery!(Ops, common_path_prefix, String, |self, db| {
 subquery!(Ops, short_path, String, |self, db| {
     let prefix = db.common_path_prefix().len();
     let ids = db.doc_ids();
-    let path = ids.get(self.id).expect("Id implies URI").path().as_str();
+    let path = ids[self.id].path().as_str();
     path[prefix..].to_string()
 });
 
@@ -82,12 +99,20 @@ subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
     if let Some(local_defs) = infos.local_definitions(self.range) {
         result.extend(local_defs.iter().map(|range| (self.docid, *range)));
     } else if let Some(global_names) = infos.unresolved_names(self.range) {
-        let docs = db.doc_ids();
-        for docid in docs.ids() {
-            let def_info = db.node_infos(docid);
+        let stories = db.stories();
+        let roots = db.stories_of(self.docid);
+
+        let targets = roots
+            .iter()
+            .flat_map(|root| stories[&root].resolved.keys())
+            .unique() // might have picked up duplicates if we are in multple overlapping stories;
+            .copied();
+
+        for target in targets {
+            let def_info = db.node_infos(target);
             for global_name in global_names {
                 if let Some(global_defs) = def_info.global_ranges(global_name) {
-                    result.extend(global_defs.iter().map(|range| (docid, *range)));
+                    result.extend(global_defs.iter().map(|range| (target, *range)));
                 }
             }
         }
@@ -106,12 +131,20 @@ subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
 
     // A definition might also be visible globally under several names:
     if let Some(global_names) = infos.global_names(self.range) {
-        let docs = db.doc_ids();
-        for docid in docs.ids() {
-            let ref_info = db.node_infos(docid);
+        let stories = db.stories();
+        let roots = db.stories_of(self.docid);
+
+        let targets = roots
+            .iter()
+            .flat_map(|root| stories[&root].resolved.keys())
+            .unique() // might have picked up duplicates if we are in multple overlapping stories;
+            .copied();
+
+        for target in targets {
+            let ref_info = db.node_infos(target);
             for global_name in global_names {
                 if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
-                    result.extend(resolved.iter().map(|range| (docid, *range)))
+                    result.extend(resolved.iter().map(|range| (target, *range)))
                 }
             }
         }

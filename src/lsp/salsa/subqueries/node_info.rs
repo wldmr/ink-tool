@@ -6,7 +6,11 @@ use derive_more::derive::{Deref, Into};
 use enumflags2::{bitflags, BitFlags};
 use ink_document::InkDocument;
 use mini_milc::{Db, Old, Subquery, Updated};
-use std::{collections::HashMap, hint::unreachable_unchecked};
+use std::{
+    collections::HashMap,
+    hint::unreachable_unchecked,
+    path::{Path, PathBuf},
+};
 use tree_traversal::Visitor;
 use type_sitter::Node;
 use util::{nonempty::Vec1, vec1};
@@ -98,6 +102,10 @@ impl NodeInfos {
             .filter(|(_, flags)| flags.contains(NodeFlag::Definition))
             .map(|(range, flags)| (DefRange(range), flags))
     }
+
+    pub fn imported_files(&self) -> impl ExactSizeIterator<Item = (&Path, TextRange)> + use<'_> {
+        self.imported_files.iter().map(|it| (it.0.as_path(), it.1))
+    }
 }
 
 /// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
@@ -146,6 +154,8 @@ pub struct NodeInfos {
     /// ```
     unresolved_range_by_name: HashMap<String, Vec1<IdentRange>>,
     unresolved_name_by_range: HashMap<IdentRange, Vec1<String>>,
+
+    imported_files: Vec<(PathBuf, TextRange)>,
 
     flags: HashMap<TextRange, BitFlags<NodeFlag>>,
 }
@@ -235,7 +245,7 @@ pub enum NodeFlag {
 /// Definitions are a bit special (you can only find usages when you have an actual
 /// definition), so we make that requirement type safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, Into)]
-#[into(lsp_types::Range)]
+#[into(lsp_types::Range, TextRange)]
 pub struct DefRange(TextRange);
 
 /// To make it clear that any kind of usage is at the level of the individual identifier
@@ -592,6 +602,14 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 Descend
             }
 
+            Include(include) => {
+                let node = include.path();
+                let path = self.doc.text(node.byte_range());
+                let range = self.doc.lsp_range(node.range());
+                state.imported_files.push((path.into(), range.into()));
+                Ignore
+            }
+
             /*** Unused ***/
             AltArm(_) => Descend,
             Alternatives(_) => Descend,
@@ -619,7 +637,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             GatherMark(_) => Ignore,
             GatherMarks(_) => Ignore,
             Glue(_) => Ignore,
-            Include(_) => Ignore,
             Ink(_) => Descend,
             LineComment(_) => Ignore,
             MultilineAlternatives(_) => Descend,
