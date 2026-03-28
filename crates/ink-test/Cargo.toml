@@ -12,6 +12,7 @@ serde.workspace = true
 similar = "2.7.0"
 tree-sitter.workspace = true
 ink-syntax.workspace = true
+yansi = "1.0.1"
 
 [dev-dependencies]
 assert2.workspace = true

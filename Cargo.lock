@@ -831,6 +831,7 @@ dependencies = [
  "serde_json",
  "similar",
  "tree-sitter",
+ "yansi",
 ]
 
 [[package]]
