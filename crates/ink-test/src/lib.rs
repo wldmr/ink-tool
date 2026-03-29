@@ -37,6 +37,28 @@ pub struct TestFailures {
     failures: Vec<TestFailure>,
 }
 
+impl TestFailures {
+    pub fn empty() -> Self {
+        Self {
+            failures: Default::default(),
+        }
+    }
+
+    pub fn into_result(self) -> Result<(), TestFailures> {
+        if self.failures.is_empty() {
+            Ok(())
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl std::ops::AddAssign for TestFailures {
+    fn add_assign(&mut self, mut rhs: Self) {
+        self.failures.append(&mut rhs.failures);
+    }
+}
+
 impl Display for TestFailures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(&self.failures).finish()
