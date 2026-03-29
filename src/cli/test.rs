@@ -11,6 +11,6 @@ pub(crate) struct TestOpt {
 }
 
 pub(crate) fn test(opt: TestOpt) -> AppResult<()> {
-    ink_test::run_test(&opt.input, Default::default())?;
+    ink_test::run_tests_in_file(&opt.input)?;
     Ok(())
 }
