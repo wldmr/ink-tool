@@ -828,8 +828,6 @@ dependencies = [
  "ink-syntax",
  "log",
  "pretty_assertions",
- "serde",
- "serde_json",
  "similar",
  "tree-sitter",
  "tree-traversal",

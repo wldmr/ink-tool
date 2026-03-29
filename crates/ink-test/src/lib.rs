@@ -1,13 +1,15 @@
 use std::{
+    ffi::OsStr,
     fmt::Display,
-    io::{self, Write as _},
+    io::{self, Read, Write as _},
+    iter::{chain, once},
     path::Path,
     process::{Command, Stdio},
+    string::FromUtf8Error,
 };
 
-use derive_more::derive::{AsRef, Display, Error, From};
+use derive_more::derive::{Error, From};
 use ink_document::InkDocument;
-use serde::Deserialize;
 use similar::TextDiff;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
@@ -16,7 +18,7 @@ use yansi::Paint;
 #[derive(Debug, From, Error)]
 pub enum TestFailure {
     IOError(io::Error),
-    Serialization(serde_json::Error),
+    Utf8(FromUtf8Error),
     TestError { message: String },
 }
 
@@ -24,7 +26,7 @@ impl Display for TestFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TestFailure::IOError(error) => error.fmt(f),
-            TestFailure::Serialization(error) => error.fmt(f),
+            TestFailure::Utf8(error) => error.fmt(f),
             TestFailure::TestError { message: msg } => f.write_str(&msg),
         }
     }
@@ -39,33 +41,6 @@ impl Display for TestFailures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(&self.failures).finish()
     }
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(untagged)]
-pub enum Communication {
-    Compilation {
-        #[serde(rename = "compile-success")]
-        compile_success: bool,
-    },
-    Issues {
-        issues: Vec<String>,
-    },
-    Text(Text),
-    Choices {
-        choices: Vec<Text>,
-    },
-    NeedInput {
-        #[serde(rename = "needInput")]
-        need_input: bool,
-    },
-    Other(serde_json::Value),
-}
-
-#[derive(Debug, serde::Deserialize, Display)]
-#[display("{text}")]
-pub struct Text {
-    text: String,
 }
 
 pub fn run_tests_in_file(path_to_ink: &Path) -> Result<(), TestFailures> {
@@ -86,12 +61,14 @@ pub fn run_tests_in_file(path_to_ink: &Path) -> Result<(), TestFailures> {
 }
 
 pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFailure> {
-    let mut player = Command::new("inklecate")
-        .arg("-pj")
+    let mut command = Command::new("inklecate");
+    command
+        .arg("-p")
         .arg(path_to_ink)
         .stdout(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()?;
+        .stdin(Stdio::piped());
+
+    let mut player = command.spawn()?;
 
     let mut send = player
         .stdin
@@ -102,7 +79,7 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
         ))
         .map(io::BufWriter::new)?;
 
-    let recv = player
+    let mut recv = player
         .stdout
         .take()
         .ok_or(io::Error::new(
@@ -111,67 +88,43 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
         ))
         .map(io::BufReader::new)?;
 
-    let mut replies = serde_json::Deserializer::from_reader(recv);
-
     let mut choices = run.input.iter();
-    let mut actual = Actual::default();
 
-    #[derive(Debug, Default, From, AsRef)]
-    struct Actual(String);
-    impl Actual {
-        /// Wrapper around String::push_str so that we can echo what we record to the user.
-        fn record(&mut self, format: impl AsRef<str>) {
-            let format = format.as_ref();
-            eprint!("{format}");
-            self.0.push_str(format);
-        }
-    }
+    let mut buf = [0u8; 1024];
+    let mut actual = Vec::new();
 
-    while replies.end().is_err() {
-        let reply = Communication::deserialize(&mut replies)?;
-        use Communication::*;
-        match reply {
-            Compilation { .. } => {}
-            Issues { issues } => {
-                for issue in issues {
-                    actual.record(format!("{issue}\n"));
+    loop {
+        match recv.read(&mut buf)? {
+            0 => break,
+            n => {
+                static PROMPT: &[u8] = &[b'?', b'>', b' '];
+                actual.extend_from_slice(&buf[..n]);
+                if actual.ends_with(PROMPT) {
+                    let choice = choices
+                        .next()
+                        .ok_or_else(|| "Required a choice, but ran out.".to_string())?;
+                    let command = format!("{choice}\n").into_bytes();
+                    actual.extend_from_slice(&command);
+                    send.write_all(&command)?;
+                    send.flush()?;
                 }
-            }
-            Text(text) => {
-                actual.record(&format!("{text}")); // text should take care of newline itself
-            }
-            Choices { choices } => {
-                actual.record(format!("\n"));
-                for (n, choice) in choices.into_iter().enumerate() {
-                    actual.record(format!("{}: {choice}\n", n + 1));
-                }
-                actual.record(format!("?> "));
-            }
-            NeedInput { need_input: true } => {
-                let choice = choices.next().ok_or_else(|| TestFailure::TestError {
-                    message: format!("Required a choice, but ran out."),
-                })?;
-                let command = format!("{choice}\n");
-                actual.record(&command);
-                send.write_all(command.as_bytes())?;
-                send.flush()?;
-            }
-            NeedInput { need_input: false } => {
-                break;
-            }
-            Other(value) => {
-                eprintln!("Unexpected reply from the ink runner: {value}");
             }
         }
     }
 
-    let diff = TextDiff::from_lines(actual.as_ref(), &run.expected_output)
+    let actual = String::from_utf8(actual)?;
+
+    let command_header = chain(once(command.get_program()), command.get_args())
+        .collect::<Vec<_>>()
+        .join(OsStr::new(" "))
+        .to_string_lossy()
+        .to_string();
+    let expectation_header = format!("Test {}", run.name);
+
+    let diff = TextDiff::from_lines(&actual, &run.expected_output)
         .unified_diff()
         .context_radius(3)
-        .header(
-            &format!("inkclecate -p {}", path_to_ink.to_string_lossy()),
-            &format!("Test {}", run.name),
-        )
+        .header(&command_header, &expectation_header)
         .to_string();
 
     if diff.trim().is_empty() {
@@ -189,9 +142,7 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
             };
             eprintln!("{line}");
         }
-        Err(TestFailure::TestError {
-            message: "Unexpected output".to_string(),
-        })
+        Err("Unexpected output".to_string().into())
     }
 }
 
@@ -220,7 +171,7 @@ fn extract_tests(path_to_ink: &Path) -> Result<Vec<TestDescription>, TestFailure
         let name = if name.is_empty() {
             format!("starting on line {line}")
         } else {
-            format!("{name} starting on line {line}")
+            format!("\"{name}\" starting on line {line}")
         };
         let input = expectation
             .lines()

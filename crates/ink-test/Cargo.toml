@@ -7,8 +7,6 @@ edition.workspace = true
 [dependencies]
 derive_more.workspace = true
 log.workspace = true
-serde_json.workspace = true
-serde.workspace = true
 similar = "2.7.0"
 tree-sitter.workspace = true
 type-sitter.workspace = true
