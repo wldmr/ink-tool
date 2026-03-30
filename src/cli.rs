@@ -1,9 +1,10 @@
-use clap::{command, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use ink_tool::AppResult;
 use std::path::PathBuf;
 
 pub(crate) mod fmt;
 pub(crate) mod lsp;
+pub(crate) mod test;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -42,6 +43,7 @@ impl Default for LogLevel {
 enum Commands {
     Fmt(fmt::FmtOpt),
     Lsp(lsp::LspOpt),
+    Test(test::TestOpt),
 }
 
 pub(crate) fn main() -> AppResult<()> {
@@ -50,6 +52,7 @@ pub(crate) fn main() -> AppResult<()> {
     match args.command {
         Commands::Fmt(opt) => fmt::fmt(opt),
         Commands::Lsp(opt) => lsp::lsp(opt),
+        Commands::Test(opt) => test::test(opt),
     }
 }
 

@@ -160,9 +160,6 @@ fn add_illegal_targets(
                 ..Default::default()
             });
         } else {
-            // TODO: Ambiguous targets only required for list items when duplicate definitions are caught early.
-            // Also: Why are we even reporting duplicates at the usage site. How dumb!
-            // IDEA: We should certainly catch duplicate *local* definitions, though.
             let mut illegal_targets = Vec::new();
 
             for (def_doc, def_range) in definition.iter().copied() {
@@ -227,6 +224,8 @@ fn add_illegal_targets(
 
 fn add_duplicate_definitions(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid: DocId) {
     use NodeFlag::*;
+
+    // TODO: We should certainly catch duplicate *local* definitions, too.
 
     let uris = db.doc_ids();
     let parents = db.stories_of(docid);
