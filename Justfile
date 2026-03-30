@@ -1,8 +1,22 @@
 diff := "difft"
 cargo_profile := "dev"
 
+# Test rust code
+[group('tests')]
 test *args:
     cargo test {{args}}
+
+# Test ink code
+[group('tests')]
+test-inklecate pattern="*.test.ink":
+    find . -iname "{{pattern}}" | xargs cargo run -- test
+
+# Test everything
+[group('tests')]
+test-all:
+    just test --workspace --examples
+    just test --workspace --doc
+    just test-inklecate
 
 diff target="examples/the_intercept.ink":
     #!/usr/bin/env sh
