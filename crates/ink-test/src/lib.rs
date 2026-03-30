@@ -6,6 +6,7 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     string::FromUtf8Error,
+    time::{Duration, Instant},
 };
 
 use derive_more::derive::{Error, From};
@@ -115,6 +116,9 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
     let mut buf = [0u8; 1024];
     let mut actual = Vec::new();
 
+    static TIMEOUT: Duration = Duration::from_secs(1);
+    let instant = Instant::now();
+    let mut timed_out = false;
     loop {
         match recv.read(&mut buf)? {
             0 => break,
@@ -130,11 +134,25 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
                     send.write_all(&command)?;
                     send.flush()?;
                 }
+
+                if Instant::now() - instant > TIMEOUT {
+                    timed_out = true;
+                    break;
+                }
             }
         }
     }
+    player.kill()?;
+    player.wait()?;
 
     let actual = String::from_utf8(actual)?;
+    let actual = if timed_out {
+        // If we've timed out, we're likely in an infinite loop, so we truncate the output.
+        let max = actual.ceil_char_boundary(run.expected_output.len() + 150);
+        &actual[..max]
+    } else {
+        &actual[..]
+    };
 
     let command_header = chain(once(command.get_program()), command.get_args())
         .collect::<Vec<_>>()
@@ -143,7 +161,7 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
         .to_string();
     let expectation_header = format!("Test {}", run.name);
 
-    let diff = TextDiff::from_lines(&actual, &run.expected_output)
+    let diff = TextDiff::from_lines(actual, &run.expected_output)
         .unified_diff()
         .context_radius(3)
         .header(&command_header, &expectation_header)
@@ -164,7 +182,11 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
             };
             eprintln!("{line}");
         }
-        Err("Unexpected output".to_string().into())
+        Err(format!(
+            "Unexpected output{}",
+            if timed_out { " after timeout" } else { "" }
+        )
+        .into())
     }
 }
 
