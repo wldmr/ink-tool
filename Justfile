@@ -14,6 +14,7 @@ test-inklecate pattern="*.test.ink":
 # Test everything
 [group('tests')]
 test-all:
+    just test --workspace
     just test --workspace --examples
     just test --workspace --doc
     just test-inklecate

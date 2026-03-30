@@ -48,7 +48,6 @@ mod tests {
         str::FromStr,
     };
     use tap::Pipe;
-    use test_case::test_case;
     use text_annotations::{scan_default_annotations, Annotation};
     use util::testing::Compact;
 
@@ -282,18 +281,9 @@ mod tests {
         }
     }
 
-    #[test_case("examples/links/forward_declarations.ink")]
-    #[test_case("examples/links/temp_vars.ink")]
-    #[test_case("examples/links/lists.ink")]
-    #[test_case("examples/links/labels.ink")]
-    #[test_case("examples/links/shadowing.ink")]
-    #[test_case("examples/links/self-reference.ink")]
-    #[test_case("examples/links/ambiguous/")]
-    #[test_case("examples/links/knots_and_stitches/")]
-    fn test_links(fs_location: &str) {
-        util::testing::setup_logging(log::LevelFilter::Trace);
-
-        let ink_files = walkdir::WalkDir::new(fs_location)
+    #[test]
+    fn namespacing() {
+        let ink_files = walkdir::WalkDir::new("examples/namespacing/")
             .into_iter()
             .filter_ok(|it| it.path().extension().is_some_and(|it| it == "ink"))
             .map_ok(|it| {
