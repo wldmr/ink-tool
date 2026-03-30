@@ -122,9 +122,9 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
                 static PROMPT: &[u8] = &[b'?', b'>', b' '];
                 actual.extend_from_slice(&buf[..n]);
                 if actual.ends_with(PROMPT) {
-                    let choice = choices
-                        .next()
-                        .ok_or_else(|| "Required a choice, but ran out.".to_string())?;
+                    let Some(choice) = choices.next() else {
+                        break;
+                    };
                     let command = format!("{choice}\n").into_bytes();
                     actual.extend_from_slice(&command);
                     send.write_all(&command)?;
@@ -207,9 +207,7 @@ fn extract_tests(path_to_ink: &Path) -> Result<Vec<TestDescription>, TestFailure
         });
     }
     if tests.is_empty() {
-        Err(TestFailure::TestError {
-            message: format!("No tests found in file {}", path_to_ink.to_string_lossy()),
-        })
+        Err(format!("No tests found in file {}", path_to_ink.to_string_lossy()).into())
     } else {
         Ok(tests)
     }
