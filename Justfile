@@ -8,8 +8,8 @@ test *args:
 
 # Test ink code
 [group('tests')]
-test-inklecate pattern="*.test.ink":
-    find . -iname "{{pattern}}" | xargs cargo run -- test
+test-inklecate include="*.ink" pattern="/* TEST":
+    grep --recursive --files-with-matches --include "{{include}}" "{{pattern}}" | xargs cargo run -- test
 
 # Test everything
 [group('tests')]
