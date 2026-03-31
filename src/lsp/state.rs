@@ -172,7 +172,9 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    mod errors;
     mod goto_definition;
+    mod namespacing;
     mod story_structure;
 
     use super::*;

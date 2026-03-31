@@ -18,6 +18,9 @@ Nested labels (labels in stitches inside knots) are a bit surprising, in that yo
 However, {foo} and {bar} mean nothing out here, because those names aren't global.
 //                  ^^^ references-nothing
 //        ^^^ references-nothing
+//        |||       ||| 
+//        |||       ^^^ diagnostic Undefined
+//        ^^^ diagnostic Undefined
 
 === knot ===
 //  ^^^^ defines labels:knot

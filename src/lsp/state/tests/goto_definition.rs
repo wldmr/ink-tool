@@ -6,7 +6,6 @@ use lsp_types::{Location, Position, Range};
 
 use crate::lsp::{
     location::TextPos,
-    salsa::InkGetters,
     state::tests::{new_state, uri},
 };
 
