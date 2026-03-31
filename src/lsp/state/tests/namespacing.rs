@@ -159,9 +159,10 @@ fn test_goto_definition(state: &State) {
             );
         }
 
-        output.push_str(&format!("{}", renderer.render(&[error])));
+        output.push_str(&format!("{}\n\n", renderer.render(&[error])));
     }
 
+    let output = output.trim();
     if !output.is_empty() {
         panic!("\n{output}\n");
     }
