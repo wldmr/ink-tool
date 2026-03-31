@@ -36,13 +36,17 @@ impl super::State {
 
 #[cfg(test)]
 mod tests {
-    use crate::lsp::state::{
-        tests::{new_state, uri},
-        State,
+    use crate::lsp::{
+        salsa::{InkGetters, Ops},
+        state::{tests::new_state, State},
     };
+    use annotate_snippets::{Level, Snippet};
     use assert2::assert;
+    use indoc::indoc;
+    use ink_document::InkDocument;
     use itertools::Itertools;
     use lsp_types::{Location, Uri};
+    use mini_milc::Cached;
     use std::{
         collections::{BTreeSet, HashMap, HashSet},
         ops::Range,
@@ -51,28 +55,22 @@ mod tests {
     use text_annotations::{scan_default_annotations, Annotation};
     use util::testing::Compact;
 
-    struct LinkCheck<'a> {
-        state: &'a State,
-        definitions: HashMap<&'a str, (&'a Uri, Annotation<'a>)>,
-        references: Vec<(&'a Uri, Annotation<'a>, BTreeSet<&'a str>)>,
-    }
-
     // XXX: This is actually testing `goto-definition` not references!
     // But OK for now. Goto references is the inverse and should come from the same sources. Remedy later.
-    impl<'a> LinkCheck<'a> {
-        fn new(state: &'a State) -> Self {
-            Self {
-                state,
-                definitions: Default::default(),
-                references: Default::default(),
-            }
-        }
+    fn check_links(state: &State) {
+        let mut definitions: HashMap<&str, (&Uri, Annotation<'_>)> = Default::default();
+        let mut references: Vec<(&Uri, Annotation<'_>, BTreeSet<&str>)> = Default::default();
+        let doc_ids = state.db.doc_ids();
+        let docs: HashMap<&Uri, Cached<Ops, InkDocument>> = doc_ids
+            .pairs()
+            .map(|(id, uri)| (uri, state.db.document(id)))
+            .collect();
 
-        fn add_annotations(
-            &mut self,
-            uri: &'a Uri,
-            annotations: impl IntoIterator<Item = Annotation<'a>>,
-        ) {
+        // Sometimes we'll need the bytes from a a location that we don't know the annotation for:
+        let bytes = |loc: &Location| -> Range<usize> { docs[&loc.uri].byte_range(loc.range) };
+
+        for (uri, doc) in docs.iter() {
+            let annotations = scan_default_annotations(doc.text(..));
             for loc in annotations {
                 let mut claim = loc.claim().split_whitespace();
                 let Some(keyword) = claim.next() else {
@@ -85,7 +83,7 @@ mod tests {
                     "defines" => {
                         assert!(claim.len() == 1, "defines takes exactly one argument");
                         let arg = claim.first().unwrap();
-                        if let Some((existing_uri, existing_ann)) = self.definitions.get(arg) {
+                        if let Some((existing_uri, existing_ann)) = definitions.get(arg) {
                             panic!(
                                 "Duplicate definition for `{}`: {}:{:?} and {}:{:?}",
                                 existing_ann.text(),
@@ -95,179 +93,146 @@ mod tests {
                                 Compact(loc.text_location)
                             );
                         } else {
-                            self.definitions.insert(arg, (uri, loc));
+                            definitions.insert(arg, (uri, loc));
                         };
                     }
                     "references" => {
                         assert!(!claim.is_empty(), "references needs at least one parameter");
-                        self.references.push((uri, loc, claim));
+                        references.push((uri, loc, claim));
                     }
                     "references-nothing" => {
                         assert!(claim.is_empty(), "references-nothing takes no parameters");
-                        self.references.push((uri, loc, claim));
+                        references.push((uri, loc, claim));
                     }
                     _ => continue, // Ignore (might be a claim for another annotation scanner)
                 }
             }
         }
 
-        fn check(&'a self) {
-            use annotate_snippets::{Level, Snippet};
-            let renderer = annotate_snippets::Renderer::styled();
-            let mut output = String::new();
-            // Insurance against some obviously bad test definitions:
-            {
-                let defined_names = self.definitions.keys().copied().collect::<BTreeSet<_>>();
-                let referenced_names = self
-                    .references
-                    .iter()
-                    .flat_map(|(_, _, names)| names)
-                    .copied()
-                    .collect::<BTreeSet<_>>();
-                assert!(
-                    defined_names == referenced_names,
-                    "We don't want dangling references or definitions in tests."
-                );
-                assert!(
-                    defined_names.len() != 0,
-                    "There should be at least one reference in a test"
-                );
-            }
+        let renderer = annotate_snippets::Renderer::styled();
+        let mut output = String::new();
 
-            let inks: HashMap<&'a Uri, &'a str> = {
-                let defs = self
-                    .definitions
-                    .iter()
-                    .map(|(_, (uri, annotation))| (*uri, annotation.full_text));
-                let refs = self
-                    .references
-                    .iter()
-                    .map(|(uri, annotation, _)| (*uri, annotation.full_text));
-                defs.chain(refs).collect()
-            };
-
-            for (usage_uri, usage_ann, names) in &self.references {
-                let found_definitions: HashSet<Location> = self
-                    .state
-                    .goto_definition((*usage_uri).clone(), usage_ann.text_location.start.into())
-                    .expect("we should be within range")
-                    .into_iter()
-                    .collect();
-
-                let expected: HashSet<Location> = names
-                    .iter()
-                    .map(|name| self.definitions[name])
-                    .map(|(uri, loc)| Location::new(uri.clone(), loc.text_location.into()))
-                    .collect();
-
-                if found_definitions == expected {
-                    continue;
-                }
-
-                let mut error = Level::Error.title("Incorrect links").snippet(
-                    Snippet::source(usage_ann.full_text)
-                        .origin(usage_uri.path().as_str())
-                        .fold(true)
-                        .annotations([Level::Info
-                            .span(usage_ann.text_location.byte_range())
-                            .label("This usage …")]),
-                );
-
-                let missing_by_file = expected
-                    .difference(&found_definitions)
-                    .into_group_map_by(|it| &it.uri);
-                for (file, ranges) in missing_by_file {
-                    error = error.snippet(
-                        Snippet::source(inks[file])
-                            .origin(file.path().as_str())
-                            .fold(true)
-                            .annotations(ranges.into_iter().map(|loc| {
-                                Level::Error.span(self.bytes(loc)).label("should link here")
-                            })),
-                    );
-                }
-
-                let unexpected_by_file = found_definitions
-                    .difference(&expected)
-                    .into_group_map_by(|it| &it.uri);
-
-                for (file, ranges) in unexpected_by_file {
-                    error = error.snippet(
-                        Snippet::source(inks[file])
-                            .origin(file.path().as_str())
-                            .fold(true)
-                            .annotations(ranges.into_iter().map(|loc| {
-                                Level::Error
-                                    .span(self.bytes(loc))
-                                    .label("should NOT link here")
-                            })),
-                    );
-                }
-
-                output.push_str(&format!("{}", renderer.render(error)));
-            }
-
-            if !output.is_empty() {
-                panic!("\n{output}\n");
-            }
+        // Insurance against some obviously bad test definitions:
+        {
+            let defined_names = definitions.keys().copied().collect::<BTreeSet<_>>();
+            let referenced_names = references
+                .iter()
+                .flat_map(|(_, _, names)| names)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            assert!(
+                defined_names == referenced_names,
+                "We don't want dangling references or definitions in tests."
+            );
+            assert!(
+                defined_names.len() != 0,
+                "There should be at least one reference in a test"
+            );
         }
 
-        fn bytes(&self, loc: &Location) -> Range<usize> {
-            let (doc, _) = self.state.get_doc_and_id(&loc.uri).unwrap();
-            doc.byte_range(loc.range)
+        let inks: HashMap<&Uri, &str> = {
+            let defs = definitions
+                .iter()
+                .map(|(_, (uri, annotation))| (*uri, annotation.full_text));
+            let refs = references
+                .iter()
+                .map(|(uri, annotation, _)| (*uri, annotation.full_text));
+            defs.chain(refs).collect()
+        };
+
+        for (usage_uri, usage_ann, names) in &references {
+            let found_definitions: HashSet<Location> = state
+                .goto_definition((*usage_uri).clone(), usage_ann.text_location.start.into())
+                .expect("we should be within range")
+                .into_iter()
+                .collect();
+
+            let expected: HashSet<Location> = names
+                .iter()
+                .map(|name| definitions[name])
+                .map(|(uri, loc)| Location::new(uri.clone(), loc.text_location.into()))
+                .collect();
+
+            if found_definitions == expected {
+                continue;
+            }
+
+            let mut error = Level::Error.title("Incorrect links").snippet(
+                Snippet::source(usage_ann.full_text)
+                    .origin(usage_uri.path().as_str())
+                    .fold(true)
+                    .annotations([Level::Info
+                        .span(usage_ann.text_location.byte_range())
+                        .label("This usage …")]),
+            );
+
+            let missing_by_file = expected
+                .difference(&found_definitions)
+                .into_group_map_by(|it| &it.uri);
+            for (file, ranges) in missing_by_file {
+                error =
+                    error.snippet(
+                        Snippet::source(inks[file])
+                            .origin(file.path().as_str())
+                            .fold(true)
+                            .annotations(ranges.into_iter().map(|loc| {
+                                Level::Error.span(bytes(loc)).label("should link here")
+                            })),
+                    );
+            }
+
+            let unexpected_by_file = found_definitions
+                .difference(&expected)
+                .into_group_map_by(|it| &it.uri);
+            for (file, ranges) in unexpected_by_file {
+                error = error.snippet(
+                    Snippet::source(inks[file])
+                        .origin(file.path().as_str())
+                        .fold(true)
+                        .annotations(ranges.into_iter().map(|loc| {
+                            Level::Error.span(bytes(loc)).label("should NOT link here")
+                        })),
+                );
+            }
+
+            output.push_str(&format!("{}", renderer.render(error)));
+        }
+
+        if !output.is_empty() {
+            panic!("\n{output}\n");
         }
     }
 
     #[test]
     fn namespacing() {
+        let mut state = new_state();
+
         let ink_files = walkdir::WalkDir::new("examples/namespacing/")
             .into_iter()
-            .filter_ok(|it| it.path().extension().is_some_and(|it| it == "ink"))
-            .map_ok(|it| {
-                let path = it.path().as_os_str().to_string_lossy();
-                let uri = Uri::from_str(&path).unwrap();
-                let contents = std::fs::read_to_string(&*path).unwrap();
-                (uri, contents)
-            })
-            .collect::<Result<HashMap<_, _>, _>>()
-            .unwrap();
+            .map(|file| file.expect("We don't tolerate errors in tests"))
+            .filter(|file| file.path().extension().is_some_and(|it| it == "ink"));
 
-        let mut state = new_state();
-        for (uri, contents) in &ink_files {
-            // parse actual links via tree-sitter (i.e. normally)
-            state.edit(uri.clone(), contents);
+        for ink in ink_files {
+            let path = ink.path().as_os_str().to_string_lossy();
+            let uri = Uri::from_str(&path).unwrap();
+            let contents = std::fs::read_to_string(&*path).unwrap();
+            state.edit(uri, contents);
         }
 
-        let mut checks = LinkCheck::new(&state);
-
-        for (uri, contents) in &ink_files {
-            // parse expected links via annotations
-            checks.add_annotations(&uri, scan_default_annotations(contents))
-        }
-
-        checks.check();
+        check_links(&state);
     }
 
     #[test]
     fn goto_reference_arg() {
-        use indoc::indoc;
-        let text = indoc! {r"
+        let state = new_state().with_comment_separated_files(indoc! {r"
                 VAR number = 1
                 //  ^^^^^^ defines number
                 {  raise(number)  }
                 //       ^^^^^^ references number
                 == function raise(ref arg)
                 ~ arg = arg + 1
-            "};
-
-        let main_uri = uri("main.ink");
-        let mut state = new_state();
-        state.edit(main_uri.clone(), text);
-        let mut checks = LinkCheck::new(&state);
-
-        checks.add_annotations(&main_uri, scan_default_annotations(text));
-
-        checks.check();
+            "});
+        check_links(&state);
     }
 
     mod labels {
