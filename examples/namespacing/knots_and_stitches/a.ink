@@ -33,7 +33,6 @@ INCLUDE c.ink
     // ^^^^ references stitch:KKKa.SSSa
 *   -> SSSb
     // ^^^^ references stitch:KKKa.SSSb
-    // ^^^^ references-not stitch:SSSb
 *   -> KKKa.SSSa
     // |    ^ references stitch:KKKa.SSSa
     // ^ references knot:KKKa

@@ -6,26 +6,22 @@ That means they aren't visible in higher levels, NOR in lower levels.
 //     ^ defines temp_vars:toplevel
 He was {t} indisposed.
 //      ^ references temp_vars:toplevel
-//      ^ references-not temp_vars:knot temp_vars:knot.stitch temp_vars:knot.stitch2 temp_vars:k2
 
 === knot ===
 ~ temp t = "knot"
 //     ^ defines temp_vars:knot
 He was {t} amused.
 //      ^ references temp_vars:knot
-//      ^ references-not temp_vars:toplevel temp_vars:knot.stitch temp_vars:knot.stitch2 temp_vars:k2
 
 = stitch
 ~ temp t = "stitch"
 //     ^ defines temp_vars:knot.stitch
 He was in {t}es.
 //         ^ references temp_vars:knot.stitch
-//         ^ references-not temp_vars:toplevel temp_vars:knot temp_vars:knot.stitch2 temp_vars:k2
 
 = stitch_2
 ~ temp t = 2
 //     ^ defines temp_vars:knot.stitch2
-//     ^ references-not temp_vars:toplevel temp_vars:knot temp_vars:knot.stitch temp_vars:k2
 It was {t} hot.
 //      ^ references temp_vars:knot.stitch2
 
@@ -34,4 +30,3 @@ It was {t} hot.
 //     ^ defines temp_vars:k2
 That was o{t}.
 //         ^ references temp_vars:k2
-//         ^ references-not temp_vars:toplevel temp_vars:knot temp_vars:knot.stitch temp_vars:knot.stitch2

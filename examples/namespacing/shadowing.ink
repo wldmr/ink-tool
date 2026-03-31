@@ -27,7 +27,6 @@ CONST name = "default"
 
 My {name} is default.
 //  ^^^^ references shadowing:global
-//  ^^^^ references-not shadowing:knotparam shadowing:stitchparam
 
 === knot(name) ===
 //       ^^^^ defines shadowing:knotparam
@@ -36,7 +35,6 @@ My {name} is default.
 
 My {name} is good, and what that says depends on how we got here.
 //  ^^^^ references shadowing:knotparam
-//  ^^^^ references-not shadowing:global shadowing:stitchparam
 
 = stitch(name)
 //       ^^^^ defines shadowing:stitchparam
@@ -45,4 +43,3 @@ My {name} is good, and what that says depends on how we got here.
 
 My {name} is confusing, and what that says depends on how we got here.
 //  ^^^^ references shadowing:stitchparam
-//  ^^^^ references-not shadowing:knotparam shadowing:global

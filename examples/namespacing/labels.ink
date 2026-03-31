@@ -4,26 +4,20 @@ We only redirect the user to the specific thing that the cursor points to; i.e. 
 *   -> knot.foo
     //      ^^^ references labels:knot.foo
     // ^^^^     references labels:knot
-    // ^^^^     references-not labels:knot.foo
 
 Nested labels (labels in stitches inside knots) are a bit surprising, in that you can leave out the stitch name:
 *   Go to Knot's bar -> knot.bar
                      //      ^ references labels:knot.bar
                      // ^ references labels:knot
 
-// Note the references-not claims labels:below:
-// We're trying to be as specific as possible when interpreting the user's intent.
 *   Go to Knot's bar -> knot.stitch.bar
                      // |  | |    | ^^^ references labels:knot.bar
-                     // |  | |    | ^^^ references-not labels:knot labels:knot.stitch
                      // |  | ^^^^^^ references labels:knot.stitch 
-                     // |  | ^^^^^^ references-not labels:knot labels:knot.bar
                      // ^^^^ references labels:knot
-                     // ^^^^ references-not labels:knot.stitch labels:knot.bar
 
 However, {foo} and {bar} mean nothing out here, because those names aren't global.
-//                  ^^^ labels:references-nothing
-//        ^^^ labels:references-nothing
+//                  ^^^ references-nothing
+//        ^^^ references-nothing
 
 === knot ===
 //  ^^^^ defines labels:knot

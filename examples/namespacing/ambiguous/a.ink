@@ -10,10 +10,7 @@ CONST yo = false
 //    ^^ defines const.yo
 
 This much is {yo}, he said ambiguously.
-//            ^^ references var.yo
-//            ^^ references const.yo
-//            ^^ references a.stitch.yo
-//            ^^ references b.knot.yo
+//            ^^ references var.yo const.yo a.stitch.yo b.knot.yo
 
  = yo
 // ^^ defines a.stitch.yo
