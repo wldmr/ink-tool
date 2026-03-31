@@ -23,5 +23,7 @@ pub(crate) fn test(opt: TestOpt) -> AppResult<()> {
         }
     }
 
+    errors.eprint();
+
     errors.into_result().map_err(|err| err.into())
 }
