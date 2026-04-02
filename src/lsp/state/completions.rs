@@ -28,10 +28,10 @@ impl super::State {
 
         // SMELL: We're repeating the name resolution logic here.
 
-        // From innermost block: locals + temps
+        // From innermost block: locals & addresses
         let innermost = std::iter::chain(
-            node_info.temps_in_scope(block),
             node_info.locals_in_scope(block),
+            node_info.addresses_in_scope(block),
         );
         for (name, range) in innermost {
             if name.contains(spec.search_text) {
@@ -40,12 +40,12 @@ impl super::State {
             }
         }
 
-        // From parent blocks: locals only
+        // From parent blocks: addresses only
         while let Some(parent) = node_info.parent_scope(block) {
             if parent == block {
                 break;
             }
-            for (name, range) in node_info.locals_in_scope(parent) {
+            for (name, range) in node_info.addresses_in_scope(parent) {
                 if name.contains(spec.search_text) {
                     let item = self.completion(this_doc, name, *range, &spec);
                     completions.push(item);

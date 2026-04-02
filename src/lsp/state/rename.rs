@@ -439,13 +439,15 @@ mod tests {
             {p1 + p2}
             = stitch(p1)
             {p1 + p2}
+            //    -- Unaffected because it is unresolved
             ",
             "
             === knot(p1, new) ===
             //           ^ rename-symbol new
             {p1 + new}
             = stitch(p1)
-            {p1 + new}
+            {p1 + p2}
+            //    -- Unaffected because it is unresolved
             "
         ];
 
@@ -457,13 +459,17 @@ mod tests {
             //    ^ rename-symbol new
             = stitch(p1)
             {p1 + p2}
+            //<- Unaffected because it is shadowed
+            //    -- Unaffected because it is unresolved
             ",
             "
             === knot(p1, new) ===
             {p1 + new}
             //    ^ rename-symbol new
             = stitch(p1)
-            {p1 + new}
+            {p1 + p2}
+            //<- Unaffected because it is shadowed
+            //    -- Unaffected because it is unresolved
             "
         ];
     }

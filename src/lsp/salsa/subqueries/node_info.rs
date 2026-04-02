@@ -57,12 +57,12 @@ impl NodeInfos {
         self.parent_scope.get(&range).copied()
     }
 
-    pub fn locals_in_scope<T: Into<TextRange>>(
+    pub fn addresses_in_scope<T: Into<TextRange>>(
         &self,
         range: T,
     ) -> impl Iterator<Item = (&String, DefRange)> + use<'_, T> {
         let iter: Box<dyn Iterator<Item = (&String, DefRange)>> =
-            match self.locals_in_scope.get(&range.into()) {
+            match self.addresses_in_scope.get(&range.into()) {
                 Some(vec1) => Box::new(
                     vec1.iter()
                         .flat_map(|(s, ranges)| ranges.iter().map(move |r| (s, *r))),
@@ -72,12 +72,12 @@ impl NodeInfos {
         iter
     }
 
-    pub fn temps_in_scope<T: Into<TextRange>>(
+    pub fn locals_in_scope<T: Into<TextRange>>(
         &self,
         range: T,
     ) -> impl Iterator<Item = (&String, DefRange)> + use<'_, T> {
         let iter: Box<dyn Iterator<Item = (&String, DefRange)>> =
-            match self.temps_in_scope.get(&range.into()) {
+            match self.locals_in_scope.get(&range.into()) {
                 Some(vec1) => Box::new(
                     vec1.iter()
                         .flat_map(|(s, ranges)| ranges.iter().map(move |r| (s, *r))),
@@ -133,8 +133,8 @@ pub(crate) use match_flags;
 pub struct NodeInfos {
     /// Which scope node the node resides in
     parent_scope: HashMap<TextRange, TextRange>,
+    addresses_in_scope: HashMap<TextRange, Vec1<(String, Vec1<DefRange>)>>,
     locals_in_scope: HashMap<TextRange, Vec1<(String, Vec1<DefRange>)>>,
-    temps_in_scope: HashMap<TextRange, Vec1<(String, Vec1<DefRange>)>>,
 
     /// The global names defined in this file.
     global_names_by_range: HashMap<DefRange, Vec1<String>>,
@@ -255,9 +255,9 @@ pub type IdentRange = TextRange;
 struct Scope<'a> {
     range: TextRange,
     name: &'a str,
-    locals: Definitions<'a>,
+    addresses: Definitions<'a>,
     /// temps don't transfer to subscopes, so we keep track of them separately
-    temps: Definitions<'a>,
+    locals: Definitions<'a>,
     usages: Usages<'a>,
 }
 
@@ -266,10 +266,18 @@ impl<'a> Scope<'a> {
         Self {
             range: block.into(),
             name: "",
+            addresses: Default::default(),
             locals: Default::default(),
-            temps: Default::default(),
             usages: Default::default(),
         }
+    }
+
+    fn add_address(&mut self, text: impl Into<String>, range: TextRange) {
+        let range = DefRange(range);
+        self.addresses
+            .entry(text.into())
+            .and_modify(|defs| defs.push(range))
+            .or_insert_with(|| Vec1::new(range));
     }
 
     fn add_local(&mut self, text: impl Into<String>, range: TextRange) {
@@ -280,21 +288,13 @@ impl<'a> Scope<'a> {
             .or_insert_with(|| Vec1::new(range));
     }
 
-    fn add_temp(&mut self, text: impl Into<String>, range: TextRange) {
-        let range = DefRange(range);
-        self.temps
-            .entry(text.into())
-            .and_modify(|defs| defs.push(range))
-            .or_insert_with(|| Vec1::new(range));
-    }
-
-    /// This is a "normal" usage that might resolve the a temp variable
+    /// This is a "normal" usage that might resolve the a local variable
     fn add_usage(&mut self, usage_id: IdentRange, text: &'a str) {
         self.usages.insert(usage_id, (text, true));
     }
 
-    /// This is a usage from "outside" this scope, which means it can't  see our temps.
-    fn add_non_temp_usage(&mut self, usage_id: IdentRange, text: &'a str) {
+    /// This is a usage from "outside" this scope, which means it can't see our temps and params.
+    fn add_outside_usage(&mut self, usage_id: IdentRange, text: &'a str) {
         self.usages.insert(usage_id, (text, false));
     }
 }
@@ -431,7 +431,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
 
                 if let Some(knot) = self.knot.as_mut() {
                     // If we are inside a knot block, add our name to its locals …
-                    knot.add_local(name, range);
+                    knot.add_address(name, range);
                     kind |= NodeFlag::Local;
                     state.add_global(format!("{knot}.{name}"), range);
                 } else {
@@ -454,14 +454,14 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     }
                     (None, Some(scope)) | (Some(scope), None) => {
                         kind |= NodeFlag::Local;
-                        scope.add_local(name, range);
+                        scope.add_address(name, range);
                         state.add_global(format!("{scope}.{name}"), range);
                     }
                     (Some(knot), Some(stitch)) => {
                         kind |= NodeFlag::Local;
                         // Basically, the stitch name is optional both inside the knot and globally.
-                        knot.add_local(name, range);
-                        knot.add_local(format!("{stitch}.{name}"), range);
+                        knot.add_address(name, range);
+                        knot.add_address(format!("{stitch}.{name}"), range);
                         state.add_global(format!("{knot}.{name}"), range);
                         state.add_global(format!("{knot}.{stitch}.{name}"), range);
                     }
@@ -487,7 +487,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     // Externals don't define a scope so we only add params to the scope if we're not in an EXTERNAL.
                     state.parent_scope.insert(range, scope.range);
                     scope.add_local(param_name, range);
-                    scope.add_non_temp_usage(range, param_name);
+                    scope.add_usage(range, param_name);
                 }
                 Ignore // No need to descend, we've already recorded the usage.
             }
@@ -498,7 +498,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 state.add_node_kind(range, kind);
                 state.parent_scope.insert(range, self.current_scope().range);
                 let temp_name = self.doc.node_text(temp.name());
-                self.current_scope_mut().add_temp(temp_name, range);
+                self.current_scope_mut().add_local(temp_name, range);
                 Descend
             }
 
@@ -663,15 +663,15 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
         use ink_syntax::AllNamed::*;
         match node {
             Ink(_) => {
-                for (usage_id, (text, can_be_temp)) in self.ink.usages.drain() {
+                for (usage_id, (text, maybe_local)) in self.ink.usages.drain() {
                     let resolved =
-                        can_be_temp && state.resolve_from(&mut self.ink.temps, usage_id, text);
+                        maybe_local && state.resolve_from(&mut self.ink.locals, usage_id, text);
                     if !resolved {
                         state.add_unresolved(usage_id, text);
                     }
                 }
-                if let Some(temps) = Vec1::from_iter(self.ink.temps.drain()) {
-                    state.temps_in_scope.insert(self.ink.range, temps);
+                if let Some(locals) = Vec1::from_iter(self.ink.locals.drain()) {
+                    state.locals_in_scope.insert(self.ink.range, locals);
                 }
             }
 
@@ -681,21 +681,22 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     .take()
                     .expect("scope should have been set on entry");
 
-                for (usage_id, (text, can_be_temp)) in scope.usages.drain() {
-                    let resolved_temps =
-                        can_be_temp && state.resolve_from(&mut scope.temps, usage_id, text);
-                    let resolved_locals = state.resolve_from(&mut scope.locals, usage_id, text);
-                    let resolved_locally = resolved_temps || resolved_locals;
+                for (usage_id, (text, maybe_local)) in scope.usages.drain() {
+                    let resolved_locals =
+                        maybe_local && state.resolve_from(&mut scope.locals, usage_id, text);
+                    let resolved_addresses =
+                        state.resolve_from(&mut scope.addresses, usage_id, text);
+                    let resolved_locally = resolved_locals || resolved_addresses;
 
                     if !resolved_locally {
                         state.add_unresolved(usage_id, text);
                     }
                 }
-                if let Some(temps) = Vec1::from_iter(scope.temps.drain()) {
-                    state.temps_in_scope.insert(scope.range, temps);
-                }
                 if let Some(locals) = Vec1::from_iter(scope.locals.drain()) {
                     state.locals_in_scope.insert(scope.range, locals);
+                }
+                if let Some(addresses) = Vec1::from_iter(scope.addresses.drain()) {
+                    state.addresses_in_scope.insert(scope.range, addresses);
                 }
             }
 
@@ -705,28 +706,28 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                     .take()
                     .expect("scope should have been set on entry");
 
-                for (usage_id, (text, can_be_temp)) in scope.usages.drain() {
-                    let resolved_temps =
-                        can_be_temp && state.resolve_from(&mut scope.temps, usage_id, text);
-                    let resolved_locals = state.resolve_from(&mut scope.locals, usage_id, text);
-                    let resolved_locally = resolved_temps || resolved_locals;
+                for (usage_id, (text, maybe_local)) in scope.usages.drain() {
+                    let resolved_locals =
+                        maybe_local && state.resolve_from(&mut scope.locals, usage_id, text);
+                    let resolved_addresses =
+                        state.resolve_from(&mut scope.addresses, usage_id, text);
+                    let resolved_locally = resolved_locals || resolved_addresses;
 
                     // If we've not yet found anything, and the stitch is part of a knot, we look at its locals:
                     // FIXME: This is wrong! Ink doesn't even resolve parent params!
                     if !resolved_locally {
                         if let Some(knot) = self.knot.as_mut() {
-                            // NOTE: Not looking at parent's temps here, we can't see those.
-                            knot.add_non_temp_usage(usage_id, text);
+                            knot.add_outside_usage(usage_id, text);
                         } else {
                             state.add_unresolved(usage_id, text);
                         }
                     }
                 }
-                if let Some(temps) = Vec1::from_iter(scope.temps.drain()) {
-                    state.temps_in_scope.insert(scope.range, temps);
-                }
                 if let Some(locals) = Vec1::from_iter(scope.locals.drain()) {
                     state.locals_in_scope.insert(scope.range, locals);
+                }
+                if let Some(addresses) = Vec1::from_iter(scope.addresses.drain()) {
+                    state.addresses_in_scope.insert(scope.range, addresses);
                 }
             }
 
@@ -826,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn params_are_visible_in_subscopes() {
+    fn params_are_only_visible_in_their_defining_scope() {
         let text = indoc! {"
             === Knot(p1, p2) ===
             //       ^^ def knot-p1
@@ -856,8 +857,12 @@ mod tests {
             "p1 refers to the inner stitch scope"
         );
         check!(
-            infos.local_definitions(refs["stitch-p2"]) == Some(&vec1![defs["knot-p2"]]),
-            "p2 refers to the outer knot scope"
+            infos.local_definitions(refs["stitch-p2"]) == None,
+            "p2 in sttitch refers to nothing"
+        );
+        check!(
+            infos.unresolved_ranges("p2") == Some(&vec1!(refs["stitch-p2"])),
+            "p2 refers to nothing"
         );
     }
 
