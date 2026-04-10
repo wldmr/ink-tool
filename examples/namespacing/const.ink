@@ -22,24 +22,74 @@ like you would expect from a “normal” programming language. Non-local surpri
 can be pointed out by diagnostics.
 */
 
-CONST name = "default"
-//    ^^^^ defines shadowing:global
+* [Bypass 1] -> knot.bypass
+* [Bypass 2] -> knot.bypass2
+* [Knot] -> knot("Slim Shady")
+* [Knot stitch] -> knot.stitch("Lieutenant Frank Drebin, Detective Lieutenant, Police Squad")
 
-My {name} is default.
-//  ^^^^ references shadowing:global
+CONST name = "Inigo Montoya"
+//    ^^^^ defines const:global
+
+My name is {name}.
+//          ^^^^ references const:global
 
 === knot(name) ===
-//       ^^^^ defines shadowing:knotparam
+//       ^^^^ diagnostic clashes with CONST
 
 - (bypass)
 
-My {name} is good, and what that says depends on how we got here.
-//  ^^^^ references shadowing:knotparam
+My name is {name}.
+//          ^^^^ references const:global
+
+-> END
 
 = stitch(name)
-//       ^^^^ defines shadowing:stitchparam
+//       ^^^^ diagnostic clashes with CONST
 
 - (bypass2)
 
-My {name} is confusing, and what that says depends on how we got here.
-//  ^^^^ references shadowing:stitchparam
+My name is {name}.
+//          ^^^^ references const:global
+
+-> END
+
+
+/* TEST
+
+1: Bypass 1
+2: Bypass 2
+3: Knot
+4: Knot stitch
+?> 1
+My name is Inigo Montoya.
+*/
+
+/* TEST
+
+1: Bypass 1
+2: Bypass 2
+3: Knot
+4: Knot stitch
+?> 2
+My name is Inigo Montoya.
+*/
+
+/* TEST
+
+1: Bypass 1
+2: Bypass 2
+3: Knot
+4: Knot stitch
+?> 3
+My name is Inigo Montoya.
+*/
+
+/* TEST
+
+1: Bypass 1
+2: Bypass 2
+3: Knot
+4: Knot stitch
+?> 4
+My name is Inigo Montoya.
+*/
