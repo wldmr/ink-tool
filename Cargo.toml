@@ -107,3 +107,8 @@ markdown = "1.0.0-alpha.17"
 strip = true
 lto = "thin"
 codegen-units = 1
+
+[[test]]
+name = "namespacing"
+harness = false
+path = "examples/namespacing/test.rs"

@@ -6,7 +6,7 @@ use std::{
 };
 
 /// Newtype around a shared reference, in order to get nicer error handling using `?`.
-pub(crate) struct SharedValue<T>(Arc<Mutex<T>>);
+pub struct SharedValue<T>(Arc<Mutex<T>>);
 
 impl<T> Clone for SharedValue<T> {
     fn clone(&self) -> Self {
@@ -16,7 +16,7 @@ impl<T> Clone for SharedValue<T> {
 
 #[derive(Debug, Display, Error)]
 #[display("{_0}")]
-pub(crate) struct SharedValueError(#[error(not(source))] String);
+pub struct SharedValueError(#[error(not(source))] String);
 
 impl<T> SharedValue<T> {
     pub(crate) fn new(t: T) -> Self {

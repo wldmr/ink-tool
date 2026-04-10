@@ -24,22 +24,22 @@ type DbType = mini_milc::salsa::Salsa<
     mini_milc::storage_impls::HashMapStorage<salsa::Ops>,
 >;
 
-pub(crate) struct State {
-    pub(crate) db: DbType,
-    pub(crate) enc: Option<WideEncoding>,
+pub struct State {
+    pub db: DbType,
+    pub enc: Option<WideEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
 #[display("Document not found: `{}`", _0.path())]
-pub(crate) struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
+pub struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
 #[display("Not a valid position: {}:{}", _0.line, _0.character)]
-pub(crate) struct InvalidPosition(#[error(not(source))] pub(crate) Position);
+pub struct InvalidPosition(#[error(not(source))] pub(crate) Position);
 
 #[derive(Debug, Clone, Display, Error, PartialEq, Eq, From)]
 #[display("Could not go to position: {}", self)]
-pub(crate) enum GotoLocationError {
+pub enum GotoLocationError {
     DocumentNotFound(DocumentNotFound),
     PositionOutOfBounds(InvalidPosition),
 }

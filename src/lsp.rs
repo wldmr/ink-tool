@@ -5,7 +5,6 @@ use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
 };
 use lsp_types::*;
-use state::State;
 use std::{ops::Not, path::Path, time::Duration};
 
 mod diagnostics;
@@ -20,8 +19,11 @@ mod salsa;
 mod shared;
 mod state;
 
+pub use salsa::{InkGetters, Ops};
+pub use state::{DocumentNotFound, GotoLocationError, InvalidPosition, State};
+
 // For that extra bit of convenience
-pub(crate) type SharedState = shared::SharedValue<state::State>;
+pub type SharedState = shared::SharedValue<state::State>;
 
 macro_rules! try_request_handlers {
     ($request:ident, $state:ident => $($handler:ident),+$(,)?) => {
