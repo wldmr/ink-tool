@@ -16,10 +16,9 @@ The rules for clashing names are:
     `->->`, because tunnels actually take care to be “hygienic” that way. But
     simply navigating by `->` will clober your environment.
 
-That said, ink-tool treats all params as local (visible in sub-scopes, and
-shadowable by sub-scopes) and temps as very-local (not visible in sub-scopes),
-like you would expect from a “normal” programming language. Non-local surprises
-can be pointed out by diagnostics.
+The way ink-tool deals with this is “not really” ;). If a local usage would
+conflict with a VAR/CONST, the navigation prefers the local definition. Any
+trouble is relegated to the diagnostics.
 */
 
 * [Bypass 1] -> knot.bypass
@@ -34,22 +33,24 @@ My name is {name}.
 //          ^^^^ references const:global
 
 === knot(name) ===
+//       ^^^^ defines const:knot
 //       ^^^^ diagnostic clashes with CONST
 
 - (bypass)
 
 My name is {name}.
-//          ^^^^ references const:global
+//          ^^^^ references const:knot
 
 -> END
 
 = stitch(name)
+//       ^^^^ defines const:stitch
 //       ^^^^ diagnostic clashes with CONST
 
 - (bypass2)
 
 My name is {name}.
-//          ^^^^ references const:global
+//          ^^^^ references const:stitch
 
 -> END
 

@@ -11,6 +11,6 @@ VAR name = "Inigo Montoya"
 
 
 /* TEST
-ERROR: 'var.ink' line 16: argument 'name': name has already been used for a var on line 3 of var.ink
-ERROR: 'var.ink' line 9: argument 'name': name has already been used for a var on line 3 of var.ink
+ERROR: 'var.ink' line 8: argument 'name': name has already been used for a var on line 2 of var.ink
+ERROR: 'var.ink' line 4: argument 'name': name has already been used for a var on line 2 of var.ink
 */
