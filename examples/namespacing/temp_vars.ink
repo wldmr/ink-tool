@@ -2,6 +2,11 @@
 Temp variables are visible _only_ at the exact level they are defined in.
 That means they aren't visible in higher levels, NOR in lower levels.
 (That last one is a bit unusual; in other programming languages local variables are visible in enclosed scopes.)
+
+Due to the non-linear nature of Ink, we consider a name to exist for the entire scope it is defined in,
+even if it is referenced _before_ it is declared.
+
+inklecate will warn the user about a problem at runtime, and will use a default value.
 */
 
 ~ temp t = "temporarily"
@@ -26,16 +31,16 @@ He was in {t}es.
 
 = stitch_2
 It was {t} hot.
-//      ^ references-nothing
-//      ^ diagnostic Undefined name
+//      ^ references temp_vars:knot.stitch_2
 ~ temp t = 2
+//     ^ defines temp_vars:knot.stitch_2
 -> k2
 
 === k2 ===
 That was o{t}.
-//         ^ references-nothing
-//         ^ diagnostic Undefined name
+//         ^ references temp_vars:k2
 ~ temp t = "k2"
+//     ^ defines temp_vars:k2
 -> END
 
 
