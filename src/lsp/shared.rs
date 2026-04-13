@@ -19,11 +19,11 @@ impl<T> Clone for SharedValue<T> {
 pub struct SharedValueError(#[error(not(source))] String);
 
 impl<T> SharedValue<T> {
-    pub(crate) fn new(t: T) -> Self {
+    pub fn new(t: T) -> Self {
         Self(Arc::new(Mutex::new(t)))
     }
 
-    pub(crate) fn lock(&self) -> Result<impl DerefMut<Target = T> + '_, SharedValueError> {
+    pub fn lock(&self) -> Result<impl DerefMut<Target = T> + '_, SharedValueError> {
         self.0.lock().map_err(|e| SharedValueError(e.to_string()))
     }
 }

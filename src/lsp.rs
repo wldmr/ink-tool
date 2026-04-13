@@ -10,7 +10,7 @@ use std::{ops::Not, path::Path, time::Duration};
 mod diagnostics;
 mod file_watching;
 mod http_server;
-mod idset;
+pub mod idset;
 mod ink_visitors;
 mod location;
 mod notification_handlers;
@@ -19,7 +19,7 @@ mod salsa;
 mod shared;
 mod state;
 
-pub use salsa::{InkGetters, Ops};
+pub use salsa::{DocId, InkGetters, Ops, StoryRoot};
 pub use state::{DocumentNotFound, GotoLocationError, InvalidPosition, State};
 
 // For that extra bit of convenience

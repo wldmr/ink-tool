@@ -18,7 +18,7 @@ impl From<RenameError> for lsp_server::ResponseError {
 
 #[derive(Debug, Clone, Display, Error, derive_more::From)]
 #[display("Rename Error")]
-pub(crate) enum RenameError {
+pub enum RenameError {
     LocationError(super::GotoLocationError),
     RenameFailed(#[error(not(source))] String),
 }

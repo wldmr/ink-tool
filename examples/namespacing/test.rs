@@ -6,8 +6,9 @@ use std::{
 };
 
 use annotate_snippets::{AnnotationKind, Level, Snippet};
+use clap::Parser;
 use ink_document::InkDocument;
-use ink_tool::lsp::{InkGetters, Ops, State};
+use ink_tool::lsp::{InkGetters, Ops, State, StoryRoot};
 use itertools::Itertools as _;
 use lsp_types::{Location, Uri};
 use mini_milc::Cached;
@@ -16,7 +17,20 @@ use util::testing::Compact;
 
 type TestResult = Result<(), Cow<'static, str>>;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    #[arg(long)]
+    test: bool,
+
+    #[arg(long)]
+    list: bool,
+
+    filter: Vec<String>,
+}
+
 fn main() -> TestResult {
+    let args = Cli::parse();
     let mut state = State::new(None, false);
 
     let ink_files = walkdir::WalkDir::new("examples/namespacing/")
@@ -31,17 +45,56 @@ fn main() -> TestResult {
         state.edit(uri, contents);
     }
 
-    test_goto_definition(&state)
+    let mut stories = state
+        .db
+        .stories()
+        .keys()
+        .copied()
+        .map(|story| {
+            (
+                story,
+                format!(
+                    "examples::namespacing::{}",
+                    state
+                        .db
+                        .short_path(story.into())
+                        .trim_end_matches(".ink")
+                        .replace("/", "::")
+                ),
+            )
+        })
+        .collect_vec();
+
+    if args.list {
+        for (_story, name) in stories {
+            eprintln!("{name}");
+        }
+        return Ok(());
+    }
+
+    if !args.filter.is_empty() {
+        stories.retain(|(_, name)| args.filter.iter().any(|f| name.contains(f)));
+        if stories.is_empty() {
+            return Ok(());
+        }
+    }
+
+    test_goto_definition(&state, stories)
 }
 
-fn test_goto_definition(state: &State) -> TestResult {
+fn test_goto_definition(state: &State, filter: Vec<(StoryRoot, String)>) -> TestResult {
     let mut definitions: HashMap<&str, (&Uri, Annotation<'_>)> = Default::default();
     let mut references: Vec<(&Uri, Annotation<'_>, BTreeSet<&str>)> = Default::default();
     let doc_ids = state.db.doc_ids();
-    let docs: HashMap<&Uri, Cached<Ops, InkDocument>> = doc_ids
-        .pairs()
-        .map(|(id, uri)| (uri, state.db.document(id)))
-        .collect();
+    let stories = state.db.stories();
+    let mut docs: HashMap<&Uri, Cached<Ops, InkDocument>> = HashMap::new();
+
+    for (story, _name) in filter {
+        for (id, _) in &stories[&story].resolved {
+            docs.entry(&doc_ids[*id])
+                .or_insert_with(|| state.db.document(*id));
+        }
+    }
 
     // Sometimes we'll need the bytes from a a location that we don't know the annotation for:
     let bytes = |loc: &Location| -> Range<usize> { docs[&loc.uri].byte_range(loc.range) };
