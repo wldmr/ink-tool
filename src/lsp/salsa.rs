@@ -9,24 +9,38 @@ use crate::lsp::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
     },
+    location::TextRange,
     salsa::subqueries::{
         diagnostics::{DuplicateDefinitions, DuplicateImports, FileDiagnostics},
+        ink_inventory::{InkInventory, Name, NameMap, NameSet, Section, SectionKind},
         story_structure::StoryRoots,
     },
 };
 use composition::composite_query;
-use ink_document::InkDocument;
+use ink_document::{
+    ids::{DefId, NodeId, ScopeId, UsageId},
+    InkDocument,
+};
 use itertools::Itertools;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    hash::BuildHasherDefault,
+};
 pub(crate) use subqueries::node_info::match_flags;
 pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
 pub use subqueries::story_structure::StoryRoot;
-use util::nonempty::Vec1;
+use tree_traversal::TreeTraversal;
+use type_sitter::Node as _;
+use ustr::IdentityHasher;
+use util::nonempty::{MapOfNonEmpty, Vec1};
 
 pub type DocId = Id<Uri>;
 pub type DocIds = IdSet<Uri>;
+pub type Def = (DocId, DefId);
+pub type Usg = (DocId, UsageId);
+pub type NodeLocations = HashMap<NodeId, TextRange, BuildHasherDefault<IdentityHasher>>;
 
 composite_query!({
     pub impl Ops<OpsV, InkGetters> {
@@ -41,6 +55,21 @@ composite_query!({
         fn workspace_symbols(id: DocId) -> Vec<WorkspaceSymbol>;
 
         // === Intermediate Queries ===
+        fn ink_inventory(docid: DocId) -> InkInventory;
+        fn node_locations(docid: DocId) -> NodeLocations;
+
+        fn local_defs(docid: DocId, scope: ScopeId, name: Name) -> Vec<DefId>;
+
+        /// The globally visible simple names, without the namespaced names they contain.
+        fn global_defs(story: StoryRoot) -> NameMap<Vec1<Def>>;
+
+        /// The globally visible names defined by `defid`.
+        ///
+        /// This includes knots, toplevel stitches, lists …
+        fn global_namespaced_defs(docid: DocId, defid: DefId) -> NameMap<Vec1<DefId>>;
+
+        fn usages(docid: DocId, node: DefId) -> Vec<Usg>;
+
         fn node_infos(docid: DocId) -> NodeInfos;
         fn definition_of(docid: DocId, range: IdentRange) -> Vec<(DocId, DefRange)>;
         fn usages_of(docid: DocId, range: DefRange) -> Vec<(DocId, IdentRange)>;
@@ -89,6 +118,176 @@ subquery!(Ops, short_path, String, |self, db| {
     let ids = db.doc_ids();
     let path = ids[self.id].path().as_str();
     path[prefix..].to_string()
+});
+
+subquery!(Ops, node_locations, NodeLocations, |self, db| {
+    let doc = db.document(self.docid);
+    doc.root()
+        .depth_first::<ink_syntax::AllNamed>()
+        .filter(|it| {
+            it.as_identifier().is_some()
+                || it.as_knot_block().is_some()
+                || it.as_stitch_block().is_some()
+        })
+        .map(|ident| (NodeId::new(ident), doc.lsp_range(ident.range()).into()))
+        .collect::<NodeLocations>()
+});
+
+impl mini_milc::Subquery<Ops, NameMap<Vec1<Def>>> for global_defs {
+    fn value(
+        &self,
+        db: &impl mini_milc::Db<Ops>,
+        old: mini_milc::Old<NameMap<Vec1<(DocId, DefId)>>>,
+    ) -> mini_milc::Updated<NameMap<Vec1<(DocId, DefId)>>> {
+        let mut result = NameMap::default();
+        let stories = db.stories();
+        for docid in stories[&self.story].resolved.keys().copied() {
+            let inv = db.ink_inventory(docid);
+
+            for list in &inv.lists {
+                result.register(list.name, (docid, list.id));
+                // List items are globally visible without the preceding list name
+                for (item, defs) in &list.items {
+                    for def in defs {
+                        result.register(*item, (docid, *def));
+                    }
+                }
+            }
+
+            let globals = std::iter::empty() // just so the chain looks more uniform ;)
+                .chain(&inv.vars)
+                .chain(&inv.consts)
+                .chain(&inv.externals)
+                .chain(&inv.body.labels);
+
+            for (name, defs) in globals {
+                for def in defs {
+                    result.register(*name, (docid, *def));
+                }
+            }
+
+            for toplevel in &inv.sections {
+                result.register(toplevel.name, (docid, toplevel.name_id));
+            }
+        }
+        old.update(result)
+    }
+}
+
+impl mini_milc::Subquery<Ops, NameMap<Vec1<DefId>>> for global_namespaced_defs {
+    fn value(
+        &self,
+        db: &impl mini_milc::Db<Ops>,
+        old: mini_milc::Old<NameMap<Vec1<DefId>>>,
+    ) -> mini_milc::Updated<NameMap<Vec1<DefId>>> {
+        let mut result = NameMap::default();
+        let inv = db.ink_inventory(self.docid);
+        for list in &inv.lists {
+            if list.id == self.defid {
+                for (name, defs) in &list.items {
+                    for def in defs {
+                        result.register(*name, *def);
+                    }
+                }
+            }
+        }
+        let section = inv.sections.iter().find(|it| it.name_id == self.defid);
+        if let Some(section) = section {
+            let sec = section.name;
+
+            for (label, defs) in &section.body.labels {
+                // Subsection names take precedence over labels
+                if !section.sub_names.contains(label) {
+                    for def in defs {
+                        result.register(format!("{sec}.{label}"), *def);
+                    }
+                }
+            }
+
+            for subsection in &section.subsections {
+                let sub = subsection.name;
+                result.register(format!("{sec}.{sub}"), subsection.name_id);
+                for (label, defs) in &subsection.body.labels {
+                    for def in defs {
+                        result.register(format!("{sec}.{sub}.{label}"), *def);
+                        // The "shortcut" name exists if the knot itself doesn't define that label already.
+                        if !section.body.labels.contains_key(label) {
+                            result.register(format!("{sec}.{label}"), *def);
+                        }
+                    }
+                }
+            }
+        }
+
+        old.update(result)
+    }
+}
+
+impl mini_milc::Subquery<Ops, Vec<DefId>> for local_defs {
+    fn value(
+        &self,
+        db: &impl mini_milc::Db<Ops>,
+        old: mini_milc::Old<Vec<DefId>>,
+    ) -> mini_milc::Updated<Vec<DefId>> {
+        let mut result = Vec::new();
+        let inv = db.ink_inventory(self.docid);
+
+        if self.scope == inv.scope_id {
+            // The file scope can only contain temps locally.
+            if let Some(defs) = inv.body.temps.get(&self.name) {
+                result.extend(defs);
+            }
+        } else {
+            let section = inv
+                .sections
+                .iter()
+                .find(|it| it.scope_id == self.scope || it.subscopes.contains_key(&self.scope));
+            if let Some(section) = section {
+                if section.scope_id == self.scope {
+                    // We're in the Knot body.
+                    if let Some(temps) = section.body.temps.get(&self.name) {
+                        result.extend(temps);
+                    }
+                    if let Some(params) = section.params.get(&self.name) {
+                        result.extend(params);
+                    }
+                } else {
+                    // We're in a specfic stitch body.
+                    let idx = section.subscopes[&self.scope];
+                    let sub = &section.subsections[idx];
+                    if let Some(temps) = sub.body.temps.get(&self.name) {
+                        result.extend(temps);
+                    }
+                    if let Some(params) = sub.params.get(&self.name) {
+                        result.extend(params);
+                    }
+                }
+                // Subsection and label meanings are the same for the body and subscopes
+                // (Except they're not, but close enough. FIX later.)
+                for subsection in &section.subsections {
+                    if subsection.name == self.name {
+                        result.push(subsection.name_id);
+                    }
+                    for (label, defs) in &subsection.body.labels {
+                        if *label == self.name {
+                            result.extend(defs);
+                        }
+                    }
+                }
+            }
+        }
+        old.update(result)
+    }
+}
+
+subquery!(Ops, usages, Vec<Usg>, |self, db| {
+    let mut result = Vec::new();
+    let infos = db.node_infos(self.docid);
+
+    // Try locals first, …
+
+    // A definition might also be visible globally under several names:
+    result
 });
 
 subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
