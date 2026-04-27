@@ -1,5 +1,7 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
+    fmt::Display,
     hash::BuildHasherDefault,
 };
 
@@ -10,7 +12,6 @@ use ink_document::{
 };
 use ink_syntax::AllNamed;
 use mini_milc::subquery;
-use tap::Tap;
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::Node;
 use ustr::{ustr, IdentityHasher, Ustr};
@@ -33,15 +34,40 @@ fn traverse(doc: &InkDocument) -> InkInventory {
 #[debug("Name({_0})")]
 #[display("{_0}")]
 pub struct Name(Ustr);
+
+impl Name {
+    pub fn as_str(&self) -> &'static str {
+        self.0.as_str()
+    }
+}
+
 impl<T: AsRef<str>> From<T> for Name {
     fn from(value: T) -> Self {
         Name(ustr(value.as_ref()))
     }
 }
 
+impl Into<&'static str> for Name {
+    fn into(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+impl Into<Cow<'static, str>> for Name {
+    fn into(self) -> Cow<'static, str> {
+        Cow::Borrowed(self.as_str())
+    }
+}
+
+impl Into<String> for Name {
+    fn into(self) -> String {
+        self.0.to_string()
+    }
+}
+
 pub type NameSet = HashSet<Name, BuildHasherDefault<IdentityHasher>>;
-pub type NameMap<T> = HashMap<Name, T, BuildHasherDefault<IdentityHasher>>;
-pub type LocMap<T> = HashMap<UsageId, T, BuildHasherDefault<IdentityHasher>>;
+pub type IMap<K, V> = HashMap<K, V, BuildHasherDefault<IdentityHasher>>;
+pub type NameMap<T> = IMap<Name, T>;
 
 /// Describes the names declared and used in a file
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,12 +89,17 @@ pub struct List {
     pub items: NameMap<Vec1<DefId>>,
 }
 
+impl Display for List {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name.as_ref())
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Body {
     pub temps: NameMap<Vec1<DefId>>,
     pub labels: NameMap<Vec1<DefId>>,
     pub usages: NameMap<Vec1<UsageId>>,
-    pub names: LocMap<Name>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +107,6 @@ pub struct Section {
     pub name: Name,
     pub name_id: DefId,
     pub scope_id: ScopeId,
-    pub section_kind: SectionKind,
     pub params: NameMap<Vec1<DefId>>,
     pub body: Body,
     pub subsections: Vec<Subsection>,
@@ -85,6 +115,28 @@ pub struct Section {
     /// Collection of all subsection names in here
     pub sub_names: NameSet,
     pub subscopes: HashMap<ScopeId, usize, BuildHasherDefault<IdentityHasher>>,
+}
+
+impl Section {
+    fn new(name: Name, name_id: impl Into<DefId>, section_id: impl Into<ScopeId>) -> Self {
+        Self {
+            name,
+            name_id: name_id.into(),
+            scope_id: section_id.into(),
+            params: Default::default(),
+            body: Default::default(),
+            subsections: Default::default(),
+            sub_names: Default::default(),
+            sub_labels: Default::default(),
+            subscopes: Default::default(),
+        }
+    }
+}
+
+impl Display for Section {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,29 +148,22 @@ pub struct Subsection {
     pub body: Body,
 }
 
-impl Section {
-    fn new(name: Name, name_id: DefId, section_id: ScopeId) -> Self {
+impl Subsection {
+    pub fn new(name: Name, name_id: impl Into<DefId>, scope_id: impl Into<ScopeId>) -> Self {
         Self {
             name,
-            name_id,
-            scope_id: section_id,
-            section_kind: Default::default(),
+            name_id: name_id.into(),
+            scope_id: scope_id.into(),
             params: Default::default(),
             body: Default::default(),
-            subsections: Default::default(),
-            sub_names: Default::default(),
-            sub_labels: Default::default(),
-            subscopes: Default::default(),
         }
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SectionKind {
-    #[default]
-    Knot,
-    Stitch,
-    Function,
+impl Display for Subsection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name.as_ref())
+    }
 }
 
 struct Vstr<'a> {
@@ -127,9 +172,6 @@ struct Vstr<'a> {
     /// that we can properly make substrings.
     qname: Option<ink_syntax::QualifiedName<'a>>,
     scope: ScopeId,
-    /// In some definitons we descend but want to ignore the name of the thing itself
-    /// from being a usage.
-    ignore: Option<DefId>,
 }
 
 impl<'a> Vstr<'a> {
@@ -138,7 +180,6 @@ impl<'a> Vstr<'a> {
             doc,
             qname: None,
             scope: doc.root().into(),
-            ignore: Default::default(),
         }
     }
 
@@ -148,29 +189,6 @@ impl<'a> Vstr<'a> {
 
     fn text_between(&self, start: usize, end: usize) -> Name {
         Name(ustr(self.doc.text(start..end)))
-    }
-
-    pub fn knot_section(&self, node: ink_syntax::Knot<'a>) -> Section {
-        Section::new(self.text(node.name()), node.into(), self.scope).tap_mut(|it| {
-            it.section_kind = if node.function().is_some() {
-                SectionKind::Function
-            } else {
-                SectionKind::Knot
-            }
-        })
-    }
-    pub fn toplevel_stitch(&self, node: ink_syntax::Stitch<'a>) -> Section {
-        Section::new(self.text(node.name()), node.into(), self.scope)
-            .tap_mut(|it| it.section_kind = SectionKind::Stitch)
-    }
-    pub fn child_stitch(&self, node: ink_syntax::Stitch<'a>) -> Subsection {
-        Subsection {
-            name: self.text(node.name()),
-            name_id: node.into(),
-            scope_id: self.scope,
-            params: Default::default(),
-            body: Default::default(),
-        }
     }
 }
 
@@ -198,6 +216,18 @@ impl InkInventory {
             &mut self.body
         }
     }
+
+    fn current_params(&mut self) -> Option<&mut NameMap<Vec1<DefId>>> {
+        if let Some(section) = self.sections.last_mut() {
+            if let Some(sub) = section.subsections.last_mut() {
+                Some(&mut sub.params)
+            } else {
+                Some(&mut section.params)
+            }
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
@@ -223,23 +253,20 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
 
             /*** Names ***/
             AllNamed::Knot(knot) => {
-                self.ignore = Some(knot.into());
-                let section = self.knot_section(knot);
+                let section = Section::new(self.text(knot.name()), knot, self.scope);
                 state.sections.push(section);
                 Descend
             }
 
             AllNamed::Stitch(stitch) => {
-                self.ignore = Some(stitch.into());
                 if let Some(parent) = state.sections.last_mut() {
-                    let sub = self.child_stitch(stitch);
+                    let sub = Subsection::new(self.text(stitch.name()), stitch, self.scope);
                     parent.sub_names.insert(sub.name);
                     let scope_index = parent.subsections.len(); // len before pushing == index of element we're about to push
                     parent.subscopes.insert(sub.scope_id, scope_index);
                     parent.subsections.push(sub);
                 } else {
-                    let mut stitch = self.toplevel_stitch(stitch);
-                    stitch.section_kind = SectionKind::Stitch;
+                    let stitch = Section::new(self.text(stitch.name()), stitch, self.scope);
                     state.sections.push(stitch);
                 }
                 Descend
@@ -251,7 +278,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
                 if let Some(knot) = state.sections.last_mut() {
                     knot.sub_labels.insert(text);
                 }
-                Ignore
+                Descend
             }
 
             AllNamed::External(ext) => {
@@ -266,18 +293,15 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
                     Ok(ink_syntax::ParamValue::Identifier(ident)) => self.text(ident),
                     Err(_) => self.text(param), // weird, but let's muddle through
                 };
-                state
-                    .sections
-                    .last_mut() // reminder: We never enter Params for Externals, so this is fine.
-                    .unwrap()
-                    .params
-                    .register(name, param);
-                Ignore
+                // Reminder: We never enter Params for Externals, so this is fine.
+                if let Some(params) = state.current_params() {
+                    params.register(name, param);
+                }
+                Descend
             }
 
             AllNamed::TempDef(temp) => {
                 let text = self.text(temp.name());
-                self.ignore = Some(temp.into());
                 state.current_body().temps.register(text, temp);
                 Descend
             }
@@ -285,7 +309,6 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
             /*** Globals ***/
             AllNamed::Global(global) => {
                 let name = self.text(global.name());
-                self.ignore = Some(global.into());
                 if global.keyword().is_ok_and(|it| it.as_const().is_some()) {
                     state.consts.register(name, global)
                 } else {
@@ -295,7 +318,6 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
             }
 
             AllNamed::List(list) => {
-                self.ignore = Some(list.into());
                 state.lists.push(List {
                     name: self.text(list.name()),
                     id: list.into(),
@@ -307,12 +329,10 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
 
             AllNamed::ListValueDef(def) => {
                 let name = self.text(def.name());
-                state
-                    .lists
-                    .last_mut()
-                    .expect("Must have entered a List")
-                    .items
-                    .register(name, def);
+                if let Some(last) = state.lists.last_mut() {
+                    // Technically it’s an error to not find a list here, but let’s not kick up a fuss.
+                    last.items.register(name, def);
+                };
                 Ignore
             }
 
@@ -334,18 +354,14 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
 
             AllNamed::Identifier(identifier)
             | AllNamed::Expr(ink_syntax::Expr::Identifier(identifier)) => {
-                if self.ignore.is_some_and(|it| it == identifier) {
-                    self.ignore = None; // OK, we've ignored it now.
-                    return Ignore;
-                }
-                let text = if let Some(qname) = self.qname {
-                    self.text_between(qname.start_byte(), identifier.end_byte())
+                let start = if let Some(qname) = self.qname {
+                    qname.start_byte()
                 } else {
-                    self.text(identifier)
+                    identifier.start_byte()
                 };
-                let body = state.current_body();
-                body.usages.register(text, identifier);
-                body.names.insert(identifier.into(), text);
+                let end = identifier.end_byte();
+                let text = self.text_between(start, end);
+                state.current_body().usages.register(text, identifier);
                 Ignore
             }
 
@@ -398,7 +414,9 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
 
     fn leave(&mut self, node: AllNamed<'a>, _: &mut Self::State) {
         match node {
-            AllNamed::QualifiedName(_) => self.qname = None,
+            AllNamed::QualifiedName(_) | AllNamed::Expr(ink_syntax::Expr::QualifiedName(_)) => {
+                self.qname = None
+            }
             _ => {}
         }
     }
@@ -445,6 +463,6 @@ mod tests {
         );
 
         let result = traverse(&doc);
-        panic!("{result:#?}");
+        // panic!("{result:#?}");
     }
 }

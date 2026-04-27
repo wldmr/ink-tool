@@ -19,15 +19,15 @@ impl super::State {
         let mut references = Vec::new();
 
         if let Some(usage) = doc.usage_at(from_position) {
-            let def = self.db.definition_of(docid, usage.range.into());
+            let def = self.db.definition(docid, usage.ident.into());
             for (def_doc, def) in def.iter().copied() {
-                let usages = self.db.usages_of(def_doc, def);
-                references.extend(
-                    usages
-                        .iter()
-                        .copied()
-                        .map(|(docid, range)| Location::new(docs[docid].clone(), range.into())),
-                );
+                let usages = self.db.usages(def_doc, def);
+                for (usgdoc, usgid) in usages.iter() {
+                    let locs = self.db.node_locations(*usgdoc);
+                    let uri = docs[*usgdoc].clone();
+                    let range = locs.get_by_left(usgid.as_ref()).copied().unwrap().into();
+                    references.push(Location::new(uri, range));
+                }
             }
         }
         Ok(references)

@@ -15,7 +15,7 @@ mod ink_visitors;
 mod location;
 mod notification_handlers;
 mod request_handlers;
-mod salsa;
+pub mod salsa;
 mod shared;
 mod state;
 

@@ -1,19 +1,22 @@
-use derive_more::Debug;
+use derive_more::{
+    derive::{AsRef, Into},
+    Debug,
+};
 use type_sitter::{Node, NodeResult};
 
 // We use the `name(type)` syntax instead of `name: type` because that’s what
 // rustfmt can actually format (it gives up on anything more complicated).
 // Otherwise we’d have to format it ourselves which is tedious.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Into)]
 #[debug("NodeId({_0})")]
 pub struct NodeId(usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Into, AsRef)]
 #[debug("DefId({})", _0.0)]
 pub struct DefId(NodeId);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AsRef)]
 #[debug("UsageId({})", _0.0)]
 pub struct UsageId(NodeId);
 
@@ -110,6 +113,12 @@ impl PartialEq<DefId> for UsageId {
     }
 }
 
+impl From<DefId> for UsageId {
+    fn from(value: DefId) -> Self {
+        UsageId(value.0)
+    }
+}
+
 impl<'a, N: Node<'a>> PartialEq<N> for UsageId {
     fn eq(&self, other: &N) -> bool {
         self.0 .0 == other.raw().id()
@@ -122,9 +131,24 @@ impl<'a> From<ink_syntax::Identifier<'a>> for UsageId {
     }
 }
 
-impl<'a> From<NodeResult<'a, ink_syntax::Identifier<'a>>> for UsageId {
-    fn from(value: NodeResult<'a, ink_syntax::Identifier<'a>>) -> Self {
+impl<'a> From<ink_syntax::QualifiedName<'a>> for UsageId {
+    fn from(value: ink_syntax::QualifiedName<'a>) -> Self {
         Self(NodeId::new(value))
+    }
+}
+
+impl<'a, N: Node<'a> + Into<UsageId>> From<NodeResult<'a, N>> for UsageId {
+    fn from(value: NodeResult<'a, N>) -> Self {
+        Self(NodeId::new(value))
+    }
+}
+
+impl<'a> From<ink_syntax::Usages<'a>> for UsageId {
+    fn from(value: ink_syntax::Usages<'a>) -> Self {
+        match value {
+            ink_syntax::Usages::Identifier(identifier) => identifier.into(),
+            ink_syntax::Usages::QualifiedName(qualified_name) => qualified_name.into(),
+        }
     }
 }
 
