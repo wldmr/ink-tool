@@ -34,7 +34,7 @@ impl super::State {
         let mut edits: HashMap<Uri, Vec<lsp_types::TextEdit>> = self
             .goto_references(uri, pos)?
             .into_iter()
-            .unique() // They shouldn't be non-unique to begin with, but let's ensure it here.
+            .unique() // They should be non-unique to begin with, but let's ensure it here.
             .map(move |it| (it.uri, TextEdit::new(it.range, new_name.clone())))
             .into_group_map();
 

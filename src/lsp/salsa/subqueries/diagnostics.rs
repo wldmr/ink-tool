@@ -16,9 +16,9 @@ use crate::lsp::{
     },
 };
 
-pub(crate) type FileDiagnostics = Vec<Diagnostic>;
-pub(crate) type DuplicateImports = HashMap<DocId, Vec1<FileTextRange>>;
-pub(crate) type DuplicateDefinitions = HashMap<String, Vec<(FileTextRange, BitFlags<NodeFlag>)>>;
+pub type FileDiagnostics = Vec<Diagnostic>;
+pub type DuplicateImports = HashMap<DocId, Vec1<FileTextRange>>;
+pub type DuplicateDefinitions = HashMap<String, Vec<(FileTextRange, BitFlags<NodeFlag>)>>;
 
 subquery!(Ops, file_diagnostics, FileDiagnostics, |self, db| {
     let doc = db.document(self.docid);

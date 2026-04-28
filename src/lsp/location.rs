@@ -65,9 +65,17 @@ impl PartialEq<tree_sitter::Range> for TextRange {
 impl std::fmt::Debug for TextRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.start.line == self.end.line {
-            write!(f, "{:?}-{}", self.start, self.end.character)
+            write!(
+                f,
+                "₀{}:{}-{}",
+                self.start.line, self.start.character, self.end.character
+            )
         } else {
-            write!(f, "{:?}-{:?}", self.start, self.end)
+            write!(
+                f,
+                "₀{}:{}-{}{}",
+                self.start.line, self.start.character, self.end.line, self.end.character
+            )
         }
     }
 }
@@ -131,7 +139,7 @@ impl TextRange {
 }
 
 #[derive(Debug, Display, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
-#[debug("{}:{}⁰", line, character)] // (we add a little superscript to remind ourselves that this 0 based)
+#[debug("₀{}:{}", line, character)] // (we add a little subscript to remind ourselves that this 0 based)
 #[display("{}:{}", line + 1, character + 1)]
 pub struct TextPos {
     pub line: u32,
