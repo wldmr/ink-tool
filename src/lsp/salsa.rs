@@ -206,9 +206,27 @@ impl mini_milc::Subquery<Ops, NameMap<Vec1<DefId>>> for file_globals {
                 for (label, defs) in &subsection.body.labels {
                     for def in defs {
                         result.register(format!("{toplevel}.{subsection}.{label}"), *def);
-                        // The "shortcut" name exists if the knot itself doesn't define that label already.
-                        if !toplevel.body.labels.contains_key(label) {
-                            result.register(format!("{toplevel}.{label}"), *def);
+
+                        // The logic for the shortcut version is a bit convoluted.
+                        let shortcut = Name::from(format!("{toplevel}.{label}"));
+                        // Shortcut is allowed if there's no subsection with that name.
+                        let mut shortcut_allowed = !toplevel.sub_names.contains(label);
+
+                        // And if we haven’t defined that shortcut already. (Multiple subsection labels may
+                        // exist, but only the first one can be the shortcut.)
+                        shortcut_allowed &= !result.contains_key(&shortcut);
+
+                        // However, if the main section already defines such a label, then that’s an error.
+                        // In that case, we (counter-intuitively) *do* allow all shortcuts, to allow the
+                        // user to navigate between the duplicate definitions.
+                        if toplevel.body.labels.contains_key(label)
+                            && !toplevel.sub_names.contains(label)
+                        {
+                            shortcut_allowed = true;
+                        }
+
+                        if shortcut_allowed {
+                            result.register(shortcut, *def);
                         }
                     }
                 }

@@ -110,7 +110,8 @@ pub struct Section {
     pub params: NameMap<Vec1<DefId>>,
     pub body: Body,
     pub subsections: Vec<Subsection>,
-    /// Collection of all labels defined in subsections
+    /// Collection of all labels defined in subsections.
+    /// The values of the map are the subsection names that the keys are contained in.
     pub sub_labels: NameSet,
     /// Collection of all subsection names in here
     pub sub_names: NameSet,
@@ -333,7 +334,7 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
                     // Technically it’s an error to not find a list here, but let’s not kick up a fuss.
                     last.items.register(name, def);
                 };
-                Ignore
+                Descend
             }
 
             /*** Usages ***/
@@ -424,45 +425,5 @@ impl<'a> Visitor<'a, AllNamed<'a>> for Vstr<'a> {
     fn combine(_: &mut Self::State, _: Self::State) {
         // SAFETY: We never DescendWith, therefore we never combine.
         unsafe { std::hint::unreachable_unchecked() }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use indoc::indoc;
-
-    #[test]
-    fn try_it() {
-        let doc = InkDocument::new(
-            indoc! {"
-                VAR x = 3
-                CONST y = x
-                LIST lst = arg, (barg), zarg = 3
-
-                -> knot(4)
-
-                - (toblwl) Hi!
-
-                = toplevel_stitch(p1, p2)
-                Hey, I'm using {x}.
-
-                == knot(ref this) ==
-                ~ temp horp = this + 3
-                I'm using {y}
-                - (notlabel) Ho!
-
-                = stitch(-> return_to)
-                I'm using {y}
-                - (stirtchlbl) Hoi!
-                ~ temp hirp = \"Hey {you}! {y} are you doing this?!\"
-                -> return_to
-            "}
-            .into(),
-            None,
-        );
-
-        let result = traverse(&doc);
-        // panic!("{result:#?}");
     }
 }

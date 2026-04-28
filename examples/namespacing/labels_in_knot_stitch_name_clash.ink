@@ -1,3 +1,4 @@
+/// Label-stitch name clashes *outside* the knot are resolved in favor of the stitch
 /// Label-stitch name clashes *inside* the knot are resolved in favor of the label
 
 * [knot]        -> knot

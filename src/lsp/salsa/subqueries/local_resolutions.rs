@@ -13,8 +13,11 @@ use crate::lsp::{
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LocalResolutions {
+    /// Local usage → definitions mapping.
     pub definitions: IMap<UsageId, Vec1<DefId>>,
+    /// Local definition → usages mapping.
     pub usages: IMap<DefId, Vec1<UsageId>>,
+    /// The *locally* unresolved names in this file (i.e. they might refer to globals)
     pub unresolved: IMap<Name, Vec1<UsageId>>,
 }
 
@@ -49,7 +52,6 @@ impl Subquery<Ops, LocalResolutions> for local_resolutions {
                 resolved |= result.resolve(&section.params, name, usages);
                 resolved |= result.resolve(&section.body.temps, name, usages);
                 resolved |= result.resolve(&section.body.labels, name, usages);
-                // XXX: I *think* the priority here is body labels > subsections > subsection labels
                 if !resolved {
                     resolved |= result.resolve(&sub_names, name, usages);
                 }
@@ -66,8 +68,11 @@ impl Subquery<Ops, LocalResolutions> for local_resolutions {
                     let mut resolved = false;
                     resolved |= result.resolve(&subsection.params, name, usages);
                     resolved |= result.resolve(&subsection.body.temps, name, usages);
-                    resolved |= result.resolve(&section.body.labels, name, usages);
-                    // XXX: I *think* the priority here is body labels > subsections > subsection labels
+                    resolved |= result.resolve(&subsection.body.labels, name, usages);
+                    // XXX: I *think* the priority here is section body labels > subsections > subsection labels
+                    if !resolved {
+                        resolved |= result.resolve(&section.body.labels, name, usages);
+                    }
                     if !resolved {
                         resolved |= result.resolve(&sub_names, name, usages);
                     }
