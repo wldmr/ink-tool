@@ -25,7 +25,7 @@ impl super::State {
                 for (usgdoc, usgid) in usages.iter() {
                     let locs = self.db.node_locations(*usgdoc);
                     let uri = docs[*usgdoc].clone();
-                    let range = locs.get_by_left(usgid.as_ref()).copied().unwrap().into();
+                    let range = locs[*usgid].into();
                     references.push(Location::new(uri, range));
                 }
             }

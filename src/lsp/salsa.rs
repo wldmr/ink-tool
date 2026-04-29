@@ -19,19 +19,20 @@ pub use crate::lsp::{
 };
 use bimap::BiHashMap;
 use composition::composite_query;
+use derive_more::derive::Deref;
 use ink_document::{
     ids::{DefId, NodeId, UsageId},
     InkDocument,
 };
-use itertools::Itertools;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::{
     collections::{HashMap, HashSet},
     hash::BuildHasherDefault,
+    ops::Index,
 };
 pub(crate) use subqueries::node_info::match_flags;
-pub use subqueries::node_info::{DefRange, IdentRange, NodeFlag, NodeInfos};
+pub use subqueries::node_info::{NodeFlag, NodeInfos};
 pub use subqueries::story_structure::StoryRoot;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
@@ -42,8 +43,30 @@ pub type DocId = Id<Uri>;
 pub type DocIds = IdSet<Uri>;
 pub type Def = (DocId, DefId);
 pub type Usg = (DocId, UsageId);
-pub type NodeLocations = BiHashMap<NodeId, TextRange, BuildHasherDefault<IdentityHasher>>;
 pub type NodeText = HashMap<NodeId, Name, BuildHasherDefault<IdentityHasher>>;
+
+#[derive(Debug, Default, PartialEq, Eq, Deref)]
+pub struct NodeLocations(BiHashMap<NodeId, TextRange, BuildHasherDefault<IdentityHasher>>);
+
+impl<I: Into<NodeId>> Index<I> for NodeLocations {
+    type Output = TextRange;
+    fn index(&self, index: I) -> &Self::Output {
+        self.0.get_by_left(&index.into()).unwrap()
+    }
+}
+
+impl<'a> Index<&'a TextRange> for NodeLocations {
+    type Output = NodeId;
+    fn index(&self, index: &'a TextRange) -> &Self::Output {
+        self.0.get_by_right(index).unwrap()
+    }
+}
+
+impl FromIterator<(NodeId, TextRange)> for NodeLocations {
+    fn from_iter<T: IntoIterator<Item = (NodeId, TextRange)>>(iter: T) -> Self {
+        NodeLocations(iter.into_iter().collect())
+    }
+}
 
 composite_query!({
     pub impl Ops<OpsV, InkGetters> {
@@ -73,8 +96,6 @@ composite_query!({
         pub fn node_text(docid: DocId) -> NodeText;
 
         fn node_infos(docid: DocId) -> NodeInfos;
-        fn definition_of(docid: DocId, range: IdentRange) -> Vec<(DocId, DefRange)>;
-        fn usages_of(docid: DocId, range: DefRange) -> Vec<(DocId, IdentRange)>;
 
         /// The longest prefix that all Uris share
         fn common_path_prefix() -> String;
@@ -123,10 +144,25 @@ subquery!(Ops, short_path, String, |self, db| {
 });
 
 subquery!(Ops, node_locations, NodeLocations, |self, db| {
+    use ink_syntax::AllNamed::*;
     let doc = db.document(self.docid);
     doc.root()
-        .depth_first::<ink_syntax::Usages>()
-        .map(|ident| (NodeId::new(ident), doc.lsp_range(ident.range()).into()))
+        // XXX: ink_syntax::Usages doesn't work here, because it doesn't capture Expr(Identifier(_)) and Expr(QualifiedName(_)).
+        // I consider this a bug, but I'm not sure if the culprit is tree_sitter_ink or type_sitter.
+        .depth_first::<ink_syntax::AllNamed>()
+        .filter(|node| {
+            matches!(
+                node,
+                Ink(_)
+                    | KnotBlock(_)
+                    | StitchBlock(_)
+                    | Identifier(_)
+                    | QualifiedName(_)
+                    | Expr(ink_syntax::Expr::Identifier(_))
+                    | Expr(ink_syntax::Expr::QualifiedName(_))
+            )
+        })
+        .map(|node| (node.into(), doc.lsp_range(node.range()).into()))
         .collect::<NodeLocations>()
 });
 
@@ -144,12 +180,11 @@ subquery!(Ops, node_text, NodeText, |self, db| {
                 } else {
                     ident.byte_range()
                 };
-                let name = Name::from(doc.text(range));
-                result.insert(NodeId::new(ident), name);
+                result.insert(ident.into(), doc.text(range).into());
             }
             QualifiedName(q) | Expr(Ex::QualifiedName(q)) => {
                 qname = Some(q);
-                result.insert(NodeId::new(q), Name::from(doc.node_text(q)));
+                result.insert(q.into(), doc.node_text(q).into());
             }
             _ => qname = None,
         }
@@ -260,7 +295,7 @@ subquery!(Ops, global_names, DefMap, |self, db| {
     result
 });
 
-subquery!(Ops, definition, Vec<(DocId, DefId)>, |self, db| {
+subquery!(Ops, definition, Vec<Def>, |self, db| {
     let mut result = Vec::new();
     let local = db.local_resolutions(self.docid);
 
@@ -314,69 +349,6 @@ subquery!(Ops, usages, Vec<Usg>, |self, db| {
             }
         }
     }
-    result
-});
-
-subquery!(Ops, definition_of, Vec<(DocId, DefRange)>, |self, db| {
-    let mut result = Vec::new();
-    let infos = db.node_infos(self.docid);
-
-    // Either we find something locally, *or* we look globally.
-    // In other words: Local definitions shadow global ones.
-    if let Some(local_defs) = infos.local_definitions(self.range) {
-        result.extend(local_defs.iter().map(|range| (self.docid, *range)));
-    } else if let Some(global_names) = infos.unresolved_names(self.range) {
-        let stories = db.stories();
-        let roots = db.stories_of(self.docid);
-
-        let targets = roots
-            .iter()
-            .flat_map(|root| stories[&root].resolved.keys())
-            .unique() // might have picked up duplicates if we are in multple overlapping stories;
-            .copied();
-
-        for target in targets {
-            let def_info = db.node_infos(target);
-            for global_name in global_names {
-                if let Some(global_defs) = def_info.global_ranges(global_name) {
-                    result.extend(global_defs.iter().map(|range| (target, *range)));
-                }
-            }
-        }
-    }
-    result
-});
-
-subquery!(Ops, usages_of, Vec<(DocId, IdentRange)>, |self, db| {
-    let mut result = Vec::new();
-    let infos = db.node_infos(self.docid);
-
-    // Try locals first, …
-    if let Some(usages) = infos.local_usages(self.range) {
-        result.extend(usages.iter().map(|range| (self.docid, *range)));
-    }
-
-    // A definition might also be visible globally under several names:
-    if let Some(global_names) = infos.global_names(self.range) {
-        let stories = db.stories();
-        let roots = db.stories_of(self.docid);
-
-        let targets = roots
-            .iter()
-            .flat_map(|root| stories[&root].resolved.keys())
-            .unique() // might have picked up duplicates if we are in multple overlapping stories;
-            .copied();
-
-        for target in targets {
-            let ref_info = db.node_infos(target);
-            for global_name in global_names {
-                if let Some(resolved) = ref_info.unresolved_ranges(global_name) {
-                    result.extend(resolved.iter().map(|range| (target, *range)))
-                }
-            }
-        }
-    }
-
     result
 });
 

@@ -22,9 +22,8 @@ impl super::State {
         if let Some(usage) = doc.usage_at(pos) {
             let found = self.db.definition(this_docid, usage.ident.into());
             for (defdoc, defid) in found.iter() {
-                let locs = self.db.node_locations(*defdoc);
                 let uri = docs[*defdoc].clone();
-                let range = locs.get_by_left(defid.as_ref()).copied().unwrap().into();
+                let range = self.db.node_locations(*defdoc)[*defid].into();
                 defs.push(Location::new(uri, range))
             }
         } else {

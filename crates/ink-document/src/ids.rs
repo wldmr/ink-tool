@@ -16,11 +16,25 @@ pub struct NodeId(usize);
 #[debug("DefId({})", _0.0)]
 pub struct DefId(NodeId);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AsRef)]
+impl DefId {
+    // FIXME: Not happy about this. Breaks the whole point if we can just convert between them nilly-willy.
+    pub fn pinkie_promise_from_usage_id(id: UsageId) -> Self {
+        Self(id.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AsRef, Into)]
 #[debug("UsageId({})", _0.0)]
 pub struct UsageId(NodeId);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+impl UsageId {
+    // FIXME: Not happy about this. Breaks the whole point if we can just convert between them nilly-willy.
+    pub fn pinkie_promise_from_node_id(id: NodeId) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Into, AsRef)]
 #[debug("ScopeId({})", _0.0)]
 pub struct ScopeId(NodeId);
 
@@ -191,6 +205,12 @@ impl<'a, N: Node<'a>> PartialEq<N> for ScopeId {
 impl NodeId {
     pub fn new<'a, N: type_sitter::Node<'a>>(node: N) -> Self {
         Self(node.raw().id())
+    }
+}
+
+impl<'a, T: Node<'a>> From<T> for NodeId {
+    fn from(value: T) -> Self {
+        NodeId::new(value)
     }
 }
 

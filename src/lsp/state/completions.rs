@@ -1,5 +1,9 @@
-use crate::lsp::{location::TextRange, salsa::NodeFlag};
+use crate::lsp::{
+    location::TextRange,
+    salsa::{Name, NodeFlag},
+};
 use enumflags2::BitFlags;
+use ink_document::ids::DefId;
 use lsp_types::{CompletionItem, Position, Uri};
 use std::ops::Bound;
 use tree_traversal::TreeTraversal;
@@ -22,8 +26,8 @@ impl super::State {
         let node_info = self.db.node_infos(this_doc);
 
         let mut block = node_info
-            .parent_scope(doc.lsp_range(spec.node.range()))
-            .unwrap_or_else(|| doc.lsp_range(doc.root().range()).into());
+            .parent_scope(spec.node.into())
+            .unwrap_or_else(|| doc.root().into());
         let mut completions = Vec::new();
 
         // SMELL: We're repeating the name resolution logic here.
@@ -33,21 +37,21 @@ impl super::State {
             node_info.locals_in_scope(block),
             node_info.addresses_in_scope(block),
         );
-        for (name, range) in innermost {
-            if name.contains(spec.search_text) {
-                let item = self.completion(this_doc, name, *range, &spec);
+        for (name, defid) in innermost {
+            if name.as_str().contains(spec.search_text) {
+                let item = self.completion(this_doc, *name, defid, &spec);
                 completions.push(item);
             }
         }
 
         // From parent blocks: addresses only
-        while let Some(parent) = node_info.parent_scope(block) {
+        while let Some(parent) = node_info.parent_scope(block.into()) {
             if parent == block {
                 break;
             }
-            for (name, range) in node_info.addresses_in_scope(parent) {
-                if name.contains(spec.search_text) {
-                    let item = self.completion(this_doc, name, *range, &spec);
+            for (name, def) in node_info.addresses_in_scope(parent) {
+                if name.as_str().contains(spec.search_text) {
+                    let item = self.completion(this_doc, *name, def, &spec);
                     completions.push(item);
                 }
             }
@@ -57,9 +61,9 @@ impl super::State {
         // And finally the globals:
         for gid in self.db.doc_ids().ids() {
             let ginfos = self.db.node_infos(gid);
-            for (name, range) in ginfos.iter_globals() {
-                if name.contains(spec.search_text) {
-                    let item = self.completion(gid, name, *range, &spec);
+            for (name, def) in ginfos.iter_globals() {
+                if name.as_str().contains(spec.search_text) {
+                    let item = self.completion(gid, *name, def, &spec);
                     completions.push(item);
                 }
             }
@@ -71,15 +75,15 @@ impl super::State {
     fn completion(
         &self,
         docid: DocId,
-        text: &str,
-        range: TextRange,
+        text: Name,
+        def: DefId,
         spec: &SearchSpec,
     ) -> CompletionItem {
         let infos = self.db.node_infos(docid);
         use lsp_types::{CompletionItemKind, CompletionTextEdit, TextEdit};
 
-        let flags = infos.flags(range);
-        let params = self.find_params(flags, docid, range);
+        let flags = infos.flags(def);
+        let params = self.find_params(flags, docid, def);
 
         CompletionItem {
             label: text.to_string(),
@@ -114,21 +118,15 @@ impl super::State {
         }
     }
 
-    fn find_params(
-        &self,
-        flags: BitFlags<NodeFlag>,
-        docid: DocId,
-        range: TextRange,
-    ) -> Option<String> {
+    fn find_params(&self, flags: BitFlags<NodeFlag>, docid: DocId, def: DefId) -> Option<String> {
         if !flags.contains(NodeFlag::HasParams) {
             return None;
         }
         let doc = self.db.document(docid);
-        let bytes = doc.byte_range(range);
-        if let Some(mut node) = doc
-            .root()
-            .named_descendant_for_byte_range(bytes.start, bytes.end)
-        {
+        let range = self.db.node_locations(docid)[def];
+        let start = doc.to_byte(range.start.into());
+        let end = doc.to_byte(range.end.into());
+        if let Some(mut node) = doc.root().named_descendant_for_byte_range(start, end) {
             while let Some(next) = node.next_named_sibling() {
                 if let Ok(param) = next.downcast::<ink_syntax::Params>() {
                     return Some(doc.text(param.start_byte()..param.end_byte()).to_string());

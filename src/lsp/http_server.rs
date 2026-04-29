@@ -10,6 +10,7 @@ use axum::{
     routing::get,
     Router,
 };
+use ink_document::ids::NodeId;
 use mini_milc::Db as _;
 use std::{future::Future, str::FromStr};
 use tap::Pipe;
@@ -201,14 +202,15 @@ async fn file<R>(
     let locs = state.db.node_locations(docid);
 
     for id in locs.left_values().copied() {
-        let id_text = format!("{}", usize::from(id));
+        let nid = NodeId::from(id);
+        let id_text = format!("{}", usize::from(nid));
         let id_name = Name::from(&id_text);
         let name = names.get(&id).unwrap_or(&id_name);
         let loc = locs
             .get_by_left(&id)
             .map(|it| format!("{it}"))
             .unwrap_or_else(|| format!("?"));
-        let id = format!("{:x}", usize::from(id));
+        let id = format!("{:x}", usize::from(nid));
         let id = &id[6..];
         text = text.replace(
             id_name.as_str(),
