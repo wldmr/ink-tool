@@ -30,8 +30,8 @@ impl super::State {
             // Maybe we're over an import line?
             let is_import = self
                 .db
-                .node_infos(this_docid)
-                .imported_files()
+                .imported_files(this_docid)
+                .iter()
                 .any(|(_, range)| range.start.line == pos.line); // imports always occupy the whole line, no need to be pernickety
 
             if is_import {

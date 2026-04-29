@@ -9,11 +9,7 @@ use ink_document::{
     InkDocument,
 };
 use mini_milc::{Db, Old, Subquery, Updated};
-use std::{
-    collections::HashMap,
-    hint::unreachable_unchecked,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, hint::unreachable_unchecked};
 use tree_traversal::Visitor;
 use type_sitter::Node;
 
@@ -47,10 +43,6 @@ impl NodeInfos {
             .filter(|(_, flags)| flags.contains(NodeFlag::Definition))
             .map(|it| (DefId::pinkie_promise_from_usage_id(it.0), it.1))
     }
-
-    pub fn imported_files(&self) -> impl ExactSizeIterator<Item = (&Path, TextRange)> + use<'_> {
-        self.imported_files.iter().map(|it| (it.0.as_path(), it.1))
-    }
 }
 
 /// Poor man’s match statement for bitflags. I know a macro may a bit silly, but the
@@ -76,8 +68,6 @@ pub(crate) use match_flags;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct NodeInfos {
-    imported_files: Vec<(PathBuf, TextRange)>,
-
     pub locs: BiHashMap<NodeId, lsp_types::Range>,
     pub flags: HashMap<NodeId, BitFlags<NodeFlag>>,
 }
@@ -340,14 +330,6 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
                 Descend
             }
 
-            Include(include) => {
-                let node = include.path();
-                let path = self.doc.text(node.byte_range());
-                let range = self.doc.lsp_range(node.range());
-                state.imported_files.push((path.into(), range.into()));
-                Ignore
-            }
-
             /*** Unused ***/
             AltArm(_) => Descend,
             Alternatives(_) => Descend,
@@ -375,6 +357,7 @@ impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
             GatherMark(_) => Ignore,
             GatherMarks(_) => Ignore,
             Glue(_) => Ignore,
+            Include(_) => Ignore,
             Ink(_) => Descend,
             LineComment(_) => Ignore,
             MultilineAlternatives(_) => Descend,

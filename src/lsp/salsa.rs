@@ -24,6 +24,7 @@ use ink_document::{
     ids::{DefId, NodeId, UsageId},
     InkDocument,
 };
+use itertools::Itertools as _;
 use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::{
@@ -103,6 +104,8 @@ composite_query!({
         fn short_path(id: DocId) -> String;
 
         // === Story Structure ===
+        /// The files imported by this file. The text range is the location in the file.
+        fn imported_files(docid: DocId) -> Vec<(Name, TextRange)>;
 
         /// All the story roots in the project
         fn stories() -> StoryRoots;
@@ -189,8 +192,20 @@ subquery!(Ops, node_text, NodeText, |self, db| {
             _ => qname = None,
         }
     }
-    log::debug!("Names in file {:?}: {result:#?}", self.docid);
     result
+});
+
+subquery!(Ops, imported_files, Vec<(Name, TextRange)>, |self, db| {
+    let doc = db.document(self.docid);
+    doc.root()
+        .depth_first::<ink_syntax::Include>()
+        .map(|incl| {
+            let node = incl.path();
+            let path = doc.text(node.byte_range());
+            let range = doc.lsp_range(node.range());
+            (Name::from(path), TextRange::from(range))
+        })
+        .collect_vec()
 });
 
 impl mini_milc::Subquery<Ops, NameMap<Vec1<DefId>>> for file_globals {
