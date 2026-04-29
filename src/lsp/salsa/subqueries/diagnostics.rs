@@ -11,8 +11,8 @@ use crate::lsp::{
     location::FileTextRange,
     salsa::{
         duplicate_definitions, duplicate_imports, file_diagnostics,
-        subqueries::node_info::{match_flags, NodeFlag},
-        DocId, InkGetters as _, Name, NodeInfos, Ops,
+        subqueries::node_flags::{match_flags, NodeFlag},
+        DocId, InkGetters as _, Name, NodeFlags, Ops,
     },
 };
 
@@ -22,10 +22,10 @@ pub type DuplicateDefinitions = HashMap<Name, Vec<((DocId, DefId), BitFlags<Node
 
 subquery!(Ops, file_diagnostics, FileDiagnostics, |self, db| {
     let doc = db.document(self.docid);
-    let node_infos = db.node_infos(self.docid);
+    let flags = db.node_flags(self.docid);
     let mut errors = parse_errors(&doc);
-    add_unused(&mut errors, db, &doc, self.docid, &node_infos);
-    add_illegal_targets(&mut errors, db, self.docid, &node_infos);
+    add_unused(&mut errors, db, &doc, self.docid, &flags);
+    add_illegal_targets(&mut errors, db, self.docid, &flags);
     add_duplicate_definitions(&mut errors, db, self.docid);
     add_duplicate_imports(&mut errors, db, self.docid);
     add_unresolved_imports(&mut errors, db, self.docid);
@@ -43,14 +43,14 @@ impl Subquery<Ops, DuplicateDefinitions> for duplicate_definitions {
 
         for file in db.stories()[&self.story].resolved.keys() {
             let globals = db.file_globals(*file);
-            let infos = db.node_infos(*file);
+            let flags = db.node_flags(*file);
             for (name, defs) in globals.iter() {
                 for def in defs {
-                    let loc = ((*file, *def), infos.flags(*def));
+                    let info = ((*file, *def), flags[def]);
                     match duplicates.get_mut(name) {
-                        Some(vec) => vec.push(loc),
+                        Some(vec) => vec.push(info),
                         None => {
-                            duplicates.insert(*name, vec![loc]);
+                            duplicates.insert(*name, vec![info]);
                         }
                     }
                 }
@@ -98,9 +98,9 @@ fn add_unused(
     db: &impl Db<Ops>,
     doc: &InkDocument,
     docid: DocId,
-    node_infos: &NodeInfos,
+    flags: &NodeFlags,
 ) {
-    let defs = node_infos.iter_definitions();
+    let defs = flags.iter_definitions();
 
     for (defid, flags) in defs {
         if db.usages(docid, defid).len() <= 1 {
@@ -138,13 +138,13 @@ fn add_illegal_targets(
     diags: &mut FileDiagnostics,
     db: &impl Db<Ops>,
     docid: DocId,
-    node_infos: &NodeInfos,
+    flags: &NodeFlags,
 ) {
     use NodeFlag::*;
 
-    let usages = node_infos.iter_flags().filter(|(_range, flags)| {
-        flags.intersects(Usage) && !flags.intersects(Definition | Builtin)
-    });
+    let usages = flags
+        .iter_flags()
+        .filter(|(_, flags)| flags.intersects(Usage) && !flags.intersects(Definition | Builtin));
 
     let uris = db.doc_ids();
     let node_text = db.node_text(docid);
@@ -170,7 +170,7 @@ fn add_illegal_targets(
             let mut illegal_targets = Vec::new();
 
             for (def_doc, def_id) in definition.iter().copied() {
-                let def_flags = db.node_infos(def_doc).flags(def_id);
+                let def_flags = db.node_flags(def_doc)[def_id];
                 let locs = db.node_locations(def_doc);
 
                 let def_kind = match_flags!(match (def_flags) {

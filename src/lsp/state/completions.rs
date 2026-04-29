@@ -27,8 +27,7 @@ impl super::State {
             return Ok(None);
         };
 
-        let info = self.db.node_infos(this_doc);
-        let flags = &info.flags;
+        let flags = self.db.node_flags(this_doc);
         let locals = self.db.local_resolutions(this_doc);
 
         let mut completions = Vec::new();
@@ -39,7 +38,7 @@ impl super::State {
                 for (name, def) in names {
                     // Text must match, plus: either we're in the innermost scope or we only see non-locals.
                     if name.as_str().contains(spec.search_text)
-                        && (n == 0 || !flags[def.as_ref()].intersects(LOCALS))
+                        && (n == 0 || !flags[def].intersects(LOCALS))
                     {
                         completions.push(self.completion(this_doc, *name, *def, &spec));
                     }
@@ -70,10 +69,9 @@ impl super::State {
         def: DefId,
         spec: &SearchSpec,
     ) -> CompletionItem {
-        let infos = self.db.node_infos(docid);
         use lsp_types::{CompletionItemKind, CompletionTextEdit, TextEdit};
 
-        let flags = infos.flags(def);
+        let flags = self.db.node_flags(docid)[def];
         let params = self.find_params(flags, docid, def);
 
         CompletionItem {

@@ -1,20 +1,21 @@
 use crate::lsp::{
     location::TextRange,
-    salsa::{node_infos, InkGetters as _, Ops},
+    salsa::{node_flags, subqueries::ink_inventory::IMap, InkGetters as _, Ops},
 };
 use bimap::BiHashMap;
+use derive_more::derive::Deref;
 use enumflags2::{bitflags, BitFlags};
 use ink_document::{
     ids::{DefId, NodeId, UsageId},
     InkDocument,
 };
 use mini_milc::{Db, Old, Subquery, Updated};
-use std::{collections::HashMap, hint::unreachable_unchecked};
+use std::{hint::unreachable_unchecked, ops::Index};
 use tree_traversal::Visitor;
 use type_sitter::Node;
 
-impl Subquery<Ops, NodeInfos> for node_infos {
-    fn value(&self, db: &impl Db<Ops>, old: Old<NodeInfos>) -> Updated<NodeInfos> {
+impl Subquery<Ops, NodeFlags> for node_flags {
+    fn value(&self, db: &impl Db<Ops>, old: Old<NodeFlags>) -> Updated<NodeFlags> {
         let doc = db.document(self.docid);
         let new = Vstr::new(&doc).traverse(doc.root());
         old.update(new)
@@ -22,14 +23,10 @@ impl Subquery<Ops, NodeInfos> for node_infos {
 }
 
 // Public interface
-impl NodeInfos {
-    pub fn flags(&self, id: impl Into<NodeId>) -> BitFlags<NodeFlag> {
-        self.flags.get(&id.into()).copied().unwrap_or_default()
-    }
-
+impl NodeFlags {
     pub fn flags_by_range(&self, id: impl Into<lsp_types::Range>) -> BitFlags<NodeFlag> {
         let id = self.locs.get_by_right(&id.into()).copied().unwrap();
-        self.flags(id)
+        self[id]
     }
 
     pub fn iter_flags(&self) -> impl Iterator<Item = (UsageId, BitFlags<NodeFlag>)> + use<'_> {
@@ -66,14 +63,63 @@ macro_rules! match_flags {
 }
 pub(crate) use match_flags;
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct NodeInfos {
-    pub locs: BiHashMap<NodeId, lsp_types::Range>,
-    pub flags: HashMap<NodeId, BitFlags<NodeFlag>>,
+#[derive(Debug, Default, PartialEq, Eq, Deref)]
+pub struct NodeFlags {
+    locs: BiHashMap<NodeId, lsp_types::Range>,
+    #[deref] // Dirty hack to make NodeFlags behave like the map.
+    flags: IMap<NodeId, BitFlags<NodeFlag>>,
+}
+
+impl Index<NodeId> for NodeFlags {
+    type Output = BitFlags<NodeFlag>;
+
+    fn index(&self, index: NodeId) -> &Self::Output {
+        &self.flags[&index]
+    }
+}
+
+impl<'a> Index<&'a NodeId> for NodeFlags {
+    type Output = BitFlags<NodeFlag>;
+
+    fn index(&self, index: &'a NodeId) -> &Self::Output {
+        &self.flags[index]
+    }
+}
+
+impl Index<UsageId> for NodeFlags {
+    type Output = BitFlags<NodeFlag>;
+
+    fn index(&self, index: UsageId) -> &Self::Output {
+        &self.flags[index.as_ref()]
+    }
+}
+
+impl<'a> Index<&'a UsageId> for NodeFlags {
+    type Output = BitFlags<NodeFlag>;
+
+    fn index(&self, index: &'a UsageId) -> &Self::Output {
+        &self.flags[index.as_ref()]
+    }
+}
+
+impl Index<DefId> for NodeFlags {
+    type Output = BitFlags<NodeFlag>;
+
+    fn index(&self, index: DefId) -> &Self::Output {
+        &self.flags[index.as_ref()]
+    }
+}
+
+impl<'a> Index<&'a DefId> for NodeFlags {
+    type Output = BitFlags<NodeFlag>;
+
+    fn index(&self, index: &'a DefId) -> &Self::Output {
+        &self.flags[index.as_ref()]
+    }
 }
 
 // Private helpers
-impl NodeInfos {
+impl NodeFlags {
     fn add_node_kind(&mut self, id: NodeId, kind: impl Into<BitFlags<NodeFlag>>) {
         self.flags.entry(id).or_default().insert(kind);
     }
@@ -144,7 +190,7 @@ impl<'a> Vstr<'a> {
 }
 
 impl<'a> Visitor<'a, ink_syntax::AllNamed<'a>> for Vstr<'a> {
-    type State = NodeInfos;
+    type State = NodeFlags;
 
     fn visit(
         &mut self,
@@ -427,6 +473,8 @@ mod tests {
     use rassert::prelude::*;
 
     mod flags {
+        use std::collections::HashMap;
+
         use super::*;
         use assertions::BitFlagsExpectation as _;
         use util::softly;
@@ -536,7 +584,7 @@ mod tests {
 
         fn scan_flags<'a>(
             text: &'a str,
-            infos: NodeInfos,
+            infos: NodeFlags,
         ) -> HashMap<&'a str, BitFlags<NodeFlag, u32>> {
             text_annotations::scan_default_annotations(text)
                 .map(|ann| {

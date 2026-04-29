@@ -32,8 +32,8 @@ use std::{
     hash::BuildHasherDefault,
     ops::Index,
 };
-pub(crate) use subqueries::node_info::match_flags;
-pub use subqueries::node_info::{NodeFlag, NodeInfos};
+pub(crate) use subqueries::node_flags::match_flags;
+pub use subqueries::node_flags::{NodeFlag, NodeFlags};
 pub use subqueries::story_structure::StoryRoot;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
@@ -96,7 +96,7 @@ composite_query!({
         pub fn node_locations(docid: DocId) -> NodeLocations;
         pub fn node_text(docid: DocId) -> NodeText;
 
-        fn node_infos(docid: DocId) -> NodeInfos;
+        fn node_flags(docid: DocId) -> NodeFlags;
 
         /// The longest prefix that all Uris share
         fn common_path_prefix() -> String;
