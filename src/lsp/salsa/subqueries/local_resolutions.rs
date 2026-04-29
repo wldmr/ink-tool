@@ -1,4 +1,4 @@
-use ink_document::ids::{DefId, UsageId};
+use ink_document::ids::{DefId, ScopeId, UsageId};
 use itertools::Itertools as _;
 use mini_milc::{Db, Old, Subquery, Updated};
 use util::nonempty::{MapOfNonEmpty, Vec1};
@@ -19,12 +19,27 @@ pub struct LocalResolutions {
     pub usages: IMap<DefId, Vec1<UsageId>>,
     /// The *locally* unresolved names in this file (i.e. they might refer to globals)
     pub unresolved: IMap<Name, Vec1<UsageId>>,
+    /// The local names defined in a particular scope, including “scoped” ones like
+    /// “subsection.label”
+    ///
+    /// Note that these are not pared down by whether the are resolvable or not (such as
+    /// a knot label being shadowed by a subsection name). This is mostly for simplicity
+    /// and owed to the fact that these names are meant for completions, where
+    /// overlapping names will usually result in the “correct” thing anyway.
+    pub in_scope: IMap<ScopeId, Vec<(Name, DefId)>>,
 }
 
 impl Subquery<Ops, LocalResolutions> for local_resolutions {
     fn value(&self, db: &impl Db<Ops>, old: Old<LocalResolutions>) -> Updated<LocalResolutions> {
         let mut result = LocalResolutions::default();
         let inv = db.ink_inventory(self.docid);
+
+        result.in_scope.entry(inv.scope_id).or_default().extend(
+            inv.body
+                .temps
+                .iter()
+                .flat_map(|(name, defs)| defs.iter().map(|def| (*name, *def))),
+        );
 
         for (name, usages) in &inv.body.usages {
             let resolved = result.resolve(&inv.body.temps, name, usages);
@@ -41,11 +56,23 @@ impl Subquery<Ops, LocalResolutions> for local_resolutions {
                 let subname = sub.name;
                 sub_names.register(sub.name, sub.name_id);
                 for (labelname, defs) in &sub.body.labels {
-                    let namespaced_label = format!("{subname}.{labelname}");
-                    sub_labels.register_extend(*labelname, defs.iter().copied());
-                    sub_labels.register_extend(namespaced_label, defs.iter().copied());
+                    let labelname = *labelname;
+                    let namespaced_label = Name::from(format!("{subname}.{labelname}"));
+                    for def in defs.iter().copied() {
+                        sub_labels.register(labelname, def);
+                        sub_labels.register(namespaced_label, def);
+                    }
                 }
             }
+
+            result.in_scope.entry(section.scope_id).or_default().extend(
+                std::iter::empty()
+                    .chain(&sub_labels)
+                    .chain(&sub_names)
+                    .chain(&section.params)
+                    .chain(&section.body.temps)
+                    .flat_map(|(name, defs)| defs.iter().map(|def| (*name, *def))),
+            );
 
             for (name, usages) in &section.body.usages {
                 let mut resolved = false;
@@ -63,12 +90,20 @@ impl Subquery<Ops, LocalResolutions> for local_resolutions {
                 }
             }
 
-            for subsection in &section.subsections {
-                for (name, usages) in &subsection.body.usages {
+            for subsec in &section.subsections {
+                result.in_scope.entry(subsec.scope_id).or_default().extend(
+                    std::iter::empty()
+                        .chain(&subsec.params)
+                        .chain(&subsec.body.temps)
+                        // subsection and label already visibility handled at the section level.
+                        .flat_map(|(name, defs)| defs.iter().map(|def| (*name, *def))),
+                );
+
+                for (name, usages) in &subsec.body.usages {
                     let mut resolved = false;
-                    resolved |= result.resolve(&subsection.params, name, usages);
-                    resolved |= result.resolve(&subsection.body.temps, name, usages);
-                    resolved |= result.resolve(&subsection.body.labels, name, usages);
+                    resolved |= result.resolve(&subsec.params, name, usages);
+                    resolved |= result.resolve(&subsec.body.temps, name, usages);
+                    resolved |= result.resolve(&subsec.body.labels, name, usages);
                     // XXX: I *think* the priority here is section body labels > subsections > subsection labels
                     if !resolved {
                         resolved |= result.resolve(&section.body.labels, name, usages);

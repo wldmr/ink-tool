@@ -2,14 +2,18 @@ use crate::lsp::{
     location::TextRange,
     salsa::{Name, NodeFlag},
 };
-use enumflags2::BitFlags;
-use ink_document::ids::DefId;
+use enumflags2::{make_bitflags, BitFlags};
+use ink_document::ids::{DefId, ScopeId};
+use itertools::Itertools;
 use lsp_types::{CompletionItem, Position, Uri};
 use std::ops::Bound;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node;
 
 use super::*;
+
+/// Flags that identify a local variable, not visible outside the defining scope.
+static LOCALS: BitFlags<NodeFlag, u32> = make_bitflags!(NodeFlag::{Temp | Param});
 
 impl super::State {
     pub fn completions(
@@ -23,48 +27,35 @@ impl super::State {
             return Ok(None);
         };
 
-        let node_info = self.db.node_infos(this_doc);
+        let info = self.db.node_infos(this_doc);
+        let flags = &info.flags;
+        let locals = self.db.local_resolutions(this_doc);
 
-        let mut block = node_info
-            .parent_scope(spec.node.into())
-            .unwrap_or_else(|| doc.root().into());
         let mut completions = Vec::new();
 
-        // SMELL: We're repeating the name resolution logic here.
-
-        // From innermost block: locals & addresses
-        let innermost = std::iter::chain(
-            node_info.locals_in_scope(block),
-            node_info.addresses_in_scope(block),
-        );
-        for (name, defid) in innermost {
-            if name.as_str().contains(spec.search_text) {
-                let item = self.completion(this_doc, *name, defid, &spec);
-                completions.push(item);
-            }
-        }
-
-        // From parent blocks: addresses only
-        while let Some(parent) = node_info.parent_scope(block.into()) {
-            if parent == block {
-                break;
-            }
-            for (name, def) in node_info.addresses_in_scope(parent) {
-                if name.as_str().contains(spec.search_text) {
-                    let item = self.completion(this_doc, *name, def, &spec);
-                    completions.push(item);
+        // Walk from tightest to widest scope, collecting relevant names along the way.
+        for (n, block) in spec.scopes.iter().rev().copied().enumerate() {
+            if let Some(names) = locals.in_scope.get(&ScopeId::from(block)) {
+                for (name, def) in names {
+                    // Text must match, plus: either we're in the innermost scope or we only see non-locals.
+                    if name.as_str().contains(spec.search_text)
+                        && (n == 0 || !flags[def.as_ref()].intersects(LOCALS))
+                    {
+                        completions.push(self.completion(this_doc, *name, *def, &spec));
+                    }
                 }
             }
-            block = parent.into();
         }
 
         // And finally the globals:
-        for gid in self.db.doc_ids().ids() {
-            let ginfos = self.db.node_infos(gid);
-            for (name, def) in ginfos.iter_globals() {
-                if name.as_str().contains(spec.search_text) {
-                    let item = self.completion(gid, *name, def, &spec);
-                    completions.push(item);
+        for story in self.db.stories_of(this_doc).iter() {
+            let globals = self.db.global_names(*story);
+            for ((doc, def), names) in globals.iter() {
+                for name in names {
+                    if name.as_str().contains(spec.search_text) {
+                        let item = self.completion(*doc, *name, *def, &spec);
+                        completions.push(item);
+                    }
                 }
             }
         }
@@ -210,6 +201,13 @@ impl super::State {
             .root()
             .named_descendant_for_byte_range(first_byte, first_byte + search_text.len())?;
 
+        // Feels wasteful to walk down the tree twice, but it'll do for now.
+        let scopes = doc
+            .root()
+            .depth_first::<ink_syntax::ScopeBlock>()
+            .filter(|it| it.contains(&node))
+            .collect_vec();
+
         // We don’t complete text, so if we can determine that we’re definitely not in
         // code, we can just abort.
         if node.kind() == ink_syntax::Text::KIND && !node.is_error() {
@@ -218,6 +216,7 @@ impl super::State {
 
         Some(SearchSpec {
             node,
+            scopes,
             search_text,
             search_text_range: doc
                 .lsp_range_from_bytes(first_byte, first_byte + search_text.len())
@@ -229,6 +228,7 @@ impl super::State {
 #[derive(Debug, PartialEq, Eq)]
 struct SearchSpec<'a> {
     node: type_sitter::UntypedNode<'a>,
+    scopes: Vec<ink_syntax::ScopeBlock<'a>>,
     search_text_range: TextRange,
     search_text: &'a str,
 }

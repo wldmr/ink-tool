@@ -1,14 +1,9 @@
 use std::{collections::HashMap, iter};
 
 use enumflags2::BitFlags;
-use ink_document::{
-    ids::{DefId, NodeId},
-    InkDocument,
-};
+use ink_document::{ids::DefId, InkDocument};
 use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use mini_milc::{subquery, Db, Old, Subquery, Updated};
-use tree_traversal::TreeTraversal;
-use type_sitter::Node;
 use util::nonempty::Vec1;
 
 use crate::lsp::{
@@ -126,12 +121,7 @@ fn add_unused(
                 ListItem => "list item",
                 _ => "unknown kind of definition (This is likely a bug in ink-tool.)",
             });
-            let target = doc
-                .root()
-                .depth_first::<type_sitter::UntypedNode>()
-                .find(|it| it.raw().id() == usize::from(NodeId::from(defid)));
             let locs = db.node_locations(docid);
-            dbg!(defid, target, &*locs);
             let range = locs[defid].into();
             let name = doc.lsp_text(range);
             diags.push(Diagnostic {
