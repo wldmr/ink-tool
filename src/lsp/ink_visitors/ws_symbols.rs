@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ops::Deref, str::FromStr};
 
 use ink_document::InkDocument;
 use ink_syntax::{AllNamed, GlobalKeyword};
@@ -6,21 +6,23 @@ use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceLocation, WorkspaceSy
 use tree_traversal::{VisitInstruction, Visitor};
 use type_sitter::{IncorrectKindCause, Node};
 
-pub fn from_doc(uri: &Uri, doc: &impl Deref<Target = InkDocument>) -> Vec<WorkspaceSymbol> {
-    WorkspaceSymbols::new(uri, doc.deref()).traverse(doc.root())
+use crate::lsp::DocId;
+
+pub fn from_doc(docid: DocId, doc: &impl Deref<Target = InkDocument>) -> Vec<WorkspaceSymbol> {
+    WorkspaceSymbols::new(docid, doc.deref()).traverse(doc.root())
 }
 
 struct WorkspaceSymbols<'a> {
-    uri: &'a Uri,
+    docid: DocId,
     doc: &'a InkDocument,
     knot: Option<&'a str>,
     stitch: Option<&'a str>,
 }
 
 impl<'a> WorkspaceSymbols<'a> {
-    fn new(uri: &'a Uri, doc: &'a InkDocument) -> Self {
+    fn new(uri: DocId, doc: &'a InkDocument) -> Self {
         Self {
-            uri,
+            docid: uri,
             doc,
             knot: None,
             stitch: None,
@@ -43,8 +45,8 @@ impl<'a> WorkspaceSymbols<'a> {
         })
     }
 
-    fn uri(&self) -> &Uri {
-        &self.uri
+    fn uri(&self) -> Uri {
+        Uri::from_str(self.docid.as_str()).unwrap()
     }
 
     fn lsp_range(&self, node: impl type_sitter::Node<'a>) -> lsp_types::Range {
@@ -149,16 +151,11 @@ impl<'tree> Visitor<'tree, AllNamed<'tree>> for WorkspaceSymbols<'tree> {
 
             // Symbols (== levels) to be created
             AllNamed::Ink(ink) => {
-                let path = self.uri().path();
-                let name = path
-                    .segments()
-                    .last()
-                    .map(|it| it.as_str())
-                    .unwrap_or_else(|| {
-                        log::error!("The path {path} does not contain a filename!");
-                        "ERR"
-                    })
-                    .to_string();
+                let path = self.docid.as_str();
+                let name = path.rsplit('/').next().unwrap_or_else(|| {
+                    log::error!("The docid {path} does not look like a filename!");
+                    path
+                });
                 add_to(sym, SymbolKind::FILE, name, None, self.location(ink));
                 Descend
             }

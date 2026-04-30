@@ -7,7 +7,6 @@ use std::{
 };
 
 use crate::lsp::{
-    idset::Id,
     location::{FileTextRange, TextPos, TextRange},
     salsa::{stories, stories_of, DocId, InkGetters, Ops},
 };
@@ -20,7 +19,7 @@ use util::nonempty::Vec1;
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Into, AsRef)]
 pub struct StoryRoot(DocId);
 
-impl PartialEq<Id<Uri>> for StoryRoot {
+impl PartialEq<DocId> for StoryRoot {
     fn eq(&self, other: &DocId) -> bool {
         self.0 == *other
     }
@@ -28,6 +27,11 @@ impl PartialEq<Id<Uri>> for StoryRoot {
 impl std::fmt::Debug for StoryRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Root-{:?}", self.0)
+    }
+}
+impl Into<Uri> for StoryRoot {
+    fn into(self) -> Uri {
+        self.0.into()
     }
 }
 
@@ -156,9 +160,9 @@ impl Subquery<Ops, StoryRoots> for stories {
         // 1.  Files early in this iteration are more likely to be roots.
         // 2.  Each transitive closure can only contain files at the same or higher depth.
         let mut candidates = docs
-            .pairs()
-            .map(|(id, uri)| {
-                let path = Path::new(uri.path().as_str());
+            .iter()
+            .map(|id| {
+                let path = Path::new(id.as_str());
                 let dir = path.parent().expect("Each uri must point to a file");
                 let fname = path.file_name().expect("Each uri must point to a file");
                 let depth = dir.components().count();
@@ -169,7 +173,7 @@ impl Subquery<Ops, StoryRoots> for stories {
 
         let paths: HashMap<&Path, DocId> = candidates
             .iter()
-            .map(|(_, _, _, path, id)| (*path, *id))
+            .map(|(_, _, _, path, id)| (*path, **id))
             .collect();
 
         let mut roots = StoryRoots::new();
@@ -180,11 +184,11 @@ impl Subquery<Ops, StoryRoots> for stories {
                 continue;
             }
 
-            let mut imports = TransitiveImports::new_root(id);
-            imports.fill_transitive(db, &paths, &mut roots, root_dir, id);
+            let mut imports = TransitiveImports::new_root(*id);
+            imports.fill_transitive(db, &paths, &mut roots, root_dir, *id);
 
             already_imported.extend(imports.resolved.keys());
-            roots.insert(StoryRoot(id), imports);
+            roots.insert(StoryRoot(*id), imports);
         }
 
         old.update(roots)

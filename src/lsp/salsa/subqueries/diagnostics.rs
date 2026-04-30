@@ -196,7 +196,6 @@ fn add_illegal_targets(
         .iter_flags()
         .filter(|(_, flags)| flags.intersects(Usage) && !flags.intersects(Definition | Builtin));
 
-    let uris = db.doc_ids();
     let node_text = db.node_text(docid);
     let locs = db.node_locations(docid);
 
@@ -244,7 +243,7 @@ fn add_illegal_targets(
                         // here, but this would get us in the weeds of infering types in a dynamically
                         // typed language.
                         illegal_targets.push(DiagnosticRelatedInformation {
-                            location: Location::new(uris[def_doc].clone(), locs[def_id].into()),
+                            location: Location::new(def_doc.into(), locs[def_id].into()),
                             message: format!("a {def_kind} is not an address"),
                         });
                     }
@@ -253,7 +252,7 @@ fn add_illegal_targets(
                 if flags.contains(Call) {
                     if !def_flags.intersects(Function | HasParams) {
                         illegal_targets.push(DiagnosticRelatedInformation {
-                            location: Location::new(uris[def_doc].clone(), locs[def_id].into()),
+                            location: Location::new(def_doc.into(), locs[def_id].into()),
                             message: format!("a {def_kind} can not be called"),
                         });
                     }
@@ -285,7 +284,6 @@ fn add_duplicate_definitions(diags: &mut FileDiagnostics, db: &impl Db<Ops>, doc
 
     // TODO: We should certainly catch duplicate *local* definitions, too.
 
-    let uris = db.doc_ids();
     let parents = db.stories_of(docid);
     for story in parents.iter().copied() {
         let story_suffix = if db.stories().len() > 1 {
@@ -319,7 +317,7 @@ fn add_duplicate_definitions(diags: &mut FileDiagnostics, db: &impl Db<Ops>, doc
                                 let locs = db.node_locations(*other_file);
                                 DiagnosticRelatedInformation {
                                     location: Location::new(
-                                        uris[*other_file].clone(),
+                                        other_file.into(),
                                         locs[*other_def].into(),
                                     ),
                                     message: format!(
@@ -361,8 +359,6 @@ fn add_unresolved_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid:
         let transitive_imports = &stories[&story];
 
         if let Some(unresolved) = transitive_imports.unresolved.get(&docid) {
-            let uris = db.doc_ids();
-            let story_uri = &uris[story];
             let story_path = db.short_path(story.into());
             let story_path = story_path.as_str();
             for range in unresolved.iter().copied() {
@@ -372,7 +368,7 @@ fn add_unresolved_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, docid:
                     severity: Some(DiagnosticSeverity::ERROR),
                     related_information: Some(vec![DiagnosticRelatedInformation {
                         location: Location {
-                            uri: story_uri.clone(),
+                            uri: story.into(),
                             range: lsp_types::Range::default(),
                         },
                         message: format!("This story root file"),
@@ -393,8 +389,6 @@ fn add_duplicate_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, this_do
                 .iter()
                 .partition::<Vec<FileTextRange>, _>(|it| it.file == this_doc);
 
-            let uris = db.doc_ids();
-            let story_uri = &uris[story];
             let target_path = db.short_path(*target);
             let target_path = target_path.as_str();
 
@@ -412,11 +406,11 @@ fn add_duplicate_imports(diags: &mut FileDiagnostics, db: &impl Db<Ops>, this_do
                     severity: Some(DiagnosticSeverity::ERROR),
                     related_information: Some(
                         iter::once(DiagnosticRelatedInformation {
-                            location: Location::new(story_uri.clone(), lsp_types::Range::default()),
+                            location: Location::new(story.into(), lsp_types::Range::default()),
                             message: format!("story root"),
                         })
                         .chain(others.iter().map(|other| DiagnosticRelatedInformation {
-                            location: Location::new(uris[other.file].clone(), other.range.into()),
+                            location: Location::new(other.file.into(), other.range.into()),
                             message: format!("{target_path} also imported here"),
                         }))
                         .collect(),

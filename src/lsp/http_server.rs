@@ -1,6 +1,6 @@
 use crate::lsp::{
     salsa::{file_globals, global_names, globals, ink_inventory, local_resolutions, Name},
-    InkGetters,
+    DocId, InkGetters,
 };
 
 use super::{state::DocumentNotFound, SharedState};
@@ -12,7 +12,7 @@ use axum::{
 };
 use ink_document::ids::NodeId;
 use mini_milc::Db as _;
-use std::{future::Future, str::FromStr};
+use std::future::Future;
 use tap::Pipe;
 
 pub fn start<F>(state: SharedState, shutdown: F) -> Result<(), std::io::Error>
@@ -71,12 +71,11 @@ async fn root(State(state): State<SharedState>) -> impl IntoResponse {
                 menu.list_item(|li| {
                     li.text("Files");
                     li.unordered_list(|ul| {
-                        for uri in state.uris() {
+                        for docid in state.db.doc_ids().iter() {
                             ul.list_item(|li| {
-                                let path = uri.path().as_str();
                                 li.anchor(|a| {
-                                    a.href(format!("/file/{path}",))
-                                        .text(path.replace(&common_prefix, ""))
+                                    a.href(format!("/file/{docid}",))
+                                        .text(state.db.short_path(*docid).to_string())
                                 })
                             });
                         }
@@ -115,18 +114,11 @@ async fn file<R>(
 ) -> Result<axum::response::Html<String>, (axum::http::StatusCode, String)> {
     let state = state.lock().expect("I want this lock!");
     let prefix = &*state.db.common_path_prefix();
-    let uri = lsp_types::Uri::from_str(&format!("file://{prefix}{}", path.to_string_lossy()))
-        .map_err(|err| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                err.to_string(),
-            )
-        })?;
-    let docid = state
-        .db
-        .doc_ids()
-        .get_id(&uri)
-        .ok_or_else(|| DocumentNotFound(uri.clone()))?;
+
+    let docid = DocId::from(format!("{prefix}{}", path.to_string_lossy()));
+    if !state.db.doc_ids().contains(&docid) {
+        return Err(DocumentNotFound(docid).into());
+    }
 
     let html = html::root::Html::builder()
         .body(|body| {

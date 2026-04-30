@@ -3,9 +3,8 @@
 mod composition;
 mod subqueries;
 
-use crate::lsp::salsa::subqueries::ink_inventory::IMap;
+use crate::lsp::salsa::subqueries::ink_inventory::{IMap, ISet};
 pub use crate::lsp::{
-    idset::{Id, IdSet},
     ink_visitors::{
         doc_symbols::document_symbols as get_document_symbols,
         ws_symbols::from_doc as get_workspace_symbols,
@@ -20,7 +19,8 @@ pub use crate::lsp::{
 };
 use bimap::BiHashMap;
 use composition::composite_query;
-use derive_more::derive::Deref;
+use derive_more::derive::{AsRef, Deref, Into};
+use derive_more::{Debug, Display};
 use ink_document::{
     ids::{DefId, NodeId, UsageId},
     InkDocument,
@@ -32,17 +32,70 @@ use std::{
     collections::{HashMap, HashSet},
     hash::BuildHasherDefault,
     ops::Index,
+    str::FromStr as _,
 };
 pub(crate) use subqueries::node_flags::match_flags;
 pub use subqueries::node_flags::{NodeFlag, NodeFlags};
 pub use subqueries::story_structure::StoryRoot;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
-use ustr::IdentityHasher;
+use ustr::{ustr, IdentityHasher, Ustr};
 use util::nonempty::Vec1;
 
-pub type DocId = Id<Uri>;
-pub type DocIds = IdSet<Uri>;
+pub type DocIds = ISet<DocId>;
+
+#[derive(
+    Default, Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, AsRef, Into,
+)]
+#[debug("DocId({_0})")]
+#[display("{_0}")]
+pub struct DocId(Ustr);
+
+impl DocId {
+    pub fn new(uri: &Uri) -> Self {
+        uri.as_str().into()
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        self.0.as_str()
+    }
+
+    pub fn path(&self) -> &'static str {
+        const PREFIX: usize = "file:///".len();
+        &self.0.as_str()[PREFIX..]
+    }
+}
+
+impl<T: AsRef<str>> From<T> for DocId {
+    fn from(value: T) -> Self {
+        DocId(ustr(value.as_ref()))
+    }
+}
+
+impl Into<&'static str> for DocId {
+    fn into(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+impl Into<String> for DocId {
+    fn into(self) -> String {
+        self.0.to_string()
+    }
+}
+
+impl Into<Uri> for DocId {
+    fn into(self) -> Uri {
+        Uri::from_str(self.0.as_str()).unwrap()
+    }
+}
+
+impl<'a> Into<Uri> for &'a DocId {
+    fn into(self) -> Uri {
+        Uri::from_str(self.0.as_str()).unwrap()
+    }
+}
+
 pub type Def = (DocId, DefId);
 pub type Usg = (DocId, UsageId);
 pub type NodeText = IMap<NodeId, Name>;
@@ -138,8 +191,8 @@ subquery!(Ops, opened_docs, HashSet<DocId>);
 
 subquery!(Ops, common_path_prefix, String, |self, db| {
     db.doc_ids()
-        .values()
-        .map(|it| it.path().to_string())
+        .iter()
+        .map(|it| it.to_string())
         .reduce(|a, b| {
             a.chars()
                 .zip(b.chars())
@@ -152,9 +205,7 @@ subquery!(Ops, common_path_prefix, String, |self, db| {
 
 subquery!(Ops, short_path, String, |self, db| {
     let prefix = db.common_path_prefix().len();
-    let ids = db.doc_ids();
-    let path = ids[self.id].path().as_str();
-    path[prefix..].to_string()
+    self.id.as_str()[prefix..].to_string()
 });
 
 subquery!(Ops, node_locations, NodeLocations, |self, db| {
@@ -287,10 +338,8 @@ subquery!(Ops, usages, Vec<Usg>, |self, db| {
 });
 
 subquery!(Ops, workspace_symbols, Vec<WorkspaceSymbol>, |self, db| {
-    let docs = db.doc_ids();
     let doc = db.document(self.id);
-    let uri = docs.get(self.id).unwrap();
-    get_workspace_symbols(uri, &doc)
+    get_workspace_symbols(self.id, &doc)
 });
 
 subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {

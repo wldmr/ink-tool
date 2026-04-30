@@ -1,6 +1,7 @@
 use crate::lsp::{
     salsa::InkGetters as _,
     state::{DocumentNotFound, GotoLocationError},
+    DocId,
 };
 use itertools::Itertools;
 use lsp_types::{Location, Position, Range, Uri};
@@ -12,9 +13,10 @@ impl super::State {
         pos: Position,
     ) -> Result<Vec<Location>, GotoLocationError> {
         let docs = self.db.doc_ids();
-        let this_docid = docs
-            .get_id(&uri)
-            .ok_or_else(|| DocumentNotFound(uri.clone()))?;
+        let this_docid = DocId::new(&uri);
+        if !docs.contains(&this_docid) {
+            return Err(DocumentNotFound(this_docid).into());
+        }
         let doc = self.db.document(this_docid);
 
         let mut defs = Vec::new();
@@ -22,9 +24,8 @@ impl super::State {
         if let Some(usage) = doc.usage_at(pos) {
             let found = self.db.definition(this_docid, usage.ident.into());
             for (defdoc, defid) in found.iter() {
-                let uri = docs[*defdoc].clone();
                 let range = self.db.node_locations(*defdoc)[*defid].into();
-                defs.push(Location::new(uri, range))
+                defs.push(Location::new(defdoc.into(), range))
             }
         } else {
             // Maybe we're over an import line?
@@ -52,8 +53,7 @@ impl super::State {
 
                 let targets = targets
                     .unique() // Deduplicate in case of multiple overlapping stories (or accidental overlapping imports)
-                    .map(|target| docs[target].clone())
-                    .map(|uri| Location::new(uri, Range::default())); // we send the user to the start of the file.
+                    .map(|docid| Location::new(docid.into(), Range::default())); // we send the user to the start of the file.
                 defs.extend(targets);
             }
         }

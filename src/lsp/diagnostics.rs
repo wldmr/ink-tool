@@ -1,13 +1,14 @@
-use crate::lsp::idset::Id;
 use crate::lsp::salsa::{self, InkGetters as _};
 use crate::lsp::shared::SharedValue;
 use crate::lsp::state::State;
+use crate::lsp::DocId;
 use crate::AppResult;
 use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Uri};
 use mini_milc::{Db as _, Revision};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::str::FromStr;
 
 /* TODO: Proper debounce
 > In a language server written in Rust, what would be a good way to “debounce”
@@ -93,7 +94,7 @@ pub fn start(
     wait_for_shutdown: impl Fn() -> ControlFlow<()>,
 ) {
     // keep track of when the diagnostics last changed, per file
-    let mut latest = HashMap::<Id<Uri>, Revision>::new();
+    let mut latest = HashMap::<DocId, Revision>::new();
     loop {
         if wait_for_shutdown().is_break() {
             log::debug!("Diagnostics thread received shutdown signal.");
@@ -103,7 +104,7 @@ pub fn start(
         if let Ok(state) = state.lock() {
             let docs = state.db.doc_ids();
 
-            for (docid, uri) in docs.pairs() {
+            for docid in docs.iter().copied() {
                 let query = salsa::file_diagnostics { docid };
                 let latest_diagnostics = state.db.get(query);
 
@@ -112,7 +113,7 @@ pub fn start(
                     if old.is_none_or(|it| it != rev) {
                         static METHOD: &'static str = <lsp_types::notification::PublishDiagnostics as lsp_types::notification::Notification>::METHOD;
                         let params = PublishDiagnosticsParams {
-                            uri: uri.clone(),
+                            uri: Uri::from_str(docid.as_str()).unwrap(),
                             diagnostics: latest_diagnostics.clone(),
                             version: None,
                         };
@@ -130,7 +131,7 @@ pub fn start(
                         if let Err(err) = send(notification) {
                             log::error!("Notification error: {err:?}");
                         } else {
-                            log::trace!("Sent updated parse errors for {}", uri.path().as_str());
+                            log::trace!("Sent updated parse errors for {docid}");
                         }
                     }
                 }

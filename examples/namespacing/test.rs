@@ -85,13 +85,12 @@ fn main() -> TestResult {
 fn test_goto_definition(state: &State, filter: Vec<(StoryRoot, String)>) -> TestResult {
     let mut definitions: HashMap<&str, (&Uri, Annotation<'_>)> = Default::default();
     let mut references: Vec<(&Uri, Annotation<'_>, BTreeSet<&str>)> = Default::default();
-    let doc_ids = state.db.doc_ids();
     let stories = state.db.stories();
-    let mut docs: HashMap<&Uri, Cached<Ops, InkDocument>> = HashMap::new();
+    let mut docs: HashMap<Uri, Cached<Ops, InkDocument>> = HashMap::new();
 
     for (story, _name) in filter {
         for (id, _) in &stories[&story].resolved {
-            docs.entry(&doc_ids[*id])
+            docs.entry(id.into())
                 .or_insert_with(|| state.db.document(*id));
         }
     }

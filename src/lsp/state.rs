@@ -1,7 +1,4 @@
-use crate::lsp::{
-    idset::Id,
-    salsa::{self, DocId, InkGetters, InkSetters},
-};
+use crate::lsp::salsa::{self, DocId, InkGetters, InkSetters};
 use derive_more::derive::{Display, Error, From};
 use ink_document::{DocumentEdit, InkDocument};
 use line_index::WideEncoding;
@@ -30,8 +27,8 @@ pub struct State {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
-#[display("Document not found: `{}`", _0.path())]
-pub struct DocumentNotFound(#[error(not(source))] pub(crate) Uri);
+#[display("Document not found: `{_0}`")]
+pub struct DocumentNotFound(#[error(not(source))] pub(crate) DocId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
 #[display("Not a valid position: {}:{}", _0.line, _0.character)]
@@ -52,10 +49,6 @@ impl State {
         }
     }
 
-    pub fn uris(&self) -> Vec<Uri> {
-        self.db.doc_ids().values().cloned().collect()
-    }
-
     pub fn common_file_prefix(&self) -> String {
         self.db
             .common_path_prefix()
@@ -64,16 +57,18 @@ impl State {
     }
 
     pub fn text(&self, uri: &Uri) -> Result<String, DocumentNotFound> {
-        if let Some(id) = self.db.doc_ids().get_id(uri) {
+        let id = DocId::new(uri);
+        if self.db.doc_ids().contains(&id) {
             Ok(self.db.document(id).full_text())
         } else {
-            Err(DocumentNotFound(uri.clone()))
+            Err(DocumentNotFound(id))
         }
     }
 
     pub fn is_open(&mut self, uri: &Uri) -> Result<bool, DocumentNotFound> {
-        let Some(id) = self.db.doc_ids().get_id(&uri) else {
-            return Err(DocumentNotFound(uri.clone()));
+        let id = DocId::new(uri);
+        if !self.db.doc_ids().contains(&id) {
+            return Err(DocumentNotFound(id));
         };
         Ok(self.db.opened_docs().contains(&id))
     }
@@ -107,20 +102,22 @@ impl State {
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        let removed = self.db.modify_docs(|it| it.remove(&uri));
+        let id = DocId::new(&uri);
+        let removed = self.db.modify_docs(|it| it.remove(&id));
         if removed {
             Ok(())
         } else {
-            Err(DocumentNotFound(uri))
+            Err(DocumentNotFound(id))
         }
     }
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Vec<DocumentSymbol>, DocumentNotFound> {
-        if let Some(id) = self.db.doc_ids().get_id(&uri) {
+        let id = DocId::new(&uri);
+        if self.db.doc_ids().contains(&id) {
             Ok(self.db.document_symbols(id).clone())
         } else {
-            Err(DocumentNotFound(uri))
+            Err(DocumentNotFound(id))
         }
     }
 
@@ -128,7 +125,7 @@ impl State {
         let query = query.trim().to_lowercase();
         let no_filter = query.is_empty();
         let mut syms = Vec::new();
-        for id in self.db.doc_ids().ids() {
+        for id in self.db.doc_ids().iter().copied() {
             for sym in self.db.workspace_symbols(id).iter() {
                 if no_filter || sym.name.to_lowercase().contains(&query) {
                     syms.push(sym.clone());
@@ -141,29 +138,22 @@ impl State {
     #[cfg(test)]
     fn byte_range_of(&self, uri: &Uri, loc: lsp_types::Range) -> std::ops::Range<usize> {
         // only used in tests, so we'll crash liberally!
-        let id = self
-            .db
-            .doc_ids()
-            .get_id(uri)
-            .expect("don't call with with a non-existent document");
-        self.db.document(id).byte_range(loc)
+        self.db.document(DocId::new(uri)).byte_range(loc)
     }
 
-    fn get_or_new_docid(&mut self, uri: Uri) -> Id<Uri> {
-        let id: Option<DocId> = self.db.doc_ids().get_id(&uri).clone();
-        let id: DocId = id.unwrap_or_else(|| {
-            self.db.modify_docs(|docs| docs.insert(uri.clone()));
-            self.db.doc_ids().get_id(&uri).unwrap()
-        });
+    fn get_or_new_docid(&mut self, uri: Uri) -> DocId {
+        let id = DocId::new(&uri);
+        self.db.modify_docs(|docs| docs.insert(id));
         id
     }
 
     fn get_doc_and_id(
         &self,
         uri: &Uri,
-    ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, Id<Uri>), DocumentNotFound> {
-        let Some(id) = self.db.doc_ids().get_id(uri) else {
-            return Err(DocumentNotFound(uri.clone()));
+    ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, DocId), DocumentNotFound> {
+        let id = DocId::new(uri);
+        if !self.db.doc_ids().contains(&id) {
+            return Err(DocumentNotFound(id));
         };
         let doc = self.db.document(id);
         Ok((doc, id))

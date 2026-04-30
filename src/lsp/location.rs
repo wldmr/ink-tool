@@ -1,8 +1,8 @@
 #![allow(dead_code)] // TODO: remove this once we've settled on a design
 
-use crate::lsp::idset::Id;
+use crate::lsp::DocId;
 use derive_more::{derive::Display, Debug};
-use lsp_types::{Range, Uri};
+use lsp_types::Range;
 use std::ops::RangeBounds;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +20,7 @@ impl Location {
     }
 
     pub(crate) fn new(
-        uri: Id<Uri>,
+        uri: DocId,
         range: Range,
         name: String,
         namespace: Option<String>,
@@ -161,19 +161,19 @@ impl PartialEq<tree_sitter::Point> for TextPos {
 #[debug("{file:?}:{range:?}")]
 #[display("{file:?}:{range}")]
 pub struct FileTextRange {
-    pub file: Id<Uri>,
+    pub file: DocId,
     pub range: TextRange,
 }
 
 impl FileTextRange {
-    pub fn start_of(file: Id<Uri>) -> Self {
+    pub fn start_of(file: DocId) -> Self {
         Self {
             file,
             range: Default::default(),
         }
     }
 
-    pub(crate) fn new(file: Id<Uri>, range: impl Into<TextRange>) -> Self {
+    pub(crate) fn new(file: DocId, range: impl Into<TextRange>) -> Self {
         Self {
             file,
             range: range.into(),
@@ -192,7 +192,7 @@ impl FileTextRange {
         self.file == other.file && self.range.contains(&other.range)
     }
 
-    pub(crate) fn is_in_file(&self, file: Id<Uri>) -> bool {
+    pub(crate) fn is_in_file(&self, file: DocId) -> bool {
         self.file == file
     }
 }
@@ -352,7 +352,6 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod arbitrary {
     use super::{FileTextRange, TextPos, TextRange};
-    use crate::lsp::idset;
     use quickcheck::Arbitrary;
 
     impl Arbitrary for TextPos {
@@ -393,20 +392,18 @@ pub(crate) mod arbitrary {
     impl Arbitrary for FileTextRange {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
-                file: idset::Id::arbitrary(g),
+                file: String::arbitrary(g).into(),
                 range: TextRange::arbitrary(g),
             }
         }
 
         fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
             let mut result = Vec::new();
-            for file in self.file.shrink() {
-                for range in self.range.shrink() {
-                    result.push(Self {
-                        file: file.clone(),
-                        range,
-                    })
-                }
+            for range in self.range.shrink() {
+                result.push(Self {
+                    file: self.file,
+                    range,
+                })
             }
             return Box::new(result.into_iter());
         }

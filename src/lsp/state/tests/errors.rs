@@ -16,10 +16,10 @@ fn test_errors(state: &State) {
     let mut output = String::new();
     let mut render = |msg: &[Group<'_>]| output.push_str(&format!("{}\n\n", renderer.render(msg)));
 
-    for (id, uri) in doc_ids.pairs() {
+    for id in doc_ids.iter().copied() {
         let doc = state.db.document(id);
         let text = doc.text(..);
-        let path = uri.path().as_str();
+        let path = id.path();
 
         'annotations: for ann in scan_default_annotations(doc.text(..)) {
             let mut claim = ann.claim().split_whitespace();
@@ -55,10 +55,7 @@ fn test_errors(state: &State) {
                 if actual.is_empty() {
                     render(
                         &[Level::ERROR.primary_title("No diagnostics found").element(
-                            Snippet::source(text)
-                                .path(uri.path().as_str())
-                                .fold(true)
-                                .annotation(
+                            Snippet::source(text).path(id.path()).fold(true).annotation(
                                 AnnotationKind::Primary
                                     .span(ann.text_location.byte_range())
                                     .label(
@@ -116,14 +113,11 @@ fn test_errors(state: &State) {
                     let mut group = vec![Level::ERROR
                         .primary_title("No diagnostics expected")
                         .element(
-                            Snippet::source(text)
-                                .path(uri.path().as_str())
-                                .fold(true)
-                                .annotation(
-                                    AnnotationKind::Primary
-                                        .span(ann.text_location.byte_range())
-                                        .label("Expected to find *no* diagnostic here, but …"),
-                                ),
+                            Snippet::source(text).path(id.path()).fold(true).annotation(
+                                AnnotationKind::Primary
+                                    .span(ann.text_location.byte_range())
+                                    .label("Expected to find *no* diagnostic here, but …"),
+                            ),
                         )];
                     for diag in actual {
                         group.push(
@@ -143,14 +137,11 @@ fn test_errors(state: &State) {
                 let mut group = vec![Level::ERROR
                     .primary_title("Unexpected diagnostic found")
                     .element(
-                        Snippet::source(text)
-                            .path(uri.path().as_str())
-                            .fold(true)
-                            .annotation(
-                                AnnotationKind::Primary
-                                    .span(ann.text_location.byte_range())
-                                    .label("Expected to find *no* diagnostic that match"),
-                            ),
+                        Snippet::source(text).path(id.path()).fold(true).annotation(
+                            AnnotationKind::Primary
+                                .span(ann.text_location.byte_range())
+                                .label("Expected to find *no* diagnostic that match"),
+                        ),
                     )
                     .element(
                         Level::NOTE

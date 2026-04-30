@@ -10,7 +10,6 @@ use std::{ops::Not, path::Path, time::Duration};
 mod diagnostics;
 mod file_watching;
 mod http_server;
-pub mod idset;
 mod ink_visitors;
 mod location;
 mod notification_handlers;
