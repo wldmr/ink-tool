@@ -1,3 +1,8 @@
+use crate::lsp::{
+    salsa::{file_globals, global_names, globals, ink_inventory, local_resolutions, Name},
+    InkGetters,
+};
+
 use super::{state::DocumentNotFound, SharedState};
 use axum::{
     extract::{Path, State},
@@ -5,7 +10,8 @@ use axum::{
     routing::get,
     Router,
 };
-use itertools::Itertools;
+use ink_document::ids::NodeId;
+use mini_milc::Db as _;
 use std::{future::Future, str::FromStr};
 use tap::Pipe;
 
@@ -22,8 +28,7 @@ where
             let app = Router::new()
                 .route("/", get(root))
                 .route("/workspace-symbols", get(workspace_symbols))
-                .route("/links", get(links))
-                .route("/file/{*pth}", get(file))
+                .route("/file/{*pth}", get(file::<html::root::Html>))
                 .with_state(state);
 
             let mut port = 1701u32;
@@ -63,13 +68,12 @@ async fn root(State(state): State<SharedState>) -> impl IntoResponse {
                 menu.list_item(|li| {
                     li.anchor(|a| a.href("workspace-symbols").text("Workspace Symbols"))
                 });
-                menu.list_item(|li| li.anchor(|a| a.href("links").text("Links")));
                 menu.list_item(|li| {
                     li.text("Files");
                     li.unordered_list(|ul| {
                         for uri in state.uris() {
                             ul.list_item(|li| {
-                                let path = uri.path().segments().join("/");
+                                let path = uri.path().as_str();
                                 li.anchor(|a| {
                                     a.href(format!("/file/{path}",))
                                         .text(path.replace(&common_prefix, ""))
@@ -89,7 +93,7 @@ async fn root(State(state): State<SharedState>) -> impl IntoResponse {
 }
 
 async fn workspace_symbols(State(state): State<SharedState>) -> impl IntoResponse {
-    let mut state = state.lock().expect("I want this lock!");
+    let state = state.lock().expect("I want this lock!");
 
     let mut syms = html::text_content::UnorderedList::builder();
     for sym in state.workspace_symbols(String::new()) {
@@ -105,79 +109,121 @@ async fn workspace_symbols(State(state): State<SharedState>) -> impl IntoRespons
         .pipe(axum::response::Html)
 }
 
-async fn links(State(state): State<SharedState>) -> impl IntoResponse {
-    let state = state.lock().expect("I want this lock!");
-    let links: Vec<(
-        String,
-        String,
-        tree_sitter::Node<'_>,
-        Vec<(String, Vec<(String, tree_sitter::Node<'_>)>)>,
-    )> = todo!("rewriting links, please don't use");
-
-    let common_prefix = state.common_file_prefix();
-
-    let mut body = html::root::Body::builder();
-    body.heading_1(|h1| h1.text("Links"));
-    body.unordered_list(|def_ul| {
-        for (def_path, def_text, def_node, refs) in links {
-            def_ul.list_item(|def_item| {
-                def_item.text(format!(
-                    "{def_path}:{}:{}: {def_text}",
-                    def_node.start_position().row + 1,
-                    def_node.start_position().column + 1
-                ));
-                def_item.unordered_list(|references| {
-                    for (ref_path, refs) in refs {
-                        references.list_item(|ref_item| {
-                            ref_item.text(ref_path);
-                            ref_item.unordered_list(|usages_per_uri| {
-                                for (ref_text, ref_node) in refs {
-                                    usages_per_uri.list_item(|refitem| {
-                                        refitem.text(format!(
-                                            "{}:{}: {ref_text}",
-                                            ref_node.start_position().row + 1,
-                                            ref_node.start_position().column + 1
-                                        ))
-                                    });
-                                }
-                                usages_per_uri
-                            })
-                        });
-                    }
-                    references
-                });
-                def_item
-            });
-        }
-        def_ul
-    });
-
-    let result = html::root::Html::builder()
-        .push(body.build())
-        .build()
-        .to_string();
-    result.pipe(axum::response::Html)
-}
-
-async fn file(
+async fn file<R>(
     Path(path): Path<std::path::PathBuf>,
     State(state): State<SharedState>,
-) -> axum::response::Result<String> {
+) -> Result<axum::response::Html<String>, (axum::http::StatusCode, String)> {
     let state = state.lock().expect("I want this lock!");
-    let uri = lsp_types::Uri::from_str(&format!("file:///{}", path.to_string_lossy())).map_err(
-        |err| {
+    let prefix = &*state.db.common_path_prefix();
+    let uri = lsp_types::Uri::from_str(&format!("file://{prefix}{}", path.to_string_lossy()))
+        .map_err(|err| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 err.to_string(),
             )
-        },
-    )?;
-    Ok(state.text(&uri)?)
+        })?;
+    let docid = state
+        .db
+        .doc_ids()
+        .get_id(&uri)
+        .ok_or_else(|| DocumentNotFound(uri.clone()))?;
+
+    let html = html::root::Html::builder()
+        .body(|body| {
+            body.heading_1(|h| h.text(state.db.short_path(docid).clone()));
+
+            let q = ink_inventory { docid };
+            let it = &*state.db.get(q);
+            body.heading_2(|h| {
+                h.text(format!(
+                    "Inventory ({}/{})",
+                    state.db.verified_at(q).unwrap(),
+                    state.db.changed_at(q).unwrap()
+                ))
+            });
+            body.preformatted_text(|p| p.text(format!("{it:#?}")));
+
+            let q = local_resolutions { docid };
+            let it = &*state.db.get(q);
+            body.heading_2(|h| {
+                h.text(format!(
+                    "Resolutions ({}/{})",
+                    state.db.verified_at(q).unwrap(),
+                    state.db.changed_at(q).unwrap()
+                ))
+            });
+            body.preformatted_text(|p| p.text(format!("{it:#?}")));
+
+            let q = file_globals { docid };
+            let it = &*state.db.get(q);
+            body.heading_2(|h| {
+                h.text(format!(
+                    "File Globals ({}/{})",
+                    state.db.verified_at(q).unwrap(),
+                    state.db.changed_at(q).unwrap()
+                ))
+            });
+            body.preformatted_text(|p| p.text(format!("{it:#?}")));
+
+            for story in state.db.stories_of(docid).iter().copied() {
+                let q = globals { story };
+                let it = &*state.db.get(q);
+                body.heading_2(|h| {
+                    h.text(format!(
+                        "Story Globals ({story:?}) ({}/{})",
+                        state.db.verified_at(q).unwrap(),
+                        state.db.changed_at(q).unwrap()
+                    ))
+                });
+                body.preformatted_text(|p| p.text(format!("{it:#?}")));
+
+                let q = global_names { story };
+                let it = &*state.db.get(q);
+                body.heading_2(|h| {
+                    h.text(format!(
+                        "Story Global Namess ({story:?}) ({}/{})",
+                        state.db.verified_at(q).unwrap(),
+                        state.db.changed_at(q).unwrap()
+                    ))
+                });
+                body.preformatted_text(|p| p.text(format!("{it:#?}")));
+            }
+
+            body.heading_2(|h| h.text("Text"));
+            body.preformatted_text(|pre| {
+                pre.class("ink").text(state.db.document(docid).full_text())
+            })
+        })
+        .build();
+
+    let mut text = html.to_string();
+
+    let names = state.db.node_text(docid);
+    let locs = state.db.node_locations(docid);
+
+    for id in locs.left_values().copied() {
+        let nid = NodeId::from(id);
+        let id_text = format!("{}", usize::from(nid));
+        let id_name = Name::from(&id_text);
+        let name = names.get(&id).unwrap_or(&id_name);
+        let loc = locs
+            .get_by_left(&id)
+            .map(|it| format!("{it}"))
+            .unwrap_or_else(|| format!("?"));
+        let id = format!("{:x}", usize::from(nid));
+        let id = &id[6..];
+        text = text.replace(
+            id_name.as_str(),
+            &format!("<span>{id} <b>{name}</b> {loc}</span>"),
+        );
+    }
+
+    Ok(axum::response::Html(text))
 }
 
-impl IntoResponse for DocumentNotFound {
-    fn into_response(self) -> axum::response::Response {
-        (axum::http::StatusCode::NOT_FOUND, self.to_string()).into_response()
+impl From<DocumentNotFound> for (axum::http::StatusCode, String) {
+    fn from(value: DocumentNotFound) -> Self {
+        (axum::http::StatusCode::NOT_FOUND, value.to_string())
     }
 }
 

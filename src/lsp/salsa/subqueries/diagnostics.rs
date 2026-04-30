@@ -1,7 +1,7 @@
-use std::{collections::HashMap, iter};
+use std::{collections::HashSet, iter};
 
 use enumflags2::BitFlags;
-use ink_document::InkDocument;
+use ink_document::{ids::DefId, InkDocument};
 use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use mini_milc::{subquery, Db, Old, Subquery, Updated};
 use util::nonempty::Vec1;
@@ -10,67 +10,120 @@ use crate::lsp::{
     ink_visitors::parse_errors::parse_errors,
     location::FileTextRange,
     salsa::{
-        duplicate_definitions, duplicate_imports, file_diagnostics,
-        subqueries::node_info::{match_flags, NodeFlag},
-        DocId, InkGetters as _, NodeInfos, Ops,
+        duplicate_globals, duplicate_imports, file_diagnostics,
+        subqueries::{
+            ink_inventory::{IMap, NameSet},
+            node_flags::{match_flags, NodeFlag},
+        },
+        var_clash, DocId, InkGetters as _, Name, NodeFlags, Ops,
     },
 };
 
-pub(crate) type FileDiagnostics = Vec<Diagnostic>;
-pub(crate) type DuplicateImports = HashMap<DocId, Vec1<FileTextRange>>;
-pub(crate) type DuplicateDefinitions = HashMap<String, Vec<(FileTextRange, BitFlags<NodeFlag>)>>;
+pub type FileDiagnostics = Vec<Diagnostic>;
+pub type DuplicateImports = IMap<DocId, Vec1<FileTextRange>>;
+pub type DuplicateDefinitions = IMap<Name, HashSet<(DocId, DefId, BitFlags<NodeFlag>)>>;
 
 subquery!(Ops, file_diagnostics, FileDiagnostics, |self, db| {
     let doc = db.document(self.docid);
-    let node_infos = db.node_infos(self.docid);
+    let flags = db.node_flags(self.docid);
     let mut errors = parse_errors(&doc);
-    add_unused(&mut errors, db, &doc, self.docid, &node_infos);
-    add_illegal_targets(&mut errors, db, &doc, self.docid, &node_infos);
+    add_unused(&mut errors, db, &doc, self.docid, &flags);
+    add_illegal_targets(&mut errors, db, self.docid, &flags);
     add_duplicate_definitions(&mut errors, db, self.docid);
     add_duplicate_imports(&mut errors, db, self.docid);
     add_unresolved_imports(&mut errors, db, self.docid);
     errors
 });
 
-impl Subquery<Ops, DuplicateDefinitions> for duplicate_definitions {
+impl Subquery<Ops, DuplicateDefinitions> for duplicate_globals {
     fn value(
         &self,
         db: &impl Db<Ops>,
         old: Old<DuplicateDefinitions>,
     ) -> Updated<DuplicateDefinitions> {
         use NodeFlag::*;
-        let mut duplicates = DuplicateDefinitions::new();
+        let mut duplicates = DuplicateDefinitions::default();
 
         for file in db.stories()[&self.story].resolved.keys() {
-            let info = db.node_infos(*file);
-            for (name, range) in info.iter_globals() {
-                let loc = (FileTextRange::new(*file, *range), info.flags(*range));
-                match duplicates.get_mut(name) {
-                    Some(vec) => vec.push(loc),
-                    None => {
-                        duplicates.insert(name.clone(), vec![loc]);
-                    }
+            let globals = db.file_globals(*file);
+            let flags = db.node_flags(*file);
+            for (name, defs) in globals.iter() {
+                let entry = duplicates.entry(*name).or_default();
+                for def in defs {
+                    entry.insert((*file, *def, flags[def]));
                 }
             }
         }
 
-        duplicates.retain(|_, defs| defs.len() > 1);
         duplicates.retain(|_, defs| {
-            // Two functions, with exactly one External
-            if defs.len() == 2
-                && defs.iter().all(|it| it.1.contains(Definition | Function))
-                && defs.iter().filter(|it| it.1.contains(External)).count() == 1
+            // Not a duplicate
+            if defs.len() <= 1 {
+                false
+            }
+            // Two functions, with exactly one being an External, are not considered a duplicate (because that's a fallback)
+            else if defs.len() == 2
+                && defs.iter().all(|it| it.2.contains(Definition | Function))
+                && defs.iter().filter(|it| it.2.contains(External)).count() == 1
             {
                 false
             }
             // List item don't conflict with each other, so if all names are List Items, then that's fine.
-            else if defs.iter().all(|it| it.1.contains(ListItem)) {
+            else if defs.iter().all(|it| it.2.contains(ListItem)) {
                 false
             } else {
                 true
             }
         });
 
+        old.update(duplicates)
+    }
+}
+
+impl Subquery<Ops, DuplicateDefinitions> for var_clash {
+    fn value(
+        &self,
+        db: &impl Db<Ops>,
+        old: Old<DuplicateDefinitions>,
+    ) -> Updated<DuplicateDefinitions> {
+        use NodeFlag::*;
+        let mut duplicates = DuplicateDefinitions::default();
+
+        let globals = db.globals(self.story);
+        for (name, defs) in globals.iter() {
+            for (defdoc, defid) in defs {
+                let flags = db.node_flags(*defdoc)[defid];
+                if flags.contains(Definition | Var) {
+                    duplicates
+                        .entry(*name)
+                        .or_default()
+                        .insert((*defdoc, *defid, flags));
+                }
+            }
+        }
+
+        // Now need to find all definitions of similar names;
+        let varnames = duplicates.keys().copied().collect::<NameSet>();
+        let names_mentioned = db.names_mentioned(self.story);
+        for varname in varnames {
+            if let Some(files) = names_mentioned.get(&varname) {
+                for file in files {
+                    let locals = db.local_resolutions(*file);
+                    let flags = db.node_flags(*file);
+                    for defs in locals.in_scope.values() {
+                        for (defname, def) in defs {
+                            if *defname == varname {
+                                duplicates
+                                    .entry(varname)
+                                    .or_default()
+                                    .insert((*file, *def, flags[def]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        duplicates.retain(|_, defs| defs.len() > 1);
         old.update(duplicates)
     }
 }
@@ -95,12 +148,12 @@ fn add_unused(
     db: &impl Db<Ops>,
     doc: &InkDocument,
     docid: DocId,
-    node_infos: &NodeInfos,
+    flags: &NodeFlags,
 ) {
-    let defs = node_infos.iter_definitions();
+    let defs = flags.iter_definitions();
 
-    for (range, flags) in defs {
-        if db.usages_of(docid, range).len() <= 1 {
+    for (defid, flags) in defs {
+        if db.usages(docid, defid).len() <= 1 {
             use NodeFlag::*;
             let kind = match_flags!(match (flags) {
                 // We don't consider external parameters unused, because EXTERNALs have no body anyway.
@@ -118,9 +171,11 @@ fn add_unused(
                 ListItem => "list item",
                 _ => "unknown kind of definition (This is likely a bug in ink-tool.)",
             });
+            let locs = db.node_locations(docid);
+            let range = locs[defid].into();
             let name = doc.lsp_text(range);
             diags.push(Diagnostic {
-                range: range.into(),
+                range,
                 severity: Some(DiagnosticSeverity::WARNING),
                 message: format!(r#"Unused {kind} "{name}""#),
                 ..Default::default()
@@ -132,20 +187,22 @@ fn add_unused(
 fn add_illegal_targets(
     diags: &mut FileDiagnostics,
     db: &impl Db<Ops>,
-    doc: &InkDocument,
     docid: DocId,
-    node_infos: &NodeInfos,
+    flags: &NodeFlags,
 ) {
     use NodeFlag::*;
 
-    let usages = node_infos.iter_flags().filter(|(_range, flags)| {
-        flags.intersects(Usage) && !flags.intersects(Definition | Builtin)
-    });
+    let usages = flags
+        .iter_flags()
+        .filter(|(_, flags)| flags.intersects(Usage) && !flags.intersects(Definition | Builtin));
 
     let uris = db.doc_ids();
+    let node_text = db.node_text(docid);
+    let locs = db.node_locations(docid);
+
     for (usage, flags) in usages {
-        let definition = db.definition_of(docid, usage);
-        let text = doc.lsp_text(usage);
+        let definition = db.definition(docid, usage);
+        let text = node_text[usage.as_ref()];
 
         if definition.is_empty() {
             let kind = match_flags!(match (flags) {
@@ -154,7 +211,7 @@ fn add_illegal_targets(
                 _ => "name",
             });
             diags.push(Diagnostic {
-                range: usage.into(),
+                range: locs[usage].into(),
                 severity: Some(DiagnosticSeverity::ERROR),
                 message: format!(r#"Undefined {kind} "{text}""#),
                 ..Default::default()
@@ -162,8 +219,9 @@ fn add_illegal_targets(
         } else {
             let mut illegal_targets = Vec::new();
 
-            for (def_doc, def_range) in definition.iter().copied() {
-                let def_flags = db.node_infos(def_doc).flags(*def_range);
+            for (def_doc, def_id) in definition.iter().copied() {
+                let def_flags = db.node_flags(def_doc)[def_id];
+                let locs = db.node_locations(def_doc);
 
                 let def_kind = match_flags!(match (def_flags) {
                     Function | External => "external function",
@@ -186,7 +244,7 @@ fn add_illegal_targets(
                         // here, but this would get us in the weeds of infering types in a dynamically
                         // typed language.
                         illegal_targets.push(DiagnosticRelatedInformation {
-                            location: Location::new(uris[def_doc].clone(), def_range.into()),
+                            location: Location::new(uris[def_doc].clone(), locs[def_id].into()),
                             message: format!("a {def_kind} is not an address"),
                         });
                     }
@@ -195,7 +253,7 @@ fn add_illegal_targets(
                 if flags.contains(Call) {
                     if !def_flags.intersects(Function | HasParams) {
                         illegal_targets.push(DiagnosticRelatedInformation {
-                            location: Location::new(uris[def_doc].clone(), def_range.into()),
+                            location: Location::new(uris[def_doc].clone(), locs[def_id].into()),
                             message: format!("a {def_kind} can not be called"),
                         });
                     }
@@ -204,7 +262,7 @@ fn add_illegal_targets(
 
             if illegal_targets.len() != 0 {
                 diags.push(Diagnostic {
-                    range: usage.into(),
+                    range: locs[usage].into(),
                     severity: Some(DiagnosticSeverity::ERROR),
                     message: match_flags!(match (flags) {
                         Redirect => format!(r#"Can not redirect to {text}"#),
@@ -230,7 +288,6 @@ fn add_duplicate_definitions(diags: &mut FileDiagnostics, db: &impl Db<Ops>, doc
     let uris = db.doc_ids();
     let parents = db.stories_of(docid);
     for story in parents.iter().copied() {
-        let duplicates = db.duplicate_definitions(story);
         let story_suffix = if db.stories().len() > 1 {
             let story_path = db.short_path(story.into());
             format!(" in story {}", story_path.as_str())
@@ -238,32 +295,39 @@ fn add_duplicate_definitions(diags: &mut FileDiagnostics, db: &impl Db<Ops>, doc
             String::new()
         };
 
-        for (name, dups) in duplicates.iter() {
-            for (this_location, this_flags) in dups.iter() {
-                if this_location.file != docid {
-                    continue;
-                }
+        let duplicate_globals = db.duplicate_globals(story);
+        let var_clash = db.var_clash(story);
+        let duplicates = duplicate_globals.iter().chain(var_clash.iter());
+
+        for (name, dups) in duplicates {
+            for (this_file, this_def, this_flags) in
+                dups.iter().filter(|(file, _, _)| *file == docid)
+            {
+                let locs = db.node_locations(*this_file);
                 diags.push(Diagnostic {
-                    range: this_location.range.into(),
+                    range: locs[*this_def].into(),
                     severity: Some(DiagnosticSeverity::ERROR),
-                    message: format!("Multiple definitions of {name}{story_suffix}."),
+                    message: format!("Multiple definitions of `{name}`{story_suffix}."),
                     related_information: Some(
                         dups.iter()
-                            .filter(|(other, _)| other != this_location)
-                            .filter(|(_, other_flags)| {
+                            .filter(|(a, b, _)| (a, b) != (this_file, this_def))
+                            .filter(|(_, _, other_flags)| {
                                 !(*this_flags & *other_flags).contains(ListItem)
                                 // List items don't conflict with each other
                             })
-                            .map(|(other, flags)| DiagnosticRelatedInformation {
-                                location: Location::new(
-                                    uris[other.file].clone(),
-                                    other.range.into(),
-                                ),
-                                message: format!(
-                                    "Also a {} here",
-                                    flag_to_kind(*flags)
-                                        .unwrap_or("unknown kind of thing (this is a bug)")
-                                ),
+                            .map(|(other_file, other_def, flags)| {
+                                let locs = db.node_locations(*other_file);
+                                DiagnosticRelatedInformation {
+                                    location: Location::new(
+                                        uris[*other_file].clone(),
+                                        locs[*other_def].into(),
+                                    ),
+                                    message: format!(
+                                        "Also a {} here",
+                                        flag_to_kind(*flags)
+                                            .unwrap_or("unknown kind of thing (this is a bug)")
+                                    ),
+                                }
                             })
                             .collect(),
                     ),

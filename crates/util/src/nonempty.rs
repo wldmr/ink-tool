@@ -1,4 +1,6 @@
 use std::{
+    collections::HashMap,
+    hash::BuildHasher,
     iter::{Chain, Once},
     slice, vec,
 };
@@ -160,6 +162,17 @@ impl<T> Vec1<T> {
     pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         self.rest.extend(iter);
     }
+
+    /// Retain in place; panic on empty!
+    pub fn retain<F: Fn(&T) -> bool>(&mut self, pred: F) {
+        if pred(&self.first) {
+            self.rest.retain(pred);
+        } else {
+            let mut rest = self.rest.drain(..).filter(pred);
+            self.first = rest.next().expect("Must retain at least one element");
+            self.rest = rest.collect();
+        }
+    }
 }
 
 impl<'a, T> IntoIterator for &'a Vec1<T> {
@@ -186,6 +199,44 @@ impl<T> IntoIterator for Vec1<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         std::iter::once(self.first).chain(self.rest.into_iter())
+    }
+}
+
+pub trait MapOfNonEmpty<K, V> {
+    fn register(&mut self, key: impl Into<K>, value: impl Into<V>);
+    fn register_extend<I: Into<V>>(
+        &mut self,
+        key: impl Into<K>,
+        value: impl IntoIterator<Item = I>,
+    );
+}
+
+impl<K: Eq + std::hash::Hash, T, S: BuildHasher> MapOfNonEmpty<K, T> for HashMap<K, Vec1<T>, S> {
+    fn register(&mut self, key: impl Into<K>, value: impl Into<T>) {
+        match self.entry(key.into()) {
+            std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+                occupied_entry.into_mut().push(value.into());
+            }
+            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(Vec1::new(value.into()));
+            }
+        }
+    }
+
+    fn register_extend<I: Into<T>>(
+        &mut self,
+        key: impl Into<K>,
+        value: impl IntoIterator<Item = I>,
+    ) {
+        let iter = value.into_iter().map(|it| it.into());
+        match self.entry(key.into()) {
+            std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+                occupied_entry.into_mut().extend(iter);
+            }
+            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(Vec1::from_iter(iter).expect("Must have at least one item"));
+            }
+        }
     }
 }
 

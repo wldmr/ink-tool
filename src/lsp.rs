@@ -5,23 +5,25 @@ use lsp_server::{
     Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
 };
 use lsp_types::*;
-use state::State;
 use std::{ops::Not, path::Path, time::Duration};
 
 mod diagnostics;
 mod file_watching;
 mod http_server;
-mod idset;
+pub mod idset;
 mod ink_visitors;
 mod location;
 mod notification_handlers;
 mod request_handlers;
-mod salsa;
+pub mod salsa;
 mod shared;
 mod state;
 
+pub use salsa::{DocId, InkGetters, Ops, StoryRoot};
+pub use state::{DocumentNotFound, GotoLocationError, InvalidPosition, State};
+
 // For that extra bit of convenience
-pub(crate) type SharedState = shared::SharedValue<state::State>;
+pub type SharedState = shared::SharedValue<state::State>;
 
 macro_rules! try_request_handlers {
     ($request:ident, $state:ident => $($handler:ident),+$(,)?) => {
@@ -103,12 +105,7 @@ fn server_capabilities(params: &InitializeParams) -> ServerCapabilities {
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
             trigger_characters: Some(["->", "-> ", "{"].into_iter().map(str::to_string).collect()),
-            all_commit_characters: Some(
-                [" ", "}", "+", "-", "=", "/", "%", "|"]
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
-            ),
+            all_commit_characters: None,
             work_done_progress_options: WorkDoneProgressOptions {
                 work_done_progress: Some(false),
             },

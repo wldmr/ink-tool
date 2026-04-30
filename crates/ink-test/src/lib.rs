@@ -1,25 +1,50 @@
 use std::{
     ffi::OsStr,
-    fmt::Display,
+    fmt::{Display, Write as _},
     io::{self, Read, Write as _},
     iter::{chain, once},
     path::Path,
     process::{Command, Stdio},
     string::FromUtf8Error,
+    time::{Duration, Instant},
 };
 
-use derive_more::derive::{Error, From};
+use derive_more::derive::{Debug, Error, From};
 use ink_document::InkDocument;
 use similar::TextDiff;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
 use yansi::Paint;
 
-#[derive(Debug, From, Error)]
+#[derive(Debug, Error)]
 pub enum TestFailure {
+    #[debug("{_0}")]
     IOError(io::Error),
+    #[debug("{_0}")]
     Utf8(FromUtf8Error),
-    TestError { message: String },
+    #[debug("{message}")]
+    TestError { message: String, output: String },
+}
+
+impl From<io::Error> for TestFailure {
+    fn from(err: io::Error) -> Self {
+        TestFailure::IOError(err)
+    }
+}
+
+impl From<FromUtf8Error> for TestFailure {
+    fn from(err: FromUtf8Error) -> Self {
+        TestFailure::Utf8(err)
+    }
+}
+
+impl From<String> for TestFailure {
+    fn from(message: String) -> Self {
+        TestFailure::TestError {
+            message,
+            output: String::new(),
+        }
+    }
 }
 
 impl Display for TestFailure {
@@ -27,12 +52,12 @@ impl Display for TestFailure {
         match self {
             TestFailure::IOError(error) => error.fmt(f),
             TestFailure::Utf8(error) => error.fmt(f),
-            TestFailure::TestError { message: msg } => f.write_str(&msg),
+            TestFailure::TestError { message: msg, .. } => f.write_str(&msg),
         }
     }
 }
 
-#[derive(Debug, From, Error)]
+#[derive(From, Error)]
 pub struct TestFailures {
     failures: Vec<TestFailure>,
 }
@@ -51,6 +76,15 @@ impl TestFailures {
             Err(self)
         }
     }
+
+    pub fn eprint(&self) {
+        for fail in &self.failures {
+            if let TestFailure::TestError { output, .. } = fail {
+                let output = output.trim();
+                eprintln!("\n{output}\n");
+            }
+        }
+    }
 }
 
 impl std::ops::AddAssign for TestFailures {
@@ -65,13 +99,33 @@ impl Display for TestFailures {
     }
 }
 
+impl std::fmt::Debug for TestFailures {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(&self.failures).finish()
+    }
+}
+
 pub fn run_tests_in_file(path_to_ink: &Path) -> Result<(), TestFailures> {
     let mut failures = Vec::new();
     let tests = extract_tests(path_to_ink).map_err(|it| vec![it])?;
 
+    let mut stdout = std::io::stdout().lock();
     for test in tests {
-        if let Err(failure) = run_test(path_to_ink, test) {
-            failures.push(failure);
+        _ = write!(
+            stdout,
+            "{}:{} {} ",
+            path_to_ink.to_string_lossy(),
+            test.line,
+            test.name.blue(),
+        );
+        match run_test(path_to_ink, test) {
+            Err(failure) => {
+                _ = writeln!(stdout, "{}", "fail".red());
+                failures.push(failure);
+            }
+            Ok(_) => {
+                _ = writeln!(stdout, "{}", "pass".green());
+            }
         }
     }
 
@@ -115,6 +169,9 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
     let mut buf = [0u8; 1024];
     let mut actual = Vec::new();
 
+    static TIMEOUT: Duration = Duration::from_secs(1);
+    let instant = Instant::now();
+    let mut timed_out = false;
     loop {
         match recv.read(&mut buf)? {
             0 => break,
@@ -130,11 +187,25 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
                     send.write_all(&command)?;
                     send.flush()?;
                 }
+
+                if Instant::now() - instant > TIMEOUT {
+                    timed_out = true;
+                    break;
+                }
             }
         }
     }
+    player.kill()?;
+    player.wait()?;
 
     let actual = String::from_utf8(actual)?;
+    let actual = if timed_out {
+        // If we've timed out, we're likely in an infinite loop, so we truncate the output.
+        let max = actual.ceil_char_boundary(run.expected_output.len() + 150);
+        &actual[..max]
+    } else {
+        &actual[..]
+    };
 
     let command_header = chain(once(command.get_program()), command.get_args())
         .collect::<Vec<_>>()
@@ -143,7 +214,7 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
         .to_string();
     let expectation_header = format!("Test {}", run.name);
 
-    let diff = TextDiff::from_lines(&actual, &run.expected_output)
+    let diff = TextDiff::from_lines(actual, &run.expected_output)
         .unified_diff()
         .context_radius(3)
         .header(&command_header, &expectation_header)
@@ -152,19 +223,27 @@ pub fn run_test(path_to_ink: &Path, run: TestDescription) -> Result<(), TestFail
     if diff.trim().is_empty() {
         Ok(())
     } else {
+        let mut output = String::new();
         for line in diff.lines() {
-            let line = if line.starts_with("+") {
-                line.green()
-            } else if line.starts_with("-") {
-                line.red()
-            } else if line.starts_with("@@") {
-                line.bright_blue()
-            } else {
-                line.primary()
-            };
-            eprintln!("{line}");
+            _ = writeln!(
+                &mut output,
+                "{}",
+                if line.starts_with("+") {
+                    line.green()
+                } else if line.starts_with("-") {
+                    line.red()
+                } else if line.starts_with("@@") {
+                    line.bright_blue()
+                } else {
+                    line.primary()
+                }
+            );
         }
-        Err("Unexpected output".to_string().into())
+        let message = format!(
+            "Unexpected output{}",
+            if timed_out { " after timeout" } else { "" },
+        );
+        Err(TestFailure::TestError { message, output })
     }
 }
 
@@ -172,6 +251,7 @@ fn extract_tests(path_to_ink: &Path) -> Result<Vec<TestDescription>, TestFailure
     let string = std::fs::read_to_string(path_to_ink)?;
     let document = InkDocument::new(string, None);
     let mut tests = Vec::new();
+    let mut n = 0;
     for comment in document.root().depth_first::<ink_syntax::BlockComment>() {
         let node_text = document.node_text(comment);
         let content = node_text
@@ -185,15 +265,16 @@ fn extract_tests(path_to_ink: &Path) -> Result<Vec<TestDescription>, TestFailure
         if !content.starts_with(KEYWORD) {
             continue;
         }
+        n += 1;
         let (declaration, expectation) = content
             .split_once('\n')
-            .ok_or_else(|| format!("Incorrect test sytax: {node_text}"))?;
+            .ok_or_else(|| format!("Incorrect test syntax: {node_text}"))?;
         let name = &declaration[KEYWORD.len()..].trim();
         let line = comment.start_position().row + 1;
         let name = if name.is_empty() {
-            format!("starting on line {line}")
+            format!("Test {n}")
         } else {
-            format!("\"{name}\" starting on line {line}")
+            format!("{name}")
         };
         let input = expectation
             .lines()
@@ -202,6 +283,7 @@ fn extract_tests(path_to_ink: &Path) -> Result<Vec<TestDescription>, TestFailure
             .collect();
         tests.push(TestDescription {
             name,
+            line,
             input,
             expected_output: expectation.to_string(),
         });
@@ -216,6 +298,7 @@ fn extract_tests(path_to_ink: &Path) -> Result<Vec<TestDescription>, TestFailure
 #[derive(Debug, Default)]
 pub struct TestDescription {
     name: String,
+    line: usize,
     input: Vec<String>,
     expected_output: String,
 }

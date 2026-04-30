@@ -18,7 +18,7 @@ impl From<RenameError> for lsp_server::ResponseError {
 
 #[derive(Debug, Clone, Display, Error, derive_more::From)]
 #[display("Rename Error")]
-pub(crate) enum RenameError {
+pub enum RenameError {
     LocationError(super::GotoLocationError),
     RenameFailed(#[error(not(source))] String),
 }
@@ -34,7 +34,7 @@ impl super::State {
         let mut edits: HashMap<Uri, Vec<lsp_types::TextEdit>> = self
             .goto_references(uri, pos)?
             .into_iter()
-            .unique() // They shouldn't be non-unique to begin with, but let's ensure it here.
+            .unique() // They should be non-unique to begin with, but let's ensure it here.
             .map(move |it| (it.uri, TextEdit::new(it.range, new_name.clone())))
             .into_group_map();
 
@@ -439,13 +439,15 @@ mod tests {
             {p1 + p2}
             = stitch(p1)
             {p1 + p2}
+            //    -- Unaffected because it is unresolved
             ",
             "
             === knot(p1, new) ===
             //           ^ rename-symbol new
             {p1 + new}
             = stitch(p1)
-            {p1 + new}
+            {p1 + p2}
+            //    -- Unaffected because it is unresolved
             "
         ];
 
@@ -457,13 +459,17 @@ mod tests {
             //    ^ rename-symbol new
             = stitch(p1)
             {p1 + p2}
+            //<- Unaffected because it is shadowed
+            //    -- Unaffected because it is unresolved
             ",
             "
             === knot(p1, new) ===
             {p1 + new}
             //    ^ rename-symbol new
             = stitch(p1)
-            {p1 + new}
+            {p1 + p2}
+            //<- Unaffected because it is shadowed
+            //    -- Unaffected because it is unresolved
             "
         ];
     }

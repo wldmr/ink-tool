@@ -92,14 +92,12 @@ impl TransitiveImports {
     ) {
         use std::collections::hash_map::Entry::*;
 
-        let infos = db.node_infos(current_file);
-
-        for (import_path, range) in infos.imported_files() {
+        for (import_path, range) in db.imported_files(current_file).iter() {
             // BUG: We're joining URI paths with the OS path separator! This will break on windows!
-            let path = root_dir.join(import_path);
+            let path = root_dir.join(import_path.as_str());
 
             if let Some(resolved) = ids.get(path.as_path()).copied() {
-                let import_location = FileTextRange::new(current_file, range);
+                let import_location = FileTextRange::new(current_file, *range);
 
                 if let Some(mut existing) = roots.remove(&StoryRoot(resolved)) {
                     // If we import it, then it isn't really a root anymore.
@@ -140,7 +138,10 @@ impl TransitiveImports {
                     };
                 };
             } else {
-                self.unresolved.entry(current_file).or_default().push(range);
+                self.unresolved
+                    .entry(current_file)
+                    .or_default()
+                    .push(*range);
             }
         }
     }

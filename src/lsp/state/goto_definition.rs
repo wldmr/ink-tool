@@ -20,18 +20,18 @@ impl super::State {
         let mut defs = Vec::new();
 
         if let Some(usage) = doc.usage_at(pos) {
-            let found = self.db.definition_of(this_docid, usage.range.into());
-            let locations = found
-                .iter()
-                .copied()
-                .map(|(docid, range)| Location::new(docs[docid].clone(), range.into()));
-            defs.extend(locations)
+            let found = self.db.definition(this_docid, usage.ident.into());
+            for (defdoc, defid) in found.iter() {
+                let uri = docs[*defdoc].clone();
+                let range = self.db.node_locations(*defdoc)[*defid].into();
+                defs.push(Location::new(uri, range))
+            }
         } else {
             // Maybe we're over an import line?
             let is_import = self
                 .db
-                .node_infos(this_docid)
-                .imported_files()
+                .imported_files(this_docid)
+                .iter()
                 .any(|(_, range)| range.start.line == pos.line); // imports always occupy the whole line, no need to be pernickety
 
             if is_import {

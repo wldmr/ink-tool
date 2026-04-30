@@ -7,7 +7,8 @@
     // ^^^^ references stitch:SSSb
 
 *   -> SSSc
-    // ^^^^ references-nothing, because there's no such global name, or local stitch or label
+    // ^^^^ references-nothing
+    //      because there's no such global name, or local stitch or label
 
 *   -> KKKa.SSSa
     // |    ^ references stitch:KKKa.SSSa
