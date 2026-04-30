@@ -38,7 +38,7 @@ pub use subqueries::story_structure::StoryRoot;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
 use ustr::IdentityHasher;
-use util::nonempty::{MapOfNonEmpty, Vec1};
+use util::nonempty::Vec1;
 
 pub type DocId = Id<Uri>;
 pub type DocIds = IdSet<Uri>;
@@ -82,20 +82,25 @@ composite_query!({
         fn workspace_symbols(id: DocId) -> Vec<WorkspaceSymbol>;
 
         // === Intermediate Queries ===
+
+        // = "Logical" information about nodes =
+        // (based on tree-sitter node ids)
         pub fn ink_inventory(docid: DocId) -> InkInventory;
         pub fn local_resolutions(docid: DocId) -> LocalResolutions;
         pub fn definition(docid: DocId, usg: UsageId) -> Vec<(DocId, DefId)>;
         pub fn usages(docid: DocId, def: DefId) -> Vec<(DocId, UsageId)>;
 
+        /// Locations where global names are defined in this file.
         pub fn file_globals(docid: DocId) -> NameMap<Vec1<DefId>>;
-        /// Locations where global names are defined
+        /// Locations where global names are defined in this story.
         pub fn globals(story: StoryRoot) -> NameMap<Vec1<Def>>;
         /// Inverse of `globals`
         pub fn global_names(story: StoryRoot) -> HashMap<Def, Vec1<Name>>;
 
-        pub fn node_locations(docid: DocId) -> NodeLocations;
-        pub fn node_text(docid: DocId) -> NodeText;
-
+        // = "Physical" information about nodes =
+        // (relates node-ids to user-visible things like text and locations)
+        fn node_locations(docid: DocId) -> NodeLocations;
+        fn node_text(docid: DocId) -> NodeText;
         fn node_flags(docid: DocId) -> NodeFlags;
 
         /// The longest prefix that all Uris share
@@ -206,108 +211,6 @@ subquery!(Ops, imported_files, Vec<(Name, TextRange)>, |self, db| {
             (Name::from(path), TextRange::from(range))
         })
         .collect_vec()
-});
-
-impl mini_milc::Subquery<Ops, NameMap<Vec1<DefId>>> for file_globals {
-    fn value(
-        &self,
-        db: &impl mini_milc::Db<Ops>,
-        old: mini_milc::Old<NameMap<Vec1<DefId>>>,
-    ) -> mini_milc::Updated<NameMap<Vec1<DefId>>> {
-        let mut result = NameMap::default();
-        let inv = db.ink_inventory(self.docid);
-
-        for list in &inv.lists {
-            result.register(list.name, list.id);
-            // List items are globally visible without the preceding list name
-            for (item, defs) in &list.items {
-                for def in defs {
-                    result.register(*item, *def);
-                    result.register(format!("{list}.{item}"), *def);
-                }
-            }
-        }
-
-        let globals = std::iter::empty() // just so the chain looks more uniform ;)
-            .chain(&inv.vars)
-            .chain(&inv.consts)
-            .chain(&inv.externals)
-            .chain(&inv.body.labels);
-
-        for (name, defs) in globals {
-            for def in defs {
-                result.register(*name, *def);
-            }
-        }
-
-        for toplevel in &inv.sections {
-            result.register(toplevel.name, toplevel.name_id);
-            for (label, defs) in &toplevel.body.labels {
-                // Subsection names take precedence over labels
-                if !toplevel.sub_names.contains(label) {
-                    for def in defs {
-                        result.register(format!("{toplevel}.{label}"), *def);
-                    }
-                }
-            }
-
-            for subsection in &toplevel.subsections {
-                result.register(format!("{toplevel}.{subsection}"), subsection.name_id);
-                for (label, defs) in &subsection.body.labels {
-                    for def in defs {
-                        result.register(format!("{toplevel}.{subsection}.{label}"), *def);
-
-                        // The logic for the shortcut version is a bit convoluted.
-                        let shortcut = Name::from(format!("{toplevel}.{label}"));
-                        // Shortcut is allowed if there's no subsection with that name.
-                        let mut shortcut_allowed = !toplevel.sub_names.contains(label);
-
-                        // And if we haven’t defined that shortcut already. (Multiple subsection labels may
-                        // exist, but only the first one can be the shortcut.)
-                        shortcut_allowed &= !result.contains_key(&shortcut);
-
-                        // However, if the main section already defines such a label, then that’s an error.
-                        // In that case, we (counter-intuitively) *do* allow all shortcuts, to allow the
-                        // user to navigate between the duplicate definitions.
-                        if toplevel.body.labels.contains_key(label)
-                            && !toplevel.sub_names.contains(label)
-                        {
-                            shortcut_allowed = true;
-                        }
-
-                        if shortcut_allowed {
-                            result.register(shortcut, *def);
-                        }
-                    }
-                }
-            }
-        }
-        old.update(result)
-    }
-}
-
-subquery!(Ops, globals, NameMap<Vec1<Def>>, |self, db| {
-    let mut result = NameMap::default();
-    let stories = db.stories();
-    for docid in stories[&self.story].resolved.keys() {
-        let globals = db.file_globals(*docid);
-        for (name, defs) in globals.iter() {
-            result.register_extend(*name, defs.into_iter().map(|def| (*docid, *def)));
-        }
-    }
-    result
-});
-
-type DefMap = HashMap<Def, Vec1<Name>>; // Seems like rust-analyze can't format the following without this alias.
-subquery!(Ops, global_names, DefMap, |self, db| {
-    let mut result = HashMap::new();
-    let globals = db.globals(self.story);
-    for (name, defs) in globals.iter() {
-        for def in defs {
-            result.register(*def, *name);
-        }
-    }
-    result
 });
 
 subquery!(Ops, definition, Vec<Def>, |self, db| {
