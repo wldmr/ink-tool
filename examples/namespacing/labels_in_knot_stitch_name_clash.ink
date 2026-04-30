@@ -14,7 +14,7 @@ knot text
 
 - (stitch)
 // ^^^^^^ defines clash:label
-// ^^^^^^ no-diagnostics
+// ^^^^^^ no-diagnostic Multiple definitions
 
   label text{stitch>1: again}
   * {stitch > 1}
@@ -24,7 +24,7 @@ knot text
 
 = stitch
 //^^^^^^ defines clash:stitch
-//^^^^^^ no-diagnostics
+//^^^^^^ no-diagnostic Multiple definitions
 
 stitch text
 -> END
