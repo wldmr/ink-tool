@@ -3,6 +3,7 @@
 mod composition;
 mod subqueries;
 
+use crate::lsp::salsa::subqueries::ink_inventory::IMap;
 pub use crate::lsp::{
     idset::{Id, IdSet},
     ink_visitors::{
@@ -44,7 +45,7 @@ pub type DocId = Id<Uri>;
 pub type DocIds = IdSet<Uri>;
 pub type Def = (DocId, DefId);
 pub type Usg = (DocId, UsageId);
-pub type NodeText = HashMap<NodeId, Name, BuildHasherDefault<IdentityHasher>>;
+pub type NodeText = IMap<NodeId, Name>;
 
 #[derive(Debug, Default, PartialEq, Eq, Deref)]
 pub struct NodeLocations(BiHashMap<NodeId, TextRange, BuildHasherDefault<IdentityHasher>>);
@@ -102,6 +103,8 @@ composite_query!({
         fn node_locations(docid: DocId) -> NodeLocations;
         fn node_text(docid: DocId) -> NodeText;
         fn node_flags(docid: DocId) -> NodeFlags;
+        /// Which files contain mention of specific names (global or local)
+        fn names_mentioned(story: StoryRoot) -> IMap<Name, Vec<DocId>>;
 
         /// The longest prefix that all Uris share
         fn common_path_prefix() -> String;
@@ -119,7 +122,10 @@ composite_query!({
         fn stories_of(docid: DocId) -> Vec1<StoryRoot>;
 
         // === Errors / Diagnostics ===
-        pub fn duplicate_definitions(story: StoryRoot) -> DuplicateDefinitions;
+        /// Global definitons can't be named the same
+        pub fn duplicate_globals(story: StoryRoot) -> DuplicateDefinitions;
+        /// VARs are even more annoying: They clash with locals as well!
+        pub fn var_clash(story: StoryRoot) -> DuplicateDefinitions;
         pub fn duplicate_imports(story: StoryRoot) -> DuplicateImports;
         pub fn file_diagnostics(docid: DocId) -> FileDiagnostics;
     }
@@ -195,6 +201,16 @@ subquery!(Ops, node_text, NodeText, |self, db| {
                 result.insert(q.into(), doc.node_text(q).into());
             }
             _ => qname = None,
+        }
+    }
+    result
+});
+
+subquery!(Ops, names_mentioned, IMap<Name, Vec<DocId>>, |self, db|{
+    let mut result = IMap::<Name, Vec<DocId>>::default();
+    for file in db.stories()[&self.story].resolved.keys().copied() {
+        for name in db.node_text(file).values().copied(){
+            result.entry(name).or_default().push(file);
         }
     }
     result

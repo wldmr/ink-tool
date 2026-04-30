@@ -5,7 +5,7 @@ use crate::lsp::state::State;
 use crate::AppResult;
 use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Uri};
-use mini_milc::Revision;
+use mini_milc::{Db as _, Revision};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
@@ -104,9 +104,10 @@ pub fn start(
             let docs = state.db.doc_ids();
 
             for (docid, uri) in docs.pairs() {
-                let latest_diagnostics = state.db.file_diagnostics(docid);
+                let query = salsa::file_diagnostics { docid };
+                let latest_diagnostics = state.db.get(query);
 
-                if let Some(rev) = state.db.changed_at(salsa::file_diagnostics { docid }) {
+                if let Some(rev) = state.db.changed_at(query) {
                     let old = latest.insert(docid, rev);
                     if old.is_none_or(|it| it != rev) {
                         static METHOD: &'static str = <lsp_types::notification::PublishDiagnostics as lsp_types::notification::Notification>::METHOD;

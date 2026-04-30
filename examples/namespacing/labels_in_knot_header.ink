@@ -6,13 +6,13 @@
 == knot
 - (label) // knot-level
 // ^^^^^ defines rmi
-// ^^^^^ diagnostic Multiple definitions of knot.label
+// ^^^^^ diagnostic Multiple definitions of `knot.label`
 -> DONE
 
 = a
 - (label) // stitch-level
 // ^^^^^ defines gja
-// ^^^^^ diagnostic Multiple definitions of knot.label
+// ^^^^^ diagnostic Multiple definitions of `knot.label`
 -> DONE
 
 

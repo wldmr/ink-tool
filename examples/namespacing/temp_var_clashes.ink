@@ -1,10 +1,11 @@
 // VARs will clash with temps
 VAR name = "Inigo Montoya"
+//  ^^^^ diagnostic Multiple definitions
 -> knot
 
 === knot ===
 ~ temp name = "Slim Shady"
-//     ^^^^ diagnostic duplicate name
+//     ^^^^ diagnostic Multiple definitions
 -> END
 
 

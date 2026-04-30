@@ -65,7 +65,8 @@ impl Into<String> for Name {
     }
 }
 
-pub type NameSet = HashSet<Name, BuildHasherDefault<IdentityHasher>>;
+pub type ISet<T> = HashSet<T, BuildHasherDefault<IdentityHasher>>;
+pub type NameSet = ISet<Name>;
 pub type IMap<K, V> = HashMap<K, V, BuildHasherDefault<IdentityHasher>>;
 pub type NameMap<T> = IMap<Name, T>;
 

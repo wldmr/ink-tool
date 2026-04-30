@@ -2,11 +2,11 @@
 VAR name = "Inigo Montoya"
 
 === knot(name) ===
-//       ^^^^ diagnostic clashes with VAR
+//       ^^^^ diagnostic Multiple definitions
 -> END
 
 = stitch(name)
-//       ^^^^ diagnostic clashes with VAR
+//       ^^^^ diagnostic Multiple definitions
 -> END
 
 
