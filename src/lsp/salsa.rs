@@ -348,11 +348,11 @@ subquery!(Ops, document_symbols, Vec<DocumentSymbol>, |self, db| {
 
 pub trait InkSetters: Db<Ops> {
     fn modify_opened<C: HasChanged>(&mut self, f: impl FnOnce(&mut HashSet<DocId>) -> C) -> bool {
-        self.modify(opened_docs {}, f)
+        self.modify(opened_docs {}, f).is_changed()
     }
 
     fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut DocIds) -> C) -> bool {
-        self.modify(doc_ids {}, f)
+        self.modify(doc_ids {}, f).is_changed()
     }
 
     fn modify_document<C: HasChanged>(
@@ -362,6 +362,7 @@ pub trait InkSetters: Db<Ops> {
         update: impl FnOnce(&mut InkDocument) -> C,
     ) -> bool {
         self.modify_with_default(document { id }, default, update)
+            .is_changed()
     }
 }
 impl<D: InkGetters> InkSetters for D {}

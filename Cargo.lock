@@ -1143,7 +1143,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "mini-milc"
 version = "0.1.0"
-source = "git+ssh://git@codeberg.org/wldmr/milc.git#5a2726d5970ac733ffbe635eabf1d0182a9df160"
+source = "git+https://codeberg.org/wldmr/milc.git#ef04f39db35f94a7eb8a1429be0901a137d1cacf"
 
 [[package]]
 name = "mio"

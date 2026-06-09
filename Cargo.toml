@@ -73,7 +73,7 @@ line-index.workspace = true
 log.workspace = true
 lsp-server = "0.7.7"
 lsp-types.workspace = true
-mini-milc = { git = "ssh://git@codeberg.org/wldmr/milc.git" }
+mini-milc = { git = "https://codeberg.org/wldmr/milc.git" }
 notify = "6.1.1"
 serde.workspace = true
 serde_json.workspace = true
