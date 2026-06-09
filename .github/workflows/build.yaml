@@ -1,12 +1,13 @@
 name: Build
-run-name: ${{ github.actor }} is building ink-tool
+run-name: building ink-tool
 on: [push]
 jobs:
-  Build-InkTool-Linux:
-    runs-on: ubuntu-latest
+  test-build-release-artifacts:
     strategy:
       matrix:
         BUILD_TARGET: [release] # refers to a cargo profile
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     outputs:
       release_built: ${{ steps.set-output.outputs.release_built }}
     steps:
@@ -17,15 +18,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - uses: actions/checkout@v6
       - name: Build binaries in "${{ matrix.BUILD_TARGET }}" mode
         run: cargo build --profile ${{ matrix.BUILD_TARGET }}
       - name: Run tests in "${{ matrix.BUILD_TARGET }}" mode
         run: cargo test --profile ${{ matrix.BUILD_TARGET }}
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: ink-tool
+          name: ink-tool-${{ matrix.os }}
           path: target/${{ matrix.BUILD_TARGET }}/ink-tool
 
