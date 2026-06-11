@@ -4,11 +4,10 @@ use crate::lsp::state::State;
 use crate::lsp::DocId;
 use crate::AppResult;
 use lsp_server::{Message, Notification};
-use lsp_types::{PublishDiagnosticsParams, Uri};
+use lsp_types::PublishDiagnosticsParams;
 use mini_milc::{Db as _, Revision};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
-use std::str::FromStr;
 
 /* TODO: Proper debounce
 > In a language server written in Rust, what would be a good way to “debounce”
@@ -113,7 +112,7 @@ pub fn start(
                     if old.is_none_or(|it| it != rev) {
                         static METHOD: &'static str = <lsp_types::notification::PublishDiagnostics as lsp_types::notification::Notification>::METHOD;
                         let params = PublishDiagnosticsParams {
-                            uri: Uri::from_str(docid.as_str()).unwrap(),
+                            uri: docid.into(),
                             diagnostics: latest_diagnostics.clone(),
                             version: None,
                         };

@@ -15,9 +15,11 @@ pub type DocIds = ISet<DocId>;
 #[display("{_0}")]
 pub struct DocId(Ustr);
 
+const PREFIX: &'static str = "file://";
+
 impl DocId {
     pub fn new(uri: &Uri) -> Self {
-        uri.as_str().into()
+        uri.into()
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -25,14 +27,13 @@ impl DocId {
     }
 
     pub fn path(&self) -> &'static str {
-        pub(crate) const PREFIX: usize = "file:///".len();
-        &self.0.as_str()[PREFIX..]
+        &self.0.as_str()[PREFIX.len()..]
     }
 }
 
-impl<T: AsRef<str>> From<T> for DocId {
-    fn from(value: T) -> Self {
-        DocId(ustr(value.as_ref()))
+impl<'a> From<&'a Uri> for DocId {
+    fn from(value: &'a Uri) -> Self {
+        DocId(ustr(value.as_str()))
     }
 }
 
@@ -57,5 +58,31 @@ impl Into<Uri> for DocId {
 impl<'a> Into<Uri> for &'a DocId {
     fn into(self) -> Uri {
         Uri::from_str(self.0.as_str()).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quickcheck::Arbitrary;
+
+    impl Arbitrary for DocId {
+        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+            // very simple number based URIs (file:///1/2/3), to sidestep any
+            let mut nums = Vec::<u8>::arbitrary(g);
+            if nums.is_empty() {
+                nums.push(u8::arbitrary(g));
+            }
+            let mut uri = nums.into_iter().fold(format!("{PREFIX}"), |mut acc, next| {
+                acc.push('/');
+                acc.push_str(&next.to_string());
+                acc
+            });
+            uri.push_str(".ink"); // we ensured that nums is not empty.
+            let uri = Uri::from_str(&uri).unwrap();
+            Self::new(&uri)
+        }
+
+        // The uris are simple enough, let's not bother with shrinking.
     }
 }

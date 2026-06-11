@@ -351,6 +351,8 @@ mod tests {
 
 #[cfg(test)]
 pub(crate) mod arbitrary {
+    use crate::lsp::DocId;
+
     use super::{FileTextRange, TextPos, TextRange};
     use quickcheck::Arbitrary;
 
@@ -392,7 +394,7 @@ pub(crate) mod arbitrary {
     impl Arbitrary for FileTextRange {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
-                file: String::arbitrary(g).into(),
+                file: DocId::arbitrary(g),
                 range: TextRange::arbitrary(g),
             }
         }

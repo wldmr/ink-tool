@@ -11,8 +11,9 @@ use axum::{
     Router,
 };
 use ink_document::ids::NodeId;
+use lsp_types::Uri;
 use mini_milc::Db as _;
-use std::future::Future;
+use std::{future::Future, str::FromStr};
 use tap::Pipe;
 
 pub fn start<F>(state: SharedState, shutdown: F) -> Result<(), std::io::Error>
@@ -114,8 +115,16 @@ async fn file<R>(
 ) -> Result<axum::response::Html<String>, (axum::http::StatusCode, String)> {
     let state = state.lock().expect("I want this lock!");
     let prefix = &*state.db.common_path_prefix();
+    let prefix = std::path::Path::new(prefix);
+    let full_path = prefix.join(path);
+    let uri = full_path
+        .as_path()
+        .to_str()
+        .map(Uri::from_str)
+        .expect("Path must be stringable")
+        .expect("Path must be URI-able");
 
-    let docid = DocId::from(format!("{prefix}{}", path.to_string_lossy()));
+    let docid = DocId::new(&uri);
     if !state.db.doc_ids().contains(&docid) {
         return Err(DocumentNotFound(docid).into());
     }

@@ -1,4 +1,4 @@
-use std::{ops::Deref, str::FromStr};
+use std::ops::Deref;
 
 use ink_document::InkDocument;
 use ink_syntax::{AllNamed, GlobalKeyword};
@@ -46,7 +46,7 @@ impl<'a> WorkspaceSymbols<'a> {
     }
 
     fn uri(&self) -> Uri {
-        Uri::from_str(self.docid.as_str()).unwrap()
+        self.docid.into()
     }
 
     fn lsp_range(&self, node: impl type_sitter::Node<'a>) -> lsp_types::Range {

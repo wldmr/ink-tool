@@ -55,7 +55,7 @@ fn test_errors(state: &State) {
                 if actual.is_empty() {
                     render(
                         &[Level::ERROR.primary_title("No diagnostics found").element(
-                            Snippet::source(text).path(id.path()).fold(true).annotation(
+                            Snippet::source(text).path(path).fold(true).annotation(
                                 AnnotationKind::Primary
                                     .span(ann.text_location.byte_range())
                                     .label(
@@ -113,7 +113,7 @@ fn test_errors(state: &State) {
                     let mut group = vec![Level::ERROR
                         .primary_title("No diagnostics expected")
                         .element(
-                            Snippet::source(text).path(id.path()).fold(true).annotation(
+                            Snippet::source(text).path(path).fold(true).annotation(
                                 AnnotationKind::Primary
                                     .span(ann.text_location.byte_range())
                                     .label("Expected to find *no* diagnostic here, but …"),
@@ -137,7 +137,7 @@ fn test_errors(state: &State) {
                 let mut group = vec![Level::ERROR
                     .primary_title("Unexpected diagnostic found")
                     .element(
-                        Snippet::source(text).path(id.path()).fold(true).annotation(
+                        Snippet::source(text).path(path).fold(true).annotation(
                             AnnotationKind::Primary
                                 .span(ann.text_location.byte_range())
                                 .label("Expected to find *no* diagnostic that match"),
