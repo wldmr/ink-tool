@@ -1,9 +1,10 @@
 #![allow(non_camel_case_types)]
 
 mod composition;
+mod docid;
 mod subqueries;
 
-use crate::lsp::salsa::subqueries::ink_inventory::{IMap, ISet};
+use crate::lsp::salsa::subqueries::ink_inventory::IMap;
 pub use crate::lsp::{
     ink_visitors::{
         doc_symbols::document_symbols as get_document_symbols,
@@ -19,82 +20,28 @@ pub use crate::lsp::{
 };
 use bimap::BiHashMap;
 use composition::composite_query;
-use derive_more::derive::{AsRef, Deref, Into};
-use derive_more::{Debug, Display};
+use derive_more::derive::Deref;
+use derive_more::Debug;
+pub use docid::{DocId, DocIds};
 use ink_document::{
     ids::{DefId, NodeId, UsageId},
     InkDocument,
 };
 use itertools::Itertools as _;
-use lsp_types::{DocumentSymbol, Uri, WorkspaceSymbol};
+use lsp_types::{DocumentSymbol, WorkspaceSymbol};
 use mini_milc::{subquery, Db, HasChanged};
 use std::{
     collections::{HashMap, HashSet},
     hash::BuildHasherDefault,
     ops::Index,
-    str::FromStr as _,
 };
 pub(crate) use subqueries::node_flags::match_flags;
 pub use subqueries::node_flags::{NodeFlag, NodeFlags};
 pub use subqueries::story_structure::StoryRoot;
 use tree_traversal::TreeTraversal;
 use type_sitter::Node as _;
-use ustr::{ustr, IdentityHasher, Ustr};
+use ustr::IdentityHasher;
 use util::nonempty::Vec1;
-
-pub type DocIds = ISet<DocId>;
-
-#[derive(
-    Default, Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, AsRef, Into,
-)]
-#[debug("DocId({_0})")]
-#[display("{_0}")]
-pub struct DocId(Ustr);
-
-impl DocId {
-    pub fn new(uri: &Uri) -> Self {
-        uri.as_str().into()
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        self.0.as_str()
-    }
-
-    pub fn path(&self) -> &'static str {
-        const PREFIX: usize = "file:///".len();
-        &self.0.as_str()[PREFIX..]
-    }
-}
-
-impl<T: AsRef<str>> From<T> for DocId {
-    fn from(value: T) -> Self {
-        DocId(ustr(value.as_ref()))
-    }
-}
-
-impl Into<&'static str> for DocId {
-    fn into(self) -> &'static str {
-        self.as_str()
-    }
-}
-
-impl Into<String> for DocId {
-    fn into(self) -> String {
-        self.0.to_string()
-    }
-}
-
-impl Into<Uri> for DocId {
-    fn into(self) -> Uri {
-        Uri::from_str(self.0.as_str()).unwrap()
-    }
-}
-
-impl<'a> Into<Uri> for &'a DocId {
-    fn into(self) -> Uri {
-        Uri::from_str(self.0.as_str()).unwrap()
-    }
-}
 
 pub type Def = (DocId, DefId);
 pub type Usg = (DocId, UsageId);
@@ -351,7 +298,7 @@ pub trait InkSetters: Db<Ops> {
         self.modify(opened_docs {}, f).is_changed()
     }
 
-    fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut DocIds) -> C) -> bool {
+    fn modify_docs<C: HasChanged>(&mut self, f: impl FnOnce(&mut docid::DocIds) -> C) -> bool {
         self.modify(doc_ids {}, f).is_changed()
     }
 
