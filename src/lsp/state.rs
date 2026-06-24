@@ -57,7 +57,7 @@ impl State {
     }
 
     pub fn text(&self, uri: &Uri) -> Result<String, DocumentNotFound> {
-        let id = DocId::new(uri);
+        let id = DocId::from(uri);
         if self.db.doc_ids().contains(&id) {
             Ok(self.db.document(id).full_text())
         } else {
@@ -66,7 +66,7 @@ impl State {
     }
 
     pub fn is_open(&mut self, uri: &Uri) -> Result<bool, DocumentNotFound> {
-        let id = DocId::new(uri);
+        let id = DocId::from(uri);
         if !self.db.doc_ids().contains(&id) {
             return Err(DocumentNotFound(id));
         };
@@ -102,7 +102,7 @@ impl State {
     }
 
     pub fn forget(&mut self, uri: Uri) -> Result<(), DocumentNotFound> {
-        let id = DocId::new(&uri);
+        let id = DocId::from(uri);
         let removed = self.db.modify_docs(|it| it.remove(&id));
         if removed {
             Ok(())
@@ -113,7 +113,7 @@ impl State {
 
     /// Return a document symbol for this `uri`. Error on unknown document
     pub fn document_symbols(&self, uri: Uri) -> Result<Vec<DocumentSymbol>, DocumentNotFound> {
-        let id = DocId::new(&uri);
+        let id = DocId::from(uri);
         if self.db.doc_ids().contains(&id) {
             Ok(self.db.document_symbols(id).clone())
         } else {
@@ -138,11 +138,11 @@ impl State {
     #[cfg(test)]
     fn byte_range_of(&self, uri: &Uri, loc: lsp_types::Range) -> std::ops::Range<usize> {
         // only used in tests, so we'll crash liberally!
-        self.db.document(DocId::new(uri)).byte_range(loc)
+        self.db.document(DocId::from(uri)).byte_range(loc)
     }
 
     fn get_or_new_docid(&mut self, uri: Uri) -> DocId {
-        let id = DocId::new(&uri);
+        let id = DocId::from(uri);
         self.db.modify_docs(|docs| docs.insert(id));
         id
     }
@@ -151,7 +151,7 @@ impl State {
         &self,
         uri: &Uri,
     ) -> Result<(Cached<'_, salsa::Ops, InkDocument>, DocId), DocumentNotFound> {
-        let id = DocId::new(uri);
+        let id = DocId::from(uri);
         if !self.db.doc_ids().contains(&id) {
             return Err(DocumentNotFound(id));
         };

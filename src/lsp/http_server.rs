@@ -124,7 +124,7 @@ async fn file<R>(
         .expect("Path must be stringable")
         .expect("Path must be URI-able");
 
-    let docid = DocId::new(&uri);
+    let docid = DocId::from(uri);
     if !state.db.doc_ids().contains(&docid) {
         return Err(DocumentNotFound(docid).into());
     }

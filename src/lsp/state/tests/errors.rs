@@ -189,6 +189,7 @@ fn errors() {
 
     for ink in ink_files {
         let path = ink.path().as_os_str().to_string_lossy();
+        eprintln!("Path to open in test: {path}");
         let uri = Uri::from_str(&path).unwrap();
         let contents = std::fs::read_to_string(&*path).unwrap();
         state.edit(uri, contents);

@@ -13,7 +13,7 @@ impl super::State {
         pos: Position,
     ) -> Result<Vec<Location>, GotoLocationError> {
         let docs = self.db.doc_ids();
-        let this_docid = DocId::new(&uri);
+        let this_docid = DocId::from(uri);
         if !docs.contains(&this_docid) {
             return Err(DocumentNotFound(this_docid).into());
         }
