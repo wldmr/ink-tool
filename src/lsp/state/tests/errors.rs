@@ -182,15 +182,19 @@ fn test_errors(state: &State) {
 fn errors() {
     let mut state = new_state();
 
-    let ink_files = walkdir::WalkDir::new("examples/")
+    let ink_files = walkdir::WalkDir::new("examples")
         .into_iter()
         .map(|file| file.expect("We don't tolerate errors in tests"))
         .filter(|file| file.path().extension().is_some_and(|it| it == "ink"));
 
     for ink in ink_files {
-        let path = ink.path().as_os_str().to_string_lossy();
-        eprintln!("Path to open in test: {path}");
-        let uri = Uri::from_str(&path).unwrap();
+        let path = dunce::canonicalize(ink.path()).expect("file should exist");
+        let path = path.as_os_str().to_string_lossy();
+        let uri = format!("file:///{path}");
+        // #[cfg(windows)]
+        let uri = uri.replace('\\', "/");
+        eprintln!("Uri to open in test: {uri}");
+        let uri = Uri::from_str(&uri).unwrap();
         let contents = std::fs::read_to_string(&*path).unwrap();
         state.edit(uri, contents);
     }
