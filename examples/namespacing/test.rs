@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     collections::{BTreeSet, HashMap, HashSet},
     ops::Range,
-    str::FromStr as _,
 };
 
 use annotate_snippets::{AnnotationKind, Level, Snippet};
@@ -39,10 +38,9 @@ fn main() -> TestResult {
         .filter(|file| file.path().extension().is_some_and(|it| it == "ink"));
 
     for ink in ink_files {
-        let path = ink.path().as_os_str().to_string_lossy();
-        let uri = Uri::from_str(&path).unwrap();
-        let contents = std::fs::read_to_string(&*path).unwrap();
-        state.edit(uri, contents);
+        let path = ink.path();
+        let contents = std::fs::read_to_string(path).unwrap();
+        state.edit(path, contents);
     }
 
     let mut stories = state

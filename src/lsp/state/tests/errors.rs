@@ -4,8 +4,6 @@ use crate::lsp::{
 };
 use annotate_snippets::{AnnotationKind, Group, Level, Snippet};
 use itertools::Itertools;
-use lsp_types::Uri;
-use std::str::FromStr;
 use text_annotations::scan_default_annotations;
 
 fn test_errors(state: &State) {
@@ -188,15 +186,9 @@ fn errors() {
         .filter(|file| file.path().extension().is_some_and(|it| it == "ink"));
 
     for ink in ink_files {
-        let path = dunce::canonicalize(ink.path()).expect("file should exist");
-        let path = path.as_os_str().to_string_lossy();
-        let uri = format!("file:///{path}");
-        // #[cfg(windows)]
-        let uri = uri.replace('\\', "/");
-        eprintln!("Uri to open in test: {uri}");
-        let uri = Uri::from_str(&uri).unwrap();
-        let contents = std::fs::read_to_string(&*path).unwrap();
-        state.edit(uri, contents);
+        let path = ink.path();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        state.edit(path, contents);
     }
 
     test_errors(&state);

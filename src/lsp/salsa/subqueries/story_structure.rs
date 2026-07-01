@@ -162,7 +162,7 @@ impl Subquery<Ops, StoryRoots> for stories {
         let mut candidates = docs
             .iter()
             .map(|id| {
-                let path = Path::new(id.as_str());
+                let path = Path::new(id.path());
                 let dir = path.parent().expect("Each uri must point to a file");
                 let fname = path.file_name().expect("Each uri must point to a file");
                 let depth = dir.components().count();

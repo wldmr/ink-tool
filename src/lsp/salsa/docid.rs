@@ -1,4 +1,4 @@
-use std::str::FromStr as _;
+use std::{path::Path, str::FromStr as _};
 
 use derive_more::derive::{AsRef, Debug, Display, Into};
 use lsp_types::Uri;
@@ -29,6 +29,10 @@ pub struct DocId(Ustr);
 const FILE_SCHEME: &'static str = "file://";
 
 impl DocId {
+    fn from_str(s: &str) -> Self {
+        DocId(ustr(s))
+    }
+
     pub fn as_str(&self) -> &'static str {
         self.0.as_str()
     }
@@ -41,13 +45,23 @@ impl DocId {
 
 impl From<Uri> for DocId {
     fn from(value: Uri) -> Self {
-        DocId(ustr(value.as_str()))
+        Self::from(&value) // defer to the impl for the &Uri
     }
 }
 
 impl<'a> From<&'a Uri> for DocId {
     fn from(value: &'a Uri) -> Self {
-        DocId(ustr(value.as_str()))
+        Self::from_str(value.as_str())
+    }
+}
+
+impl<'a> From<&'a Path> for DocId {
+    fn from(value: &'a Path) -> Self {
+        let path = dunce::simplified(value);
+        let path = format!("{FILE_SCHEME}/{}", path.to_string_lossy());
+        #[cfg(windows)]
+        let path = dbg!(path.replace('\\', "/"));
+        Self::from_str(&path)
     }
 }
 

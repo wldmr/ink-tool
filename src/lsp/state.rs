@@ -83,13 +83,13 @@ impl State {
         self.db.modify_opened(|docs| docs.remove(&id));
     }
 
-    pub fn edit<'a, E: Into<DocumentEdit>>(&mut self, uri: Uri, edit: E) {
+    pub fn edit<'a, E: Into<DocumentEdit>>(&mut self, uri: impl Into<DocId>, edit: E) {
         self.edits(uri, [edit]);
     }
 
     pub fn edits<'a, E: Into<DocumentEdit>>(
         &mut self,
-        uri: Uri,
+        uri: impl Into<DocId>,
         edits: impl IntoIterator<Item = E>,
     ) {
         let id = self.get_or_new_docid(uri);
@@ -141,8 +141,8 @@ impl State {
         self.db.document(DocId::from(uri)).byte_range(loc)
     }
 
-    fn get_or_new_docid(&mut self, uri: Uri) -> DocId {
-        let id = DocId::from(uri);
+    fn get_or_new_docid(&mut self, uri: impl Into<DocId>) -> DocId {
+        let id: DocId = uri.into();
         self.db.modify_docs(|docs| docs.insert(id));
         id
     }
