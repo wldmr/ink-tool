@@ -20,13 +20,12 @@ jobs:
             target
           key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - uses: actions/checkout@v6
-      - name: Build binaries in "${{ matrix.BUILD_TARGET }}" mode
-        run: cargo build --profile ${{ matrix.BUILD_TARGET }}
       - name: Run tests in "${{ matrix.BUILD_TARGET }}" mode
         run: cargo test --profile ${{ matrix.BUILD_TARGET }}
+      - name: Build binaries in "${{ matrix.BUILD_TARGET }}" mode
+        run: cargo build --profile ${{ matrix.BUILD_TARGET }}
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
           name: ink-tool-${{ matrix.os }}
           path: target/${{ matrix.BUILD_TARGET }}/ink-tool
-
