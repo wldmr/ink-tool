@@ -186,8 +186,9 @@ fn errors() {
         .filter(|file| file.path().extension().is_some_and(|it| it == "ink"));
 
     for ink in ink_files {
-        let path = ink.path();
-        let contents = std::fs::read_to_string(&path).unwrap();
+        let path = ink.path().canonicalize().expect("must exist");
+        let path = path.as_path();
+        let contents = std::fs::read_to_string(path).unwrap();
         state.edit(path, contents);
     }
 
